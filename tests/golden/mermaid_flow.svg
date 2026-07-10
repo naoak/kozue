@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 384.00 496.80" width="384.00" height="496.80">
+  <rect x="-20.00" y="-20.00" width="384.00" height="496.80" fill="#ffffff"/>
+  <rect x="68.00" y="0.00" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="104.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">開始</text>
+  <rect x="52.00" y="139.20" width="104.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="104.00" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">処理する</text>
+  <rect x="0.00" y="278.40" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="36.00" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">完了</text>
+  <rect x="112.00" y="278.40" width="120.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="172.00" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">エラー発生</text>
+  <rect x="68.00" y="417.60" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="104.00" y="442.80" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">終了</text>
+  <rect x="272.00" y="0.00" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="308.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">確認</text>
+  <rect x="272.00" y="139.20" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="308.00" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">承認</text>
+  <rect x="272.00" y="278.40" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="308.00" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">完結</text>
+  <polyline points="104.00,39.20 104.00,129.20" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="104.00,139.20 99.00,129.20 109.00,129.20" fill="#000000" stroke="none"/>
+  <polyline points="94.43,178.40 49.96,269.41" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="45.57,278.40 45.47,267.22 54.46,271.61" fill="#000000" stroke="none"/>
+  <text x="70.00" y="224.40" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">OK</text>
+  <polyline points="113.57,178.40 158.04,269.41" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="162.43,278.40 153.54,271.61 162.53,267.22" fill="#000000" stroke="none"/>
+  <text x="138.00" y="224.40" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">NG</text>
+  <polyline points="45.57,317.60 90.04,408.61" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="94.43,417.60 85.54,410.81 94.53,406.42" fill="#000000" stroke="none"/>
+  <polyline points="162.43,317.60 117.96,408.61" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="113.57,417.60 113.47,406.42 122.46,410.81" fill="#000000" stroke="none"/>
+  <polyline points="308.00,39.20 308.00,129.20" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="308.00,139.20 303.00,129.20 313.00,129.20" fill="#000000" stroke="none"/>
+  <polyline points="308.00,178.40 308.00,268.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="308.00,278.40 303.00,268.40 313.00,268.40" fill="#000000" stroke="none"/>
+</svg>

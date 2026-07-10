@@ -22,7 +22,9 @@ mod ordering;
 mod sequence;
 
 use indexmap::IndexMap;
-use kozue_ir::{Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{
+    ArrowType, Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign,
+};
 
 const FONT_SIZE: f64 = 16.0;
 const PAD_X: f64 = 20.0;
@@ -233,6 +235,7 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
             &placed[from],
             &placed[to],
             edge.label.as_deref(),
+            edge.arrow,
         );
     }
 
@@ -247,8 +250,8 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
     })
 }
 
-/// Draw one edge as a polyline through its bend points, with an arrowhead at
-/// the target end and an optional label at the polyline midpoint.
+/// Draw one edge as a polyline through its bend points, with an optional
+/// arrowhead at the target end and an optional label at the polyline midpoint.
 ///
 /// `pts` are the edge's routing points in original edge orientation:
 /// `[from_center, bends.., to_center]` (length >= 2).
@@ -258,6 +261,7 @@ fn push_edge(
     from: &Placed,
     to: &Placed,
     label: Option<&str>,
+    arrow: ArrowType,
 ) {
     let last = pts.len() - 1;
     // Clip the endpoints to the node borders.
@@ -265,38 +269,49 @@ fn push_edge(
     let end = clip_to_rect(to, pts[last - 1].0, pts[last - 1].1);
     pts[last] = end;
 
-    // Pull the final segment back so the tip of the arrow sits on the border.
-    let dx = end.0 - pts[last - 1].0;
-    let dy = end.1 - pts[last - 1].1;
-    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-    let ux = dx / len;
-    let uy = dy / len;
-    let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
+    let draw_arrow = !matches!(arrow, ArrowType::None);
 
-    let mut line_pts = pts.clone();
-    line_pts[last] = line_end;
-    items.push(SceneItem::Path(Path {
-        points: line_pts,
-        filled: false,
-        dashed: false,
-    }));
+    if draw_arrow {
+        // Pull the final segment back so the tip of the arrow sits on the border.
+        let dx = end.0 - pts[last - 1].0;
+        let dy = end.1 - pts[last - 1].1;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let ux = dx / len;
+        let uy = dy / len;
+        let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
 
-    // Arrowhead triangle at `end`, pointing along (ux, uy).
-    let px = -uy; // perpendicular
-    let py = ux;
-    let left = (
-        line_end.0 + px * ARROW_HALF_W,
-        line_end.1 + py * ARROW_HALF_W,
-    );
-    let right = (
-        line_end.0 - px * ARROW_HALF_W,
-        line_end.1 - py * ARROW_HALF_W,
-    );
-    items.push(SceneItem::Path(Path {
-        points: vec![end, left, right],
-        filled: true,
-        dashed: false,
-    }));
+        let mut line_pts = pts.clone();
+        line_pts[last] = line_end;
+        items.push(SceneItem::Path(Path {
+            points: line_pts,
+            filled: false,
+            dashed: false,
+        }));
+
+        // Arrowhead triangle at `end`, pointing along (ux, uy).
+        let px = -uy; // perpendicular
+        let py = ux;
+        let left = (
+            line_end.0 + px * ARROW_HALF_W,
+            line_end.1 + py * ARROW_HALF_W,
+        );
+        let right = (
+            line_end.0 - px * ARROW_HALF_W,
+            line_end.1 - py * ARROW_HALF_W,
+        );
+        items.push(SceneItem::Path(Path {
+            points: vec![end, left, right],
+            filled: true,
+            dashed: false,
+        }));
+    } else {
+        // No arrowhead: draw the line all the way to the node border.
+        items.push(SceneItem::Path(Path {
+            points: pts.clone(),
+            filled: false,
+            dashed: false,
+        }));
+    }
 
     if let Some(label) = label {
         let (mx, my) = polyline_midpoint(&pts);

@@ -221,6 +221,7 @@ dependencies = [
  "kozue-dsl",
  "kozue-ir",
  "kozue-layout",
+ "kozue-mermaid",
  "kozue-render-svg",
  "kozue-text",
 ]
@@ -249,6 +250,15 @@ dependencies = [
  "indexmap",
  "kozue-ir",
  "kozue-text",
+]
+
+[[package]]
+name = "kozue-mermaid"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "indexmap",
+ "kozue-ir",
 ]
 
 [[package]]

@@ -2,6 +2,8 @@
 //!
 //! - Golden tests: each `tests/golden/*.kzd` must render to the committed
 //!   `*.svg` byte-for-byte.
+//! - Mermaid golden tests: each `tests/golden/*.mmd` must render to the
+//!   committed `*.svg` byte-for-byte.
 //! - Determinism: rendering the same input twice gives identical output, tested
 //!   by launching the CLI binary as a separate process (catches HashMap seed
 //!   non-determinism across processes).
@@ -354,5 +356,214 @@ fn seq_long_label_widens_columns() {
         "long label scene ({}) should be wider than short label scene ({})",
         scene.width,
         scene_short.width
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mermaid golden tests
+// ---------------------------------------------------------------------------
+
+const MERMAID_GOLDEN_CASES: &[&str] = &["mermaid_flow", "mermaid_seq"];
+
+fn compile_mermaid(src: &str) -> String {
+    let diagram = kozue_mermaid::parse(src).expect("mermaid golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("mermaid golden layout must succeed");
+    kozue_render_svg::render(&scene)
+}
+
+#[test]
+fn mermaid_golden_svgs_match() {
+    for name in MERMAID_GOLDEN_CASES {
+        let mmd = golden_dir().join(format!("{name}.mmd"));
+        let svg_path = golden_dir().join(format!("{name}.svg"));
+        let src =
+            std::fs::read_to_string(&mmd).unwrap_or_else(|e| panic!("read {}: {e}", mmd.display()));
+        let actual = compile_mermaid(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&svg_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                svg_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "mermaid golden mismatch for {name}.mmd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// Verify that mermaid rendering is deterministic across separate process invocations.
+#[test]
+fn mermaid_rendering_is_deterministic_across_processes() {
+    let mmd = golden_dir().join("mermaid_flow.mmd");
+    let bin = env!("CARGO_BIN_EXE_kozue");
+
+    let tmp = std::env::temp_dir();
+    let out1 = tmp.join("kozue_mmd_det_test_1.svg");
+    let out2 = tmp.join("kozue_mmd_det_test_2.svg");
+
+    let status1 = std::process::Command::new(bin)
+        .args([
+            "render",
+            mmd.to_str().unwrap(),
+            "-o",
+            out1.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (first run)");
+    assert!(status1.success(), "first kozue run failed");
+
+    let status2 = std::process::Command::new(bin)
+        .args([
+            "render",
+            mmd.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (second run)");
+    assert!(status2.success(), "second kozue run failed");
+
+    let svg1 = std::fs::read(&out1).expect("read first output");
+    let svg2 = std::fs::read(&out2).expect("read second output");
+    let _ = std::fs::remove_file(&out1);
+    let _ = std::fs::remove_file(&out2);
+
+    assert_eq!(
+        svg1, svg2,
+        "same mermaid input must produce byte-identical SVG across separate process invocations"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fix 4: CLI routing tests — uppercase extension and --lang override
+// ---------------------------------------------------------------------------
+
+/// Helper: write a minimal mermaid diagram to a temp file and return its path.
+fn write_temp_mmd(suffix: &str, content: &str) -> std::path::PathBuf {
+    let tmp = std::env::temp_dir().join(format!("kozue_routing_test{suffix}"));
+    std::fs::write(&tmp, content).unwrap();
+    tmp
+}
+
+const MINIMAL_MMD: &str = "flowchart TD\n  A --> B\n";
+const MINIMAL_KZD: &str = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}\n";
+
+#[test]
+fn cli_routing_uppercase_mmd_extension() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let src = write_temp_mmd(".MMD", MINIMAL_MMD);
+    let out = src.with_extension("svg");
+    let status = std::process::Command::new(bin)
+        .args(["render", src.to_str().unwrap(), "-o", out.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        status.success(),
+        ".MMD (uppercase) should route to mermaid parser"
+    );
+}
+
+#[test]
+fn cli_routing_uppercase_mermaid_extension() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let src = write_temp_mmd(".MERMAID", MINIMAL_MMD);
+    let out = src.with_extension("svg");
+    let status = std::process::Command::new(bin)
+        .args(["render", src.to_str().unwrap(), "-o", out.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        status.success(),
+        ".MERMAID (uppercase) should route to mermaid parser"
+    );
+}
+
+#[test]
+fn cli_routing_no_extension_defaults_to_kozue() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let src = write_temp_mmd("_no_ext", MINIMAL_KZD);
+    // Remove the .mmd suffix so there's no extension.
+    let src_no_ext = src.with_extension("");
+    // write_temp_mmd wrote to src_no_ext.mmd already (suffix="…_no_ext"), rename:
+    let src_path = std::env::temp_dir().join("kozue_routing_test_no_ext");
+    std::fs::write(&src_path, MINIMAL_KZD).unwrap();
+    let out = src_path.with_extension("svg");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            src_path.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&src);
+    let _ = src_no_ext; // suppress unused warning
+    assert!(
+        status.success(),
+        "no extension should default to kozue parser and succeed on valid kzd content"
+    );
+}
+
+#[test]
+fn cli_routing_lang_mermaid_override() {
+    // A .kzd-named file with mermaid content rendered via --lang mermaid.
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let src = write_temp_mmd(".kzd", MINIMAL_MMD);
+    let out = src.with_extension("svg");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            src.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--lang",
+            "mermaid",
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        status.success(),
+        "--lang mermaid should override extension and use mermaid parser"
+    );
+}
+
+#[test]
+fn cli_routing_lang_kozue_override() {
+    // A .mmd-named file with kozue content rendered via --lang kozue.
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let src = write_temp_mmd(".mmd", MINIMAL_KZD);
+    let out = src.with_extension("svg");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            src.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--lang",
+            "kozue",
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        status.success(),
+        "--lang kozue should override .mmd extension and use kozue parser"
     );
 }

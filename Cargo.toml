@@ -6,6 +6,7 @@ members = [
     "crates/kozue-layout",
     "crates/kozue-render-svg",
     "crates/kozue-dsl",
+    "crates/kozue-mermaid",
     "crates/kozue-cli",
 ]
 
@@ -20,6 +21,7 @@ kozue-text = { path = "crates/kozue-text" }
 kozue-layout = { path = "crates/kozue-layout" }
 kozue-render-svg = { path = "crates/kozue-render-svg" }
 kozue-dsl = { path = "crates/kozue-dsl" }
+kozue-mermaid = { path = "crates/kozue-mermaid" }
 
 chumsky = "0.9"
 ariadne = "0.4"

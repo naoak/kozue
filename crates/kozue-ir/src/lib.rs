@@ -160,6 +160,8 @@ impl Node {
 pub enum ArrowType {
     #[default]
     Triangle,
+    /// No arrowhead — plain line. Used for Mermaid `---` edges.
+    None,
 }
 
 /// A directed edge from one node to another, with an optional label.

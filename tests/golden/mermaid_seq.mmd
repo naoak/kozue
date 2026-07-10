@@ -1,0 +1,7 @@
+sequenceDiagram
+  %% シーケンス図のゴールデンテスト
+  participant クライアント as ウェブブラウザ
+  participant サーバ as APIサーバ
+  クライアント->>サーバ: POST /login
+  サーバ-->>クライアント: 200 OK
+  クライアント->>クライアント: セッション保存
