@@ -19,18 +19,29 @@ enum Lang {
     Mermaid,
 }
 
+/// Output format selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum Format {
+    #[default]
+    Svg,
+    Term,
+}
+
 #[derive(Subcommand)]
 enum Command {
-    /// Render a diagram to SVG.
+    /// Render a diagram to SVG or terminal text.
     Render {
         /// Input `.kzd` / `.mmd` / `.mermaid` file.
         input: PathBuf,
-        /// Output SVG file (defaults to `<input>.svg`).
+        /// Output file (defaults to `<input>.svg` for svg, stdout for term).
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
+        /// Output format: `svg` (default) or `term` (plain-text terminal).
+        #[arg(long, default_value = "svg")]
+        format: Format,
     },
     /// Parse and semantically check a diagram, printing `OK` on success.
     Check {
@@ -74,7 +85,8 @@ fn main() -> ExitCode {
             input,
             output,
             lang,
-        } => run_render(&input, output, lang),
+            format,
+        } => run_render(&input, output, lang, format),
         Command::Check { input, lang } => run_check(&input, lang),
         Command::Fmt {
             input,
@@ -101,7 +113,12 @@ fn detect_lang(input: &Path, lang: Option<Lang>) -> Lang {
     }
 }
 
-fn run_render(input: &Path, output: Option<PathBuf>, lang: Option<Lang>) -> ExitCode {
+fn run_render(
+    input: &Path,
+    output: Option<PathBuf>,
+    lang: Option<Lang>,
+    format: Format,
+) -> ExitCode {
     let src = match std::fs::read_to_string(input) {
         Ok(s) => s,
         Err(e) => {
@@ -135,12 +152,30 @@ fn run_render(input: &Path, output: Option<PathBuf>, lang: Option<Lang>) -> Exit
             return ExitCode::FAILURE;
         }
     };
-    let svg = kozue_render_svg::render(&scene);
 
-    let out_path = output.unwrap_or_else(|| input.with_extension("svg"));
-    if let Err(e) = std::fs::write(&out_path, svg) {
-        eprintln!("error: cannot write {}: {}", out_path.display(), e);
-        return ExitCode::FAILURE;
+    match format {
+        Format::Svg => {
+            let svg = kozue_render_svg::render(&scene);
+            let out_path = output.unwrap_or_else(|| input.with_extension("svg"));
+            if let Err(e) = std::fs::write(&out_path, svg) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        Format::Term => {
+            let text = kozue_render_term::render(&scene);
+            match output {
+                Some(out_path) => {
+                    if let Err(e) = std::fs::write(&out_path, text) {
+                        eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                        return ExitCode::FAILURE;
+                    }
+                }
+                None => {
+                    print!("{text}");
+                }
+            }
+        }
     }
 
     ExitCode::SUCCESS

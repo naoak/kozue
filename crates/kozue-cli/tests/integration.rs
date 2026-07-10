@@ -567,3 +567,233 @@ fn cli_routing_lang_kozue_override() {
         "--lang kozue should override .mmd extension and use kozue parser"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M3b follow-up: CLI integration tests for kozue fmt
+// ---------------------------------------------------------------------------
+
+/// Helper: write content to a temp .kzd file and return the path.
+fn write_temp_kzd(suffix: &str, content: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("kozue_fmt_test{suffix}.kzd"));
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+const CANONICAL_KZD: &str = "diagram d {\n  a: \"A\"\n  b: \"B\"\n\n  a -> b\n}\n";
+const UNFORMATTED_KZD: &str = "diagram d{a:\"A\"\nb:\"B\"\na->b}\n";
+
+#[test]
+fn fmt_check_exits_nonzero_when_not_formatted() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let path = write_temp_kzd("_check_fail", UNFORMATTED_KZD);
+    let status = std::process::Command::new(bin)
+        .args(["fmt", "--check", path.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        !status.success(),
+        "--check should exit non-zero when file is not formatted"
+    );
+}
+
+#[test]
+fn fmt_check_exits_zero_when_already_formatted() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let path = write_temp_kzd("_check_pass", CANONICAL_KZD);
+    let status = std::process::Command::new(bin)
+        .args(["fmt", "--check", path.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        status.success(),
+        "--check should exit zero when file is already formatted"
+    );
+}
+
+#[test]
+fn fmt_inplace_no_write_when_unchanged() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let path = write_temp_kzd("_inplace_unchanged", CANONICAL_KZD);
+    let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    // Sleep to allow mtime to change if a write occurs.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let status = std::process::Command::new(bin)
+        .args(["fmt", path.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let content_after = std::fs::read_to_string(&path).unwrap();
+    let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        status.success(),
+        "fmt in-place on already-formatted file should succeed"
+    );
+    assert_eq!(
+        content_after, CANONICAL_KZD,
+        "file content must be unchanged"
+    );
+    assert_eq!(
+        mtime_before, mtime_after,
+        "file should not be rewritten when already formatted"
+    );
+}
+
+#[test]
+fn fmt_stdout_outputs_canonical_form() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let path = write_temp_kzd("_stdout", UNFORMATTED_KZD);
+    let output = std::process::Command::new(bin)
+        .args(["fmt", "--stdout", path.to_str().unwrap()])
+        .output()
+        .expect("failed to run kozue");
+    // Verify original file is NOT modified.
+    let content_after = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(output.status.success(), "fmt --stdout should succeed");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.is_empty(), "fmt --stdout should produce output");
+    assert_eq!(
+        content_after, UNFORMATTED_KZD,
+        "fmt --stdout must not modify the source file"
+    );
+}
+
+#[test]
+fn fmt_rejects_mmd_files() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let path = std::env::temp_dir().join("kozue_fmt_test_reject.mmd");
+    std::fs::write(&path, "flowchart TD\n  A --> B\n").unwrap();
+    let status = std::process::Command::new(bin)
+        .args(["fmt", path.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let _ = std::fs::remove_file(&path);
+    assert!(!status.success(), "fmt should reject .mmd files");
+}
+
+#[test]
+fn fmt_syntax_error_does_not_modify_file() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let bad_src = "diagram d { bad syntax !!! }\n";
+    let path = write_temp_kzd("_syntax_err", bad_src);
+    let status = std::process::Command::new(bin)
+        .args(["fmt", path.to_str().unwrap()])
+        .status()
+        .expect("failed to run kozue");
+    let content_after = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(!status.success(), "fmt on invalid source should fail");
+    assert_eq!(
+        content_after, bad_src,
+        "file must not be modified on syntax error"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M3b: Terminal renderer golden tests
+// ---------------------------------------------------------------------------
+
+fn compile_term(src: &str) -> String {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("golden layout must succeed");
+    kozue_render_term::render(&scene)
+}
+
+fn compile_term_mermaid(src: &str) -> String {
+    let diagram = kozue_mermaid::parse(src).expect("mermaid golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("golden layout must succeed");
+    kozue_render_term::render(&scene)
+}
+
+const TERM_GOLDEN_KZD_CASES: &[&str] = &["chain", "branch", "seq_basic"];
+const TERM_GOLDEN_MMD_CASES: &[&str] = &["mermaid_flow"];
+
+#[test]
+fn term_golden_txts_match() {
+    for name in TERM_GOLDEN_KZD_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let txt_path = golden_dir().join(format!("{name}.txt"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_term(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&txt_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&txt_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                txt_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "term golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn term_mermaid_golden_txts_match() {
+    for name in TERM_GOLDEN_MMD_CASES {
+        let mmd = golden_dir().join(format!("{name}.mmd"));
+        let txt_path = golden_dir().join(format!("{name}.txt"));
+        let src =
+            std::fs::read_to_string(&mmd).unwrap_or_else(|e| panic!("read {}: {e}", mmd.display()));
+        let actual = compile_term_mermaid(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&txt_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&txt_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                txt_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "term golden mismatch for {name}.mmd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn term_render_is_deterministic() {
+    let kzd = golden_dir().join("chain.kzd");
+    let src = std::fs::read_to_string(&kzd).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let scene = kozue_layout::layout(&diagram).unwrap();
+    let out1 = kozue_render_term::render(&scene);
+    let out2 = kozue_render_term::render(&scene);
+    assert_eq!(out1, out2, "terminal render must be deterministic");
+}
+
+#[test]
+fn term_render_term_flag_via_cli() {
+    // Smoke test: `kozue render --format term` exits 0 and produces output.
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let kzd = golden_dir().join("chain.kzd");
+    let tmp_out = std::env::temp_dir().join("kozue_term_flag_test.txt");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "term",
+            kzd.to_str().unwrap(),
+            "-o",
+            tmp_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let content = std::fs::read_to_string(&tmp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_out);
+    assert!(status.success(), "render --format term should succeed");
+    assert!(!content.is_empty(), "term output should be non-empty");
+}

@@ -223,6 +223,7 @@ dependencies = [
  "kozue-layout",
  "kozue-mermaid",
  "kozue-render-svg",
+ "kozue-render-term",
  "kozue-text",
 ]
 
@@ -266,6 +267,14 @@ name = "kozue-render-svg"
 version = "0.1.0"
 dependencies = [
  "kozue-ir",
+]
+
+[[package]]
+name = "kozue-render-term"
+version = "0.1.0"
+dependencies = [
+ "kozue-ir",
+ "unicode-width",
 ]
 
 [[package]]

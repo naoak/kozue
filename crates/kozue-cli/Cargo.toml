@@ -13,6 +13,10 @@ kozue-ir.workspace = true
 kozue-text.workspace = true
 kozue-layout.workspace = true
 kozue-render-svg.workspace = true
+kozue-render-term.workspace = true
 kozue-dsl.workspace = true
 kozue-mermaid.workspace = true
 clap.workspace = true
+
+[dev-dependencies]
+kozue-render-term.workspace = true

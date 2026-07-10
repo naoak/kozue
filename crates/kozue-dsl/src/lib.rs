@@ -844,8 +844,12 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
                 .position(|p| p.end_line == comment.line)
             {
                 stmt_trailing[idx] = Some(comment.text.clone());
+            } else if comment.line == diagram_kw_line && !ast.stmts.is_empty() {
+                // Comment trailing the `diagram ... {` line: attach as leading
+                // comment of the first statement in the body.
+                stmt_leading[0].push(comment.text.clone());
             }
-            // Comments trailing the `diagram ... {` line: discard (we don't reprint them).
+            // (Other trailing comments that don't match any statement are discarded.)
         } else {
             // Standalone: attach as leading comment of the first statement
             // that starts after this comment's line.
@@ -1616,5 +1620,27 @@ mod tests {
             let d2 = parse(&formatted).unwrap_or_else(|e| panic!("{name}: formatted parse: {e:?}"));
             assert_eq!(d1, d2, "{name}: fmt must preserve the parsed IR");
         }
+    }
+
+    // --- M3b follow-up 1: trailing comment on `diagram name {` line ---
+
+    #[test]
+    fn fmt_preserves_trailing_comment_on_diagram_line() {
+        let src = "diagram d { // opening comment\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let formatted = format_kzd(src).expect("should format");
+        assert!(
+            formatted.contains("// opening comment"),
+            "trailing comment on diagram line should be preserved: {formatted}"
+        );
+        // The comment should appear before the first statement.
+        let comment_pos = formatted.find("// opening comment").unwrap();
+        let a_pos = formatted.find("a: \"A\"").unwrap();
+        assert!(
+            comment_pos < a_pos,
+            "comment should appear before the first statement: {formatted}"
+        );
+        // Idempotent.
+        let formatted2 = format_kzd(&formatted).expect("second format");
+        assert_eq!(formatted, formatted2, "fmt must be idempotent");
     }
 }

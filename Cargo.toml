@@ -5,6 +5,7 @@ members = [
     "crates/kozue-text",
     "crates/kozue-layout",
     "crates/kozue-render-svg",
+    "crates/kozue-render-term",
     "crates/kozue-dsl",
     "crates/kozue-mermaid",
     "crates/kozue-cli",
@@ -20,6 +21,7 @@ kozue-ir = { path = "crates/kozue-ir" }
 kozue-text = { path = "crates/kozue-text" }
 kozue-layout = { path = "crates/kozue-layout" }
 kozue-render-svg = { path = "crates/kozue-render-svg" }
+kozue-render-term = { path = "crates/kozue-render-term" }
 kozue-dsl = { path = "crates/kozue-dsl" }
 kozue-mermaid = { path = "crates/kozue-mermaid" }
 
@@ -30,3 +32,4 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
+unicode-width = "0.1"
