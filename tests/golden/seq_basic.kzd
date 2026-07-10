@@ -1,0 +1,10 @@
+diagram seq {
+  participant web: "Webブラウザ"
+  participant api: "APIサーバ"
+  participant db: "DB"
+  web -> api : "POST /login"
+  api -> db : "SELECT user"
+  db --> api : "row"
+  api --> web : "200 OK"
+  api -> api : "セッション生成"
+}

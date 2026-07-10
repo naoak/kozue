@@ -30,6 +30,8 @@ fn compile(src: &str) -> String {
 
 const GOLDEN_CASES: &[&str] = &["chain", "branch", "right", "cycle", "skip", "wide_right"];
 
+const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
+
 #[test]
 fn golden_svgs_match() {
     for name in GOLDEN_CASES {
@@ -209,5 +211,148 @@ fn undeclared_node_is_error() {
     assert!(
         errs.iter().any(|e| e.message.contains("unknown node")),
         "error should mention unknown node, got: {errs:?}"
+    );
+}
+
+#[test]
+fn seq_golden_svgs_match() {
+    for name in SEQ_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let svg_path = golden_dir().join(format!("{name}.svg"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile(&src);
+
+        // Allow regenerating goldens with UPDATE_GOLDEN=1.
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&svg_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                svg_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn seq_rendering_is_deterministic_across_processes() {
+    let kzd = golden_dir().join("seq_minimal.kzd");
+    let bin = env!("CARGO_BIN_EXE_kozue");
+
+    let tmp = std::env::temp_dir();
+    let out1 = tmp.join("kozue_seq_det_test_1.svg");
+    let out2 = tmp.join("kozue_seq_det_test_2.svg");
+
+    let status1 = std::process::Command::new(bin)
+        .args([
+            "render",
+            kzd.to_str().unwrap(),
+            "-o",
+            out1.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (first run)");
+    assert!(status1.success(), "first kozue run failed");
+
+    let status2 = std::process::Command::new(bin)
+        .args([
+            "render",
+            kzd.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (second run)");
+    assert!(status2.success(), "second kozue run failed");
+
+    let svg1 = std::fs::read(&out1).expect("read first output");
+    let svg2 = std::fs::read(&out2).expect("read second output");
+    let _ = std::fs::remove_file(&out1);
+    let _ = std::fs::remove_file(&out2);
+
+    assert_eq!(
+        svg1, svg2,
+        "same input must produce byte-identical SVG across separate process invocations"
+    );
+}
+
+#[test]
+fn unknown_participant_is_error() {
+    let src = "diagram seq {\n  participant a: \"A\"\n  a -> ghost : \"msg\"\n}";
+    let result = kozue_dsl::parse(src);
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("unknown participant")),
+        "error should mention unknown participant, got: {errs:?}"
+    );
+}
+
+#[test]
+fn duplicate_participant_is_error() {
+    let src = "diagram seq {\n  participant a: \"A\"\n  participant a: \"B\"\n}";
+    let result = kozue_dsl::parse(src);
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|e| e.message.contains("duplicate participant")),
+        "error should mention duplicate participant, got: {errs:?}"
+    );
+}
+
+#[test]
+fn mixing_participant_and_node_is_error() {
+    let src = "diagram seq {\n  participant a: \"A\"\n  b: \"B\"\n}";
+    let result = kozue_dsl::parse(src);
+    assert!(result.is_err());
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.message.contains("mix")),
+        "error should mention mixing, got: {errs:?}"
+    );
+}
+
+#[test]
+fn dashed_edge_in_graph_is_error() {
+    let src = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a --> b\n}";
+    let result = kozue_dsl::parse(src);
+    assert!(
+        result.is_err(),
+        "dashed edge in graph diagram must be an error"
+    );
+}
+
+#[test]
+fn seq_long_label_widens_columns() {
+    let src = r#"diagram seq {
+  participant a: "A"
+  participant b: "B"
+  a -> b : "this is a very long message label that should widen the columns"
+}"#;
+    let diagram = kozue_dsl::parse(src).expect("should parse");
+    let scene = kozue_layout::layout(&diagram).expect("should layout");
+
+    let src_short = r#"diagram seq {
+  participant a: "A"
+  participant b: "B"
+  a -> b : "hi"
+}"#;
+    let diagram_short = kozue_dsl::parse(src_short).expect("should parse");
+    let scene_short = kozue_layout::layout(&diagram_short).expect("should layout");
+    assert!(
+        scene.width > scene_short.width,
+        "long label scene ({}) should be wider than short label scene ({})",
+        scene.width,
+        scene_short.width
     );
 }

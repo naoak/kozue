@@ -95,6 +95,11 @@ fn render_path(s: &mut String, p: &Path, indent: &str) {
             s,
             "{indent}<polygon points=\"{pts}\" fill=\"#000000\" stroke=\"none\"/>",
         );
+    } else if p.dashed {
+        let _ = writeln!(
+            s,
+            "{indent}<polyline points=\"{pts}\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1.50\" stroke-dasharray=\"6 4\"/>",
+        );
     } else {
         let _ = writeln!(
             s,

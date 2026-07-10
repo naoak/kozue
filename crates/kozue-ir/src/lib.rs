@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Diagram {
     Graph(GraphDiagram),
+    Sequence(SequenceDiagram),
 }
 
 /// Layout direction for a graph diagram.
@@ -43,6 +44,87 @@ impl GraphDiagram {
             direction,
             nodes: IndexMap::new(),
             edges: Vec::new(),
+        }
+    }
+}
+
+/// A sequence diagram: ordered list of participants and message items.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SequenceDiagram {
+    pub participants: IndexMap<String, Participant>,
+    pub items: Vec<SequenceItem>,
+}
+
+impl SequenceDiagram {
+    pub fn new() -> Self {
+        SequenceDiagram {
+            participants: IndexMap::new(),
+            items: Vec::new(),
+        }
+    }
+}
+
+impl Default for SequenceDiagram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A participant in a sequence diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Participant {
+    pub id: String,
+    pub label: String,
+}
+
+impl Participant {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Participant {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// An item in a sequence diagram body.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SequenceItem {
+    Message(Message),
+}
+
+/// The line style of a sequence message arrow.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LineStyle {
+    Solid,
+    Dashed,
+}
+
+/// A message (arrow) between two participants in a sequence diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Message {
+    pub from: String,
+    pub to: String,
+    pub label: Option<String>,
+    pub line: LineStyle,
+    pub arrow: ArrowType,
+}
+
+impl Message {
+    pub fn new(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        label: Option<String>,
+        line: LineStyle,
+        arrow: ArrowType,
+    ) -> Self {
+        Message {
+            from: from.into(),
+            to: to.into(),
+            label,
+            line,
+            arrow,
         }
     }
 }
@@ -153,6 +235,8 @@ pub struct Path {
     pub points: Vec<(f64, f64)>,
     /// When `true`, the path is closed and filled (e.g. an arrowhead).
     pub filled: bool,
+    /// When `true`, the stroke is rendered as a dashed line.
+    pub dashed: bool,
 }
 
 /// A text run positioned at `(x, y)` with the given alignment, and its

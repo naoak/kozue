@@ -1,0 +1,5 @@
+diagram seq {
+  participant x: "X"
+  participant y: "Y"
+  x -> y : "go"
+}

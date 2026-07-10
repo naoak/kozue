@@ -1,0 +1,8 @@
+diagram seq {
+  participant a: "Alice"
+  participant b: "Bob"
+  a -> b : "hello"
+  b --> a : "reply"
+  a -> a : "think"
+  b --> b : "log"
+}

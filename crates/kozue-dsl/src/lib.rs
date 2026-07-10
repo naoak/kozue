@@ -1,17 +1,26 @@
 //! DSL parser for kozue using chumsky 0.9, with ariadne diagnostics.
 //!
-//! Grammar (M0):
+//! Grammar (M0 + M2a):
 //! ```text
 //! diagram <name> {
 //!   direction down|right
 //!   <id>: "label"
 //!   <a> -> <b> : "label"
 //! }
+//!
+//! diagram <name> {
+//!   participant <id>: "label"
+//!   <a> -> <b> : "label"
+//!   <a> --> <b> : "label"
+//! }
 //! ```
 
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
-use kozue_ir::{ArrowType, Diagram, Direction, Edge, GraphDiagram, Node};
+use kozue_ir::{
+    ArrowType, Diagram, Direction, Edge, GraphDiagram, LineStyle, Message, Node, Participant,
+    SequenceDiagram, SequenceItem,
+};
 
 /// A parsed statement inside a diagram body.
 #[derive(Debug, Clone)]
@@ -23,6 +32,12 @@ enum Stmt {
         label: Option<String>,
     },
     Edge(EdgeStmt),
+    DashedEdge(EdgeStmt),
+    Participant {
+        id: String,
+        id_span: std::ops::Range<usize>,
+        label: Option<String>,
+    },
     DirectionError(std::ops::Range<usize>),
 }
 
@@ -105,7 +120,30 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         )
         .map_with_span(|s, _span| s);
 
-    // Edge: `a -> b` optionally `: "label"`.
+    // participant: `participant id` or `participant id: "label"`
+    let participant = text::keyword("participant")
+        .padded()
+        .ignore_then(ident_spanned())
+        .then(just(':').padded().ignore_then(string_lit()).or_not())
+        .map(|((id, id_span), label)| Stmt::Participant { id, id_span, label });
+
+    // Dashed edge: `a --> b` optionally `: "label"`
+    // IMPORTANT: must be tried BEFORE solid edge `->` so `-->` is not parsed as `->` + `>`
+    let dashed_edge = ident_spanned()
+        .then_ignore(just("-->").padded())
+        .then(ident_spanned())
+        .then(just(':').padded().ignore_then(string_lit()).or_not())
+        .map(|(((from, from_span), (to, to_span)), label)| {
+            Stmt::DashedEdge(EdgeStmt {
+                from,
+                from_span,
+                to,
+                to_span,
+                label,
+            })
+        });
+
+    // Solid edge: `a -> b` optionally `: "label"`.
     let edge = ident_spanned()
         .then_ignore(just("->").padded())
         .then(ident_spanned())
@@ -127,8 +165,8 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .map(|((id, id_span), label)| Stmt::Node { id, id_span, label });
 
     // Order matters: try direction first (consumes keyword without backtrack),
-    // then edge (has `->`) before node.
-    let stmt = direction.or(edge).or(node);
+    // then participant, then dashed_edge (before solid edge!), then edge, then node.
+    let stmt = direction.or(participant).or(dashed_edge).or(edge).or(node);
 
     let body = stmt.repeated().padded();
 
@@ -156,8 +194,60 @@ pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
     build_diagram(ast, src)
 }
 
-/// Semantic pass: assemble the [`GraphDiagram`] and validate references.
+/// Semantic pass: detect diagram kind and dispatch to the appropriate builder.
 fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
+    let has_participant = ast
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::Participant { .. }));
+    let has_node = ast.stmts.iter().any(|s| matches!(s, Stmt::Node { .. }));
+
+    if has_participant && has_node {
+        // Find the first offending node stmt for a good error span.
+        let span = ast
+            .stmts
+            .iter()
+            .find_map(|s| {
+                if let Stmt::Node { id_span, .. } = s {
+                    Some(id_span.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0..src.len());
+        return Err(vec![CompileError {
+            message: "cannot mix `participant` declarations with plain node declarations in the same diagram".to_string(),
+            span,
+        }]);
+    }
+
+    if has_participant {
+        build_sequence_diagram(ast, src)
+    } else {
+        // Graph mode: dashed edges are not allowed.
+        let dashed_err: Vec<CompileError> = ast
+            .stmts
+            .iter()
+            .filter_map(|s| {
+                if let Stmt::DashedEdge(e) = s {
+                    Some(CompileError {
+                        message: "`-->` (dashed edge) is only valid in sequence diagrams; use `->` for graph diagrams".to_string(),
+                        span: e.from_span.start..e.to_span.end,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !dashed_err.is_empty() {
+            return Err(dashed_err);
+        }
+        build_graph_diagram(ast, src)
+    }
+}
+
+/// Build a [`GraphDiagram`] from the AST.
+fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
     let mut direction = Direction::Down;
     let mut graph = GraphDiagram::new(direction);
     let mut errors: Vec<CompileError> = Vec::new();
@@ -193,7 +283,7 @@ fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
                 }
                 graph.nodes.insert(id.clone(), Node::new(id.clone(), label));
             }
-            Stmt::Edge(_) => {}
+            Stmt::Edge(_) | Stmt::DashedEdge(_) | Stmt::Participant { .. } => {}
         }
     }
     graph.direction = direction;
@@ -241,18 +331,122 @@ fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
     }
 }
 
+/// Build a [`SequenceDiagram`] from the AST.
+fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
+    let mut seq = SequenceDiagram::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+
+    // First pass: collect participants; also catch direction statements which
+    // are not valid in sequence diagrams.
+    for stmt in &ast.stmts {
+        match stmt {
+            Stmt::Direction(_, span) => {
+                errors.push(CompileError {
+                    message: "`direction` is not valid in sequence diagrams".to_string(),
+                    span: span.clone(),
+                });
+                continue;
+            }
+            Stmt::DirectionError(span) => {
+                errors.push(CompileError {
+                    message: "expected `down` or `right` after `direction`".to_string(),
+                    span: span.clone(),
+                });
+                continue;
+            }
+            _ => {}
+        }
+        if let Stmt::Participant { id, id_span, label } = stmt {
+            if seq.participants.contains_key(id) {
+                errors.push(CompileError {
+                    message: format!("duplicate participant `{}`", id),
+                    span: id_span.clone(),
+                });
+                continue;
+            }
+            let label = label.clone().unwrap_or_else(|| id.clone());
+            if let Some(err_span) = find_invalid_escape(src, &label, id_span.end) {
+                errors.push(CompileError {
+                    message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                    span: err_span,
+                });
+            }
+            seq.participants
+                .insert(id.clone(), Participant::new(id.clone(), label));
+        }
+    }
+
+    // Second pass: messages (solid and dashed edges).
+    for stmt in &ast.stmts {
+        let (e, line_style) = match stmt {
+            Stmt::Edge(e) => (e, LineStyle::Solid),
+            Stmt::DashedEdge(e) => (e, LineStyle::Dashed),
+            _ => continue,
+        };
+
+        // Validate that both endpoints are declared participants.
+        let mut valid = true;
+        for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
+            if !seq.participants.contains_key(endpoint) {
+                let mut message = format!("unknown participant `{}`", endpoint);
+                if let Some(suggestion) = closest_name(endpoint, seq.participants.keys()) {
+                    message.push_str(&format!(", did you mean `{}`?", suggestion));
+                }
+                errors.push(CompileError {
+                    message,
+                    span: span.clone(),
+                });
+                valid = false;
+            }
+        }
+        if !valid {
+            continue;
+        }
+
+        // Validate escape sequence in label.
+        if let Some(label) = &e.label {
+            if let Some(err_span) = find_invalid_escape(src, label, e.to_span.end) {
+                errors.push(CompileError {
+                    message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                    span: err_span,
+                });
+            }
+        }
+
+        seq.items.push(SequenceItem::Message(Message::new(
+            e.from.clone(),
+            e.to.clone(),
+            e.label.clone(),
+            line_style,
+            ArrowType::Triangle,
+        )));
+    }
+
+    if errors.is_empty() {
+        Ok(Diagram::Sequence(seq))
+    } else {
+        Err(errors)
+    }
+}
+
 /// Check if a string literal (already-parsed content) contains invalid escape
 /// sequences. This is a best-effort check on the raw source.
+///
+/// Scans the source starting at `after` (the byte offset immediately following
+/// the label owner's span), finds the first string literal `"..."` opening
+/// quote, and reports the first invalid `\x` sequence inside it.
+///
+/// Using `after` ensures each label is checked against its own literal only,
+/// avoiding duplicate diagnostics when the same source has multiple labels.
+///
 /// Returns the span of the first invalid `\x` sequence found, or `None`.
-fn find_invalid_escape(src: &str, _label: &str, _after: usize) -> Option<std::ops::Range<usize>> {
-    // We scan the raw source for string literals that contain `\` followed by
-    // a character that is not `"` or `\`. We do this by looking for `"` delimiters.
-    // This is best-effort: we look within the full source for any such pattern.
+fn find_invalid_escape(src: &str, _label: &str, after: usize) -> Option<std::ops::Range<usize>> {
     let bytes = src.as_bytes();
-    let mut i = 0;
+    // Start scanning from `after` to locate the string literal for this label.
+    let mut i = after;
     while i < bytes.len() {
         if bytes[i] == b'"' {
-            // Found a string literal start.
+            // Found the opening quote of the string literal for this label.
             i += 1;
             while i < bytes.len() && bytes[i] != b'"' {
                 if bytes[i] == b'\\' && i + 1 < bytes.len() {
@@ -265,10 +459,10 @@ fn find_invalid_escape(src: &str, _label: &str, _after: usize) -> Option<std::op
                     i += 1;
                 }
             }
-            i += 1; // skip closing `"`
-        } else {
-            i += 1;
+            // End of this string literal — stop scanning (only check one literal).
+            return None;
         }
+        i += 1;
     }
     None
 }
@@ -438,6 +632,113 @@ mod tests {
             err.iter()
                 .any(|e| e.message.contains("invalid escape sequence")),
             "got: {err:?}"
+        );
+    }
+
+    // --- Sequence diagram tests ---
+
+    #[test]
+    fn parses_sequence_diagram() {
+        let src = r#"diagram seq {
+  participant web: "Webブラウザ"
+  participant api: "APIサーバ"
+  web -> api : "POST /login"
+  api --> web : "200 OK"
+}"#;
+        let d = parse(src).expect("should parse");
+        let Diagram::Sequence(s) = d else {
+            panic!("expected Sequence, got {:?}", d)
+        };
+        assert_eq!(s.participants.len(), 2);
+        assert_eq!(s.items.len(), 2);
+        let kozue_ir::SequenceItem::Message(ref m0) = s.items[0] else {
+            panic!()
+        };
+        assert_eq!(m0.line, LineStyle::Solid);
+        let kozue_ir::SequenceItem::Message(ref m1) = s.items[1] else {
+            panic!()
+        };
+        assert_eq!(m1.line, LineStyle::Dashed);
+    }
+
+    #[test]
+    fn sequence_self_message_is_valid() {
+        let src = r#"diagram seq {
+  participant a: "Alice"
+  a -> a : "think"
+}"#;
+        let d = parse(src).expect("self-message in sequence should be valid");
+        let Diagram::Sequence(s) = d else { panic!() };
+        assert_eq!(s.items.len(), 1);
+    }
+
+    // --- Issue 1: direction in sequence diagrams ---
+
+    #[test]
+    fn direction_in_sequence_diagram_is_error() {
+        let src = r#"diagram seq {
+  participant a: "A"
+  direction down
+  a -> a
+}"#;
+        let err = parse(src).expect_err("direction in sequence should be an error");
+        assert!(
+            err.iter().any(|e| e
+                .message
+                .contains("`direction` is not valid in sequence diagrams")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn direction_bogus_in_sequence_diagram_is_error() {
+        let src = r#"diagram seq {
+  participant a: "A"
+  direction bogus
+  a -> a
+}"#;
+        let err = parse(src).expect_err("bogus direction in sequence should be an error");
+        assert!(
+            err.iter()
+                .any(|e| e.message.contains("expected `down` or `right`")),
+            "got: {err:?}"
+        );
+    }
+
+    // --- Issue 2: escape error deduplication ---
+
+    #[test]
+    fn invalid_escape_reported_once_per_label_not_multiplied() {
+        // Two participants, only the second has an invalid escape.
+        // The bug would report the second participant's error twice (once for each label processed).
+        let src = "diagram seq {\n  participant a: \"ok\"\n  participant b: \"bad \\n escape\"\n}";
+        let err = parse(src).expect_err("invalid escape should be an error");
+        let escape_errors: Vec<_> = err
+            .iter()
+            .filter(|e| e.message.contains("invalid escape sequence"))
+            .collect();
+        assert_eq!(
+            escape_errors.len(),
+            1,
+            "expected exactly 1 invalid-escape error, got {}: {err:?}",
+            escape_errors.len()
+        );
+    }
+
+    #[test]
+    fn multiple_labels_with_independent_escapes() {
+        // Each node with an invalid escape should produce exactly one error.
+        let src = "diagram d { a: \"bad \\n\" b: \"also \\t bad\" a -> b }";
+        let err = parse(src).expect_err("invalid escapes should be errors");
+        let escape_errors: Vec<_> = err
+            .iter()
+            .filter(|e| e.message.contains("invalid escape sequence"))
+            .collect();
+        assert_eq!(
+            escape_errors.len(),
+            2,
+            "expected exactly 2 invalid-escape errors (one per label), got {}: {err:?}",
+            escape_errors.len()
         );
     }
 }

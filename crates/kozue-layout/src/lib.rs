@@ -19,6 +19,7 @@ mod coords;
 mod cycle;
 mod layering;
 mod ordering;
+mod sequence;
 
 use indexmap::IndexMap;
 use kozue_ir::{Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign};
@@ -68,6 +69,7 @@ impl Placed {
 pub fn layout(diagram: &Diagram) -> Result<Scene, LayoutError> {
     match diagram {
         Diagram::Graph(g) => layout_graph(g),
+        Diagram::Sequence(s) => Ok(sequence::layout_sequence(s)),
         _ => Err(LayoutError {
             message: "unsupported diagram variant".to_string(),
         }),
@@ -276,6 +278,7 @@ fn push_edge(
     items.push(SceneItem::Path(Path {
         points: line_pts,
         filled: false,
+        dashed: false,
     }));
 
     // Arrowhead triangle at `end`, pointing along (ux, uy).
@@ -292,6 +295,7 @@ fn push_edge(
     items.push(SceneItem::Path(Path {
         points: vec![end, left, right],
         filled: true,
+        dashed: false,
     }));
 
     if let Some(label) = label {
@@ -670,5 +674,131 @@ mod tests {
         g.edges.push(edge("a", "a"));
         let result = layout(&Diagram::Graph(g));
         assert!(result.is_err(), "self loops must be rejected");
+    }
+
+    // --- Sequence diagram layout tests ---
+
+    fn seq_participant(seq: &mut kozue_ir::SequenceDiagram, id: &str, label: &str) {
+        seq.participants
+            .insert(id.into(), kozue_ir::Participant::new(id, label));
+    }
+
+    fn seq_message(seq: &mut kozue_ir::SequenceDiagram, from: &str, to: &str, label: Option<&str>) {
+        seq.items
+            .push(kozue_ir::SequenceItem::Message(kozue_ir::Message::new(
+                from,
+                to,
+                label.map(str::to_string),
+                kozue_ir::LineStyle::Solid,
+                kozue_ir::ArrowType::Triangle,
+            )));
+    }
+
+    /// Issue 4b: Single participant with 0 messages must not panic and must
+    /// produce a valid Scene (positive or zero dimensions).
+    #[test]
+    fn single_participant_no_messages_does_not_panic() {
+        let mut seq = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq, "solo", "Solo");
+        let scene = layout(&Diagram::Sequence(seq)).expect("layout must not fail");
+        // Scene must have some positive dimensions (at least the header box).
+        assert!(
+            scene.width > 0.0 && scene.height > 0.0,
+            "scene must have positive bounds: {}x{}",
+            scene.width,
+            scene.height
+        );
+    }
+
+    /// Issue 4a: A long label on a -> c (2-gap span) must push out the middle
+    /// column b. This exercises the fixup loop in col_x computation.
+    #[test]
+    fn long_spanning_label_pushes_middle_column() {
+        // Build a narrow version (short label a -> c).
+        let mut seq_narrow = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq_narrow, "a", "A");
+        seq_participant(&mut seq_narrow, "b", "B");
+        seq_participant(&mut seq_narrow, "c", "C");
+        seq_message(&mut seq_narrow, "a", "c", Some("hi"));
+        let scene_narrow = layout(&Diagram::Sequence(seq_narrow)).expect("narrow layout");
+
+        // Build a wide version (very long label a -> c).
+        let mut seq_wide = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq_wide, "a", "A");
+        seq_participant(&mut seq_wide, "b", "B");
+        seq_participant(&mut seq_wide, "c", "C");
+        seq_message(
+            &mut seq_wide,
+            "a",
+            "c",
+            Some("this is a very very very long spanning message label"),
+        );
+        let scene_wide = layout(&Diagram::Sequence(seq_wide)).expect("wide layout");
+
+        assert!(
+            scene_wide.width > scene_narrow.width,
+            "long spanning label ({}px wide) should push out the scene width beyond narrow ({} vs {})",
+            0.0,
+            scene_wide.width,
+            scene_narrow.width,
+        );
+    }
+
+    /// Issue 3: A long self-message label on a middle column must push the next
+    /// column's header to the right so they don't overlap.
+    #[test]
+    fn long_self_message_label_does_not_overlap_next_column_header() {
+        // Three participants: a, b (has long self-message), c.
+        // b is in the middle; the self-message label on b should force c rightward.
+        let mut seq_long = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq_long, "a", "A");
+        seq_participant(&mut seq_long, "b", "B");
+        seq_participant(&mut seq_long, "c", "C");
+        // A very long self-message on b.
+        seq_message(
+            &mut seq_long,
+            "b",
+            "b",
+            Some("an extremely long self message label that should push column c to the right"),
+        );
+        let scene_long = layout(&Diagram::Sequence(seq_long)).expect("layout with long self-msg");
+
+        // Same diagram with a short self-message on b.
+        let mut seq_short = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq_short, "a", "A");
+        seq_participant(&mut seq_short, "b", "B");
+        seq_participant(&mut seq_short, "c", "C");
+        seq_message(&mut seq_short, "b", "b", Some("x"));
+        let scene_short =
+            layout(&Diagram::Sequence(seq_short)).expect("layout with short self-msg");
+
+        // The long self-message must widen the scene (c column pushed rightward).
+        assert!(
+            scene_long.width > scene_short.width,
+            "long self-message (col b) must widen scene: {} vs {} (short)",
+            scene_long.width,
+            scene_short.width,
+        );
+
+        // Also verify that in the long case, c's header left edge is to the right
+        // of b's header right edge (no overlap between adjacent header boxes).
+        let header_rects_long: Vec<&Rect> = scene_long
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                SceneItem::Rect(r) => Some(r),
+                _ => None,
+            })
+            .take(3)
+            .collect();
+        assert_eq!(header_rects_long.len(), 3, "expected 3 header rects");
+        let b_right = header_rects_long[1].x + header_rects_long[1].width;
+        let c_left = header_rects_long[2].x;
+        assert!(
+            c_left >= b_right - 1e-6,
+            "c's header left ({}) must not overlap b's header right ({})",
+            c_left,
+            b_right
+        );
     }
 }
