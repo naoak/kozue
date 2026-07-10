@@ -40,6 +40,21 @@ enum Command {
         #[arg(long)]
         lang: Option<Lang>,
     },
+    /// Format a kozue DSL (.kzd) file into canonical normal form.
+    ///
+    /// By default the file is rewritten in-place (only if changed).
+    /// Use `--check` for CI (exits non-zero if the file would change) or
+    /// `--stdout` to write the result to stdout instead of the file.
+    Fmt {
+        /// Input `.kzd` file.
+        input: PathBuf,
+        /// Exit non-zero if the file is not already in canonical form (no rewrite).
+        #[arg(long)]
+        check: bool,
+        /// Write formatted output to stdout instead of rewriting the file.
+        #[arg(long)]
+        stdout: bool,
+    },
     /// Display compatibility information for a supported language frontend.
     Compat {
         /// Language to show compatibility for.
@@ -61,6 +76,11 @@ fn main() -> ExitCode {
             lang,
         } => run_render(&input, output, lang),
         Command::Check { input, lang } => run_check(&input, lang),
+        Command::Fmt {
+            input,
+            check,
+            stdout,
+        } => run_fmt(&input, check, stdout),
         Command::Compat { language } => run_compat(language),
     }
 }
@@ -151,6 +171,62 @@ fn run_check(input: &Path, lang: Option<Lang>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(()) => ExitCode::FAILURE,
+    }
+}
+
+fn run_fmt(input: &Path, check: bool, stdout: bool) -> ExitCode {
+    // Reject Mermaid files immediately.
+    match input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("mmd") | Some("mermaid") => {
+            eprintln!("error: fmt is not supported for Mermaid input");
+            return ExitCode::FAILURE;
+        }
+        _ => {}
+    }
+
+    let src = match std::fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {}", input.display(), e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let filename = input.to_string_lossy().to_string();
+
+    let formatted = match kozue_dsl::format_kzd(&src) {
+        Ok(s) => s,
+        Err(errs) => {
+            kozue_dsl::report_errors(&filename, &src, &errs);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if stdout {
+        print!("{}", formatted);
+        return ExitCode::SUCCESS;
+    }
+
+    if check {
+        if formatted == src {
+            ExitCode::SUCCESS
+        } else {
+            eprintln!("error: {} is not formatted", input.display());
+            ExitCode::FAILURE
+        }
+    } else {
+        // In-place rewrite (only if changed).
+        if formatted != src {
+            if let Err(e) = std::fs::write(input, &formatted) {
+                eprintln!("error: cannot write {}: {}", input.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        ExitCode::SUCCESS
     }
 }
 

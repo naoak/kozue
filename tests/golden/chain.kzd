@@ -1,10 +1,13 @@
+// Chain diagram: three nodes in sequence
 diagram chain {
-  direction down
+  direction down  // top-to-bottom layout
 
+  // nodes
   a: "入力"
   b: "変換"
   c: "出力"
 
+  // edges
   a -> b : "read"
   b -> c : "write"
 }
