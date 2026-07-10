@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 179.20 357.60" width="179.20" height="357.60">
+  <rect x="-20.00" y="-20.00" width="179.20" height="357.60" fill="#ffffff"/>
+  <rect x="38.00" y="0.00" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="74.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">開始</text>
+  <rect x="0.00" y="139.20" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="36.00" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">処理</text>
+  <rect x="38.00" y="278.40" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="74.00" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">確認</text>
+  <polyline points="68.65,39.20 43.98,129.55" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="41.35,139.20 39.16,128.24 48.81,130.87" fill="#000000" stroke="none"/>
+  <polyline points="41.35,178.40 66.02,268.75" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="68.65,278.40 61.19,270.07 70.84,267.44" fill="#000000" stroke="none"/>
+  <polyline points="79.35,278.40 112.00,158.80 81.98,48.85" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="79.35,39.20 86.81,47.53 77.16,50.16" fill="#000000" stroke="none"/>
+  <text x="112.00" y="154.80" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">やり直し</text>
+</svg>

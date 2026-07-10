@@ -1,0 +1,14 @@
+diagram wide_right {
+  direction right
+  s: "入力"
+  a: "解析A"
+  b: "解析B"
+  c: "解析C"
+  t: "統合"
+  s -> a
+  s -> b
+  s -> c
+  a -> t
+  b -> t
+  c -> t : "集約"
+}

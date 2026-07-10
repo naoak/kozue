@@ -1,17 +1,32 @@
-//! Naive layered layout for M0.
+//! Sugiyama-style layered layout (M1).
 //!
-//! Nodes are assigned to layers by the longest-path method, arranged within
-//! each layer in declaration order with equal spacing. No crossing reduction.
+//! Pipeline:
+//! 1. Cycle removal ([`cycle`]): DFS back edges are reversed for layout only;
+//!    arrows are drawn in the original direction.
+//! 2. Layer assignment ([`layering`]): longest-path method on the DAG.
+//! 3. Dummy insertion + crossing reduction ([`ordering`]): long edges are
+//!    split with dummy nodes; barycenter sweeps reduce crossings.
+//! 4. Coordinate assignment ([`coords`]): mean-neighbor heuristic with exact
+//!    overlap resolution (pool-adjacent-violators).
+//!
+//! Edges are routed as polylines through their dummy nodes. The layout also
+//! owns the scene bounds ([`bounds`]): items are normalized so the top-left
+//! corner is the origin and `Scene.width`/`Scene.height` cover everything,
+//! including text, edge labels and arrowheads.
+
+mod bounds;
+mod coords;
+mod cycle;
+mod layering;
+mod ordering;
 
 use indexmap::IndexMap;
-use kozue_ir::{
-    Diagram, Direction, Edge, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign,
-};
+use kozue_ir::{Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign};
 
 const FONT_SIZE: f64 = 16.0;
 const PAD_X: f64 = 20.0;
 const PAD_Y: f64 = 10.0;
-const NODE_GAP: f64 = 40.0; // gap between nodes within a layer
+const NODE_GAP: f64 = 40.0; // minimum clearance between nodes within a layer
 const LAYER_GAP_DOWN: f64 = 100.0;
 const LAYER_GAP_RIGHT: f64 = 150.0;
 const ARROW_LEN: f64 = 10.0;
@@ -48,8 +63,8 @@ impl Placed {
 
 /// Lay out a semantic [`Diagram`] into a [`Scene`].
 ///
-/// Returns `Err` if the diagram contains cycles (not yet supported) or other
-/// structural problems.
+/// Cycles are supported: back edges are reversed internally for layering and
+/// drawn in their original direction. Self-loop edges are rejected.
 pub fn layout(diagram: &Diagram) -> Result<Scene, LayoutError> {
     match diagram {
         Diagram::Graph(g) => layout_graph(g),
@@ -67,15 +82,36 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         .enumerate()
         .map(|(i, id)| (id.as_str(), i))
         .collect();
+    let n = ids.len();
 
-    let layers = assign_layers(g, &ids, &index_of)?;
-    let max_layer = layers.iter().copied().max().unwrap_or(0);
-
-    // Group node indices by layer, preserving declaration order.
-    let mut by_layer: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
-    for (i, &l) in layers.iter().enumerate() {
-        by_layer[l].push(i);
+    // Resolve edge endpoints (skipping edges with unknown endpoints, which
+    // the DSL already rejects).
+    let mut raw_edges: Vec<(usize, usize)> = Vec::new();
+    let mut edge_ids: Vec<usize> = Vec::new();
+    for (i, e) in g.edges.iter().enumerate() {
+        let (Some(&from), Some(&to)) = (index_of.get(e.from.as_str()), index_of.get(e.to.as_str()))
+        else {
+            continue;
+        };
+        if from == to {
+            return Err(LayoutError {
+                message: format!("self-loop edges are not supported ({} -> {})", e.from, e.to),
+            });
+        }
+        raw_edges.push((from, to));
+        edge_ids.push(i);
     }
+
+    // Phase 1: cycle removal (layout-internal reversal of back edges).
+    let reversed = cycle::greedy_reversed(n, &raw_edges);
+    let acyclic: Vec<(usize, usize)> = raw_edges
+        .iter()
+        .zip(&reversed)
+        .map(|(&(u, v), &r)| if r { (v, u) } else { (u, v) })
+        .collect();
+
+    // Phase 2: layer assignment (longest path).
+    let layers = layering::longest_path(n, &acyclic);
 
     // Measure each node's box.
     let boxes: Vec<(f64, f64, String)> = ids
@@ -87,84 +123,75 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         })
         .collect();
 
-    // The cross-axis extent of the widest layer, used to center layers.
-    //
-    // For direction=down  (horizontal_axis=false): cross axis is X,
-    //   nodes are arranged side-by-side horizontally → sum widths.
-    // For direction=right (horizontal_axis=true):  cross axis is Y,
-    //   nodes are stacked vertically → sum heights.
-    let cross_extent = |layer: &[usize], horizontal: bool| -> f64 {
-        if layer.is_empty() {
-            return 0.0;
-        }
-        let sizes: f64 = layer
-            .iter()
-            .map(|&i| if horizontal { boxes[i].1 } else { boxes[i].0 })
-            .sum();
-        sizes + NODE_GAP * (layer.len() as f64 - 1.0)
-    };
-
-    let horizontal_axis = g.direction == Direction::Right;
-    let max_cross = by_layer
+    // Map (width, height) onto (cross, main) axes per direction.
+    let horizontal = g.direction == Direction::Right;
+    let sizes: Vec<(f64, f64)> = boxes
         .iter()
-        .map(|layer| cross_extent(layer, horizontal_axis))
-        .fold(0.0_f64, f64::max);
+        .map(|&(w, h, _)| if horizontal { (h, w) } else { (w, h) })
+        .collect();
 
-    // Place nodes.
-    let mut placed: Vec<Placed> = Vec::with_capacity(ids.len());
-    for _ in 0..ids.len() {
-        placed.push(Placed {
-            x: 0.0,
-            y: 0.0,
-            width: 0.0,
-            height: 0.0,
-            label: String::new(),
-        });
+    // Phase 3: dummy insertion + barycenter crossing reduction.
+    let mut lay = ordering::build(n, &sizes, &layers, &acyclic);
+    ordering::reduce_crossings(&mut lay);
+
+    // Phase 4: coordinate assignment.
+    let cross = coords::assign_cross(&lay, NODE_GAP);
+
+    // Main-axis positions per layer.
+    let nl = lay.order.len();
+    let layer_gap = if horizontal {
+        LAYER_GAP_RIGHT
+    } else {
+        LAYER_GAP_DOWN
+    };
+    let mut layer_start = vec![0.0f64; nl];
+    let mut layer_size = vec![0.0f64; nl];
+    let mut cursor = 0.0f64;
+    for l in 0..nl {
+        let size = lay.order[l]
+            .iter()
+            .map(|&v| lay.main_size[v])
+            .fold(0.0f64, f64::max);
+        layer_start[l] = cursor;
+        layer_size[l] = size;
+        cursor += size + layer_gap;
     }
 
-    let mut main_cursor = 0.0_f64;
-    for layer in &by_layer {
-        // Determine per-layer main-axis size (max along main axis).
-        let layer_main = layer
-            .iter()
-            .map(|&i| {
-                if horizontal_axis {
-                    boxes[i].0
-                } else {
-                    boxes[i].1
-                }
-            })
-            .fold(0.0_f64, f64::max);
-
-        let extent = cross_extent(layer, horizontal_axis);
-        let mut cross_cursor = (max_cross - extent) / 2.0;
-
-        for &i in layer {
-            let (bw, bh, ref label) = boxes[i];
-            let (x, y) = if horizontal_axis {
-                // direction right: main axis is x, cross axis is y.
-                (main_cursor, cross_cursor)
+    // Place real nodes.
+    let placed: Vec<Placed> = (0..n)
+        .map(|v| {
+            let (w, h, ref label) = boxes[v];
+            let main = layer_start[lay.layer_of[v]];
+            let (x, y) = if horizontal {
+                (main, cross[v] - h / 2.0)
             } else {
-                // direction down: main axis is y, cross axis is x.
-                (cross_cursor, main_cursor)
+                (cross[v] - w / 2.0, main)
             };
-            placed[i] = Placed {
+            Placed {
                 x,
                 y,
-                width: bw,
-                height: bh,
+                width: w,
+                height: h,
                 label: label.clone(),
-            };
-            cross_cursor += if horizontal_axis { bh } else { bw } + NODE_GAP;
-        }
+            }
+        })
+        .collect();
 
-        let gap = if horizontal_axis {
-            LAYER_GAP_RIGHT
+    // Routing point for any lnode: real node center or dummy point at the
+    // middle of its layer band.
+    let point_of = |v: usize| -> (f64, f64) {
+        if lay.is_dummy[v] {
+            let l = lay.layer_of[v];
+            let main = layer_start[l] + layer_size[l] / 2.0;
+            if horizontal {
+                (main, cross[v])
+            } else {
+                (cross[v], main)
+            }
         } else {
-            LAYER_GAP_DOWN
-        };
-        main_cursor += layer_main + gap;
-    }
+            placed[v].center()
+        }
+    };
 
     // Build scene items: nodes first, then edges.
     let mut items: Vec<SceneItem> = Vec::new();
@@ -190,27 +217,26 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         }));
     }
 
-    for edge in &g.edges {
-        push_edge(&mut items, edge, &placed, &index_of);
+    for (k, &(from, to)) in raw_edges.iter().enumerate() {
+        // Chain points in layout (acyclic) orientation; restore the original
+        // direction so the arrowhead points along the declared edge.
+        let mut pts: Vec<(f64, f64)> = lay.chains[k].iter().map(|&v| point_of(v)).collect();
+        if reversed[k] {
+            pts.reverse();
+        }
+        let edge = &g.edges[edge_ids[k]];
+        push_edge(
+            &mut items,
+            pts,
+            &placed[from],
+            &placed[to],
+            edge.label.as_deref(),
+        );
     }
 
-    // Compute bounds from placed node boxes.
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for p in &placed {
-        min_x = min_x.min(p.x);
-        min_y = min_y.min(p.y);
-        max_x = max_x.max(p.x + p.width);
-        max_y = max_y.max(p.y + p.height);
-    }
-    if !min_x.is_finite() {
-        min_x = 0.0;
-        min_y = 0.0;
-        max_x = 0.0;
-        max_y = 0.0;
-    }
+    // Normalize: layout owns the bounds, including text and arrowheads.
+    let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&items);
+    bounds::translate(&mut items, -min_x, -min_y);
 
     Ok(Scene {
         width: max_x - min_x,
@@ -219,119 +245,93 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
     })
 }
 
-/// Assign a layer to each node using the longest path from any source.
+/// Draw one edge as a polyline through its bend points, with an arrowhead at
+/// the target end and an optional label at the polyline midpoint.
 ///
-/// Returns `Err` if a cycle is detected.
-fn assign_layers(
-    g: &GraphDiagram,
-    ids: &[&String],
-    index_of: &IndexMap<&str, usize>,
-) -> Result<Vec<usize>, LayoutError> {
-    let n = ids.len();
-    // Adjacency + in-degree.
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut indeg: Vec<usize> = vec![0; n];
-    for e in &g.edges {
-        if let (Some(&from), Some(&to)) =
-            (index_of.get(e.from.as_str()), index_of.get(e.to.as_str()))
-        {
-            adj[from].push(to);
-            indeg[to] += 1;
-        }
-    }
-
-    // Kahn topological order (declaration order among ready nodes).
-    let mut layer = vec![0usize; n];
-    let mut remaining = indeg.clone();
-    let mut processed = vec![false; n];
-    let mut count = 0;
-    while count < n {
-        // Pick lowest-index node with remaining in-degree 0.
-        let mut picked = None;
-        for i in 0..n {
-            if !processed[i] && remaining[i] == 0 {
-                picked = Some(i);
-                break;
-            }
-        }
-        let Some(u) = picked else {
-            // Cycle detected: not yet supported.
-            return Err(LayoutError {
-                message: "cycles are not yet supported (planned for M1)".to_string(),
-            });
-        };
-        processed[u] = true;
-        count += 1;
-        for &v in &adj[u] {
-            if layer[u] + 1 > layer[v] {
-                layer[v] = layer[u] + 1;
-            }
-            remaining[v] -= 1;
-        }
-    }
-
-    Ok(layer)
-}
-
+/// `pts` are the edge's routing points in original edge orientation:
+/// `[from_center, bends.., to_center]` (length >= 2).
 fn push_edge(
     items: &mut Vec<SceneItem>,
-    edge: &Edge,
-    placed: &[Placed],
-    index_of: &IndexMap<&str, usize>,
+    mut pts: Vec<(f64, f64)>,
+    from: &Placed,
+    to: &Placed,
+    label: Option<&str>,
 ) {
-    let (Some(&fi), Some(&ti)) = (
-        index_of.get(edge.from.as_str()),
-        index_of.get(edge.to.as_str()),
-    ) else {
-        return;
-    };
-    let from = &placed[fi];
-    let to = &placed[ti];
-    let (fx, fy) = from.center();
-    let (tx, ty) = to.center();
+    let last = pts.len() - 1;
+    // Clip the endpoints to the node borders.
+    pts[0] = clip_to_rect(from, pts[1].0, pts[1].1);
+    let end = clip_to_rect(to, pts[last - 1].0, pts[last - 1].1);
+    pts[last] = end;
 
-    // Clip endpoints to the box borders.
-    let start = clip_to_rect(from, tx, ty);
-    let end = clip_to_rect(to, fx, fy);
-
-    // Pull the line back so the tip of the arrow sits on the border.
-    let dx = end.0 - start.0;
-    let dy = end.1 - start.1;
+    // Pull the final segment back so the tip of the arrow sits on the border.
+    let dx = end.0 - pts[last - 1].0;
+    let dy = end.1 - pts[last - 1].1;
     let len = (dx * dx + dy * dy).sqrt().max(1e-6);
     let ux = dx / len;
     let uy = dy / len;
     let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
 
+    let mut line_pts = pts.clone();
+    line_pts[last] = line_end;
     items.push(SceneItem::Path(Path {
-        points: vec![start, line_end],
+        points: line_pts,
         filled: false,
     }));
 
     // Arrowhead triangle at `end`, pointing along (ux, uy).
-    let base = line_end;
     let px = -uy; // perpendicular
     let py = ux;
-    let left = (base.0 + px * ARROW_HALF_W, base.1 + py * ARROW_HALF_W);
-    let right = (base.0 - px * ARROW_HALF_W, base.1 - py * ARROW_HALF_W);
+    let left = (
+        line_end.0 + px * ARROW_HALF_W,
+        line_end.1 + py * ARROW_HALF_W,
+    );
+    let right = (
+        line_end.0 - px * ARROW_HALF_W,
+        line_end.1 - py * ARROW_HALF_W,
+    );
     items.push(SceneItem::Path(Path {
         points: vec![end, left, right],
         filled: true,
     }));
 
-    if let Some(label) = &edge.label {
-        let mx = (start.0 + end.0) / 2.0;
-        let my = (start.1 + end.1) / 2.0;
+    if let Some(label) = label {
+        let (mx, my) = polyline_midpoint(&pts);
         let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
         items.push(SceneItem::Text(Text {
             x: mx,
             y: my - 4.0,
             size: FONT_SIZE * 0.85,
             align: TextAlign::Middle,
-            content: label.clone(),
+            content: label.to_string(),
             text_width: tw,
             text_height: th,
         }));
     }
+}
+
+/// The point at half the arc length of a polyline.
+fn polyline_midpoint(pts: &[(f64, f64)]) -> (f64, f64) {
+    let total: f64 = pts
+        .windows(2)
+        .map(|w| {
+            let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum();
+    if total < 1e-9 {
+        return pts[0];
+    }
+    let mut remaining = total / 2.0;
+    for w in pts.windows(2) {
+        let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+        let seg = (dx * dx + dy * dy).sqrt();
+        if seg >= remaining {
+            let t = remaining / seg.max(1e-9);
+            return (w[0].0 + dx * t, w[0].1 + dy * t);
+        }
+        remaining -= seg;
+    }
+    *pts.last().unwrap()
 }
 
 /// Return the point on the rectangle border of `p` along the ray from the
@@ -363,28 +363,55 @@ fn clip_to_rect(p: &Placed, tx: f64, ty: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{ArrowType, Node};
+    use kozue_ir::{ArrowType, Edge, Node};
 
     fn node(id: &str, label: &str) -> Node {
         Node::new(id, label)
     }
 
-    #[test]
-    fn chain_layers_increase() {
-        let mut g = GraphDiagram::new(Direction::Down);
-        g.nodes.insert("a".into(), node("a", "A"));
-        g.nodes.insert("b".into(), node("b", "B"));
-        g.nodes.insert("c".into(), node("c", "C"));
-        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
-        g.edges.push(Edge::new("b", "c", None, ArrowType::Triangle));
-        let ids: Vec<&String> = g.nodes.keys().collect();
-        let index_of: IndexMap<&str, usize> = ids
+    fn edge(from: &str, to: &str) -> Edge {
+        Edge::new(from, to, None, ArrowType::Triangle)
+    }
+
+    /// Node rectangles in declaration order (edge paths are not rects).
+    fn rects(scene: &Scene) -> Vec<&Rect> {
+        scene
+            .items
             .iter()
-            .enumerate()
-            .map(|(i, id)| (id.as_str(), i))
-            .collect();
-        let layers = assign_layers(&g, &ids, &index_of).expect("no cycle");
-        assert_eq!(layers, vec![0, 1, 2]);
+            .filter_map(|i| match i {
+                SceneItem::Rect(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn open_paths(scene: &Scene) -> Vec<&Path> {
+        scene
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                SceneItem::Path(p) if !p.filled => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn filled_paths(scene: &Scene) -> Vec<&Path> {
+        scene
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                SceneItem::Path(p) if p.filled => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn overlaps(a: &Rect, b: &Rect) -> bool {
+        a.x < b.x + b.width - 1e-6
+            && b.x < a.x + a.width - 1e-6
+            && a.y < b.y + b.height - 1e-6
+            && b.y < a.y + a.height - 1e-6
     }
 
     #[test]
@@ -392,24 +419,21 @@ mod tests {
         let mut g = GraphDiagram::new(Direction::Down);
         g.nodes.insert("a".into(), node("a", "A"));
         g.nodes.insert("b".into(), node("b", "B"));
-        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
-        let scene = layout(&Diagram::Graph(g)).expect("no cycle");
+        g.edges.push(edge("a", "b"));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
         assert!(scene.width > 0.0);
         assert!(scene.height > 0.0);
     }
 
-    /// direction=down で同一層に複数ノードが並ぶ場合の cross_extent
-    /// (cross軸=X方向) は幅の和+GAP になること。
+    /// direction=down で同一層に複数ノードが並ぶ場合、cross軸=X方向に
+    /// 幅の和+GAP 以上の広がりを持つこと。
     #[test]
     fn cross_extent_down_multi_node_layer() {
-        // Two nodes with no edges: both end up in layer 0.
         let mut g = GraphDiagram::new(Direction::Down);
         g.nodes.insert("a".into(), node("a", "Alpha"));
         g.nodes.insert("b".into(), node("b", "Beta"));
         // No edges → both in layer 0.
-        let scene = layout(&Diagram::Graph(g)).expect("no cycle");
-        // With direction=down, cross axis is X. Two nodes side by side.
-        // The scene width must be > width of a single node.
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
         let (single_w, _) = kozue_text::measure("Alpha", FONT_SIZE);
         let single_box_w = single_w + 2.0 * PAD_X;
         assert!(
@@ -420,17 +444,15 @@ mod tests {
         );
     }
 
-    /// direction=right で同一層に複数ノードが並ぶ場合の cross_extent
-    /// (cross軸=Y方向) は高さの和+GAP になること。
+    /// direction=right で同一層に複数ノードが並ぶ場合、cross軸=Y方向に
+    /// 高さの和+GAP 以上の広がりを持つこと (M0の軸バグ回帰防止)。
     #[test]
     fn cross_extent_right_multi_node_layer() {
-        // Two nodes with no edges: both end up in layer 0.
         let mut g = GraphDiagram::new(Direction::Right);
         g.nodes.insert("a".into(), node("a", "Alpha"));
         g.nodes.insert("b".into(), node("b", "Beta"));
         // No edges → both in layer 0.
-        let scene = layout(&Diagram::Graph(g)).expect("no cycle");
-        // With direction=right, cross axis is Y. Two nodes stacked vertically.
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
         let (_, single_h) = kozue_text::measure("Alpha", FONT_SIZE);
         let single_box_h = single_h + 2.0 * PAD_Y;
         assert!(
@@ -441,19 +463,212 @@ mod tests {
         );
     }
 
+    /// サイクルはレイアウト内部で一時反転され、矢印は元の向きで描かれる。
     #[test]
-    fn cycle_returns_error() {
+    fn two_node_cycle_keeps_original_arrow_directions() {
         let mut g = GraphDiagram::new(Direction::Down);
         g.nodes.insert("a".into(), node("a", "A"));
         g.nodes.insert("b".into(), node("b", "B"));
-        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
-        g.edges.push(Edge::new("b", "a", None, ArrowType::Triangle));
-        let result = layout(&Diagram::Graph(g));
-        assert!(result.is_err());
-        let msg = result.unwrap_err().message;
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "a"));
+        let scene = layout(&Diagram::Graph(g)).expect("cycles must be supported");
+
+        let rects = rects(&scene);
+        assert_eq!(rects.len(), 2);
+        let (ra, rb) = (rects[0], rects[1]); // declaration order: a, b
+        assert!(ra.y < rb.y, "a should be in the upper layer");
+
+        // Arrowhead tips (first point of each filled triangle), in edge order.
+        let arrows = filled_paths(&scene);
+        assert_eq!(arrows.len(), 2);
+        let tip_ab = arrows[0].points[0];
+        let tip_ba = arrows[1].points[0];
+        // a -> b: tip on b's top border. b -> a: tip on a's bottom border.
         assert!(
-            msg.contains("cycles are not yet supported"),
-            "unexpected error: {msg}"
+            (tip_ab.1 - rb.y).abs() < 1e-6,
+            "a->b arrow must point into b (tip y {} vs b top {})",
+            tip_ab.1,
+            rb.y
         );
+        assert!(
+            (tip_ba.1 - (ra.y + ra.height)).abs() < 1e-6,
+            "b->a arrow must point back into a (tip y {} vs a bottom {})",
+            tip_ba.1,
+            ra.y + ra.height
+        );
+    }
+
+    #[test]
+    fn three_node_cycle_layouts() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        for id in ["a", "b", "c"] {
+            g.nodes.insert(id.into(), node(id, id));
+        }
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "c"));
+        g.edges.push(edge("c", "a"));
+        let scene = layout(&Diagram::Graph(g)).expect("cycles must be supported");
+        assert_eq!(rects(&scene).len(), 3);
+        assert_eq!(filled_paths(&scene).len(), 3);
+    }
+
+    /// 3層以上またぐエッジはダミーノード経由の折れ線になる。
+    #[test]
+    fn long_edge_is_routed_as_polyline() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        for id in ["a", "b", "c", "d"] {
+            g.nodes.insert(id.into(), node(id, id));
+        }
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "c"));
+        g.edges.push(edge("c", "d"));
+        g.edges.push(edge("a", "d"));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+        let paths = open_paths(&scene);
+        assert_eq!(paths.len(), 4);
+        // Edge order matches declaration order; a->d spans 3 layers → 2 bends.
+        assert_eq!(paths[3].points.len(), 4, "a->d must bend at two dummies");
+        for p in &paths[0..3] {
+            assert_eq!(p.points.len(), 2, "adjacent-layer edges stay straight");
+        }
+    }
+
+    /// 直線チェーンはまっすぐ一列になる (direction down)。
+    #[test]
+    fn straight_chain_is_collinear_down() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "short"));
+        g.nodes.insert("b".into(), node("b", "a much longer label"));
+        g.nodes.insert("c".into(), node("c", "mid"));
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "c"));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+        let rects = rects(&scene);
+        let cx0 = rects[0].x + rects[0].width / 2.0;
+        for r in &rects[1..] {
+            let cx = r.x + r.width / 2.0;
+            assert!((cx - cx0).abs() < 1e-6, "chain must be vertically aligned");
+        }
+    }
+
+    /// 直線チェーンはまっすぐ一列になる (direction right)。
+    #[test]
+    fn straight_chain_is_collinear_right() {
+        let mut g = GraphDiagram::new(Direction::Right);
+        g.nodes.insert("a".into(), node("a", "short"));
+        g.nodes.insert("b".into(), node("b", "a much longer label"));
+        g.nodes.insert("c".into(), node("c", "mid"));
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "c"));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+        let rects = rects(&scene);
+        let cy0 = rects[0].y + rects[0].height / 2.0;
+        for r in &rects[1..] {
+            let cy = r.y + r.height / 2.0;
+            assert!(
+                (cy - cy0).abs() < 1e-6,
+                "chain must be horizontally aligned"
+            );
+        }
+    }
+
+    /// 固定の複雑な図でノードbox同士が重ならないこと (両方向)。
+    fn complex_graph(direction: Direction) -> GraphDiagram {
+        let mut g = GraphDiagram::new(direction);
+        for (id, label) in [
+            ("a", "Entry point"),
+            ("b", "Branch"),
+            ("c", "Compute"),
+            ("d", "Dispatch"),
+            ("e", "Evaluate"),
+            ("f", "Finish"),
+            ("g", "Guard"),
+            ("h", "Handle"),
+        ] {
+            g.nodes.insert(id.into(), node(id, label));
+        }
+        for (from, to) in [
+            ("a", "b"),
+            ("a", "c"),
+            ("a", "d"),
+            ("b", "e"),
+            ("c", "f"),
+            ("d", "e"),
+            ("b", "f"),
+            ("e", "g"),
+            ("f", "g"),
+            ("a", "g"), // long edge
+            ("g", "h"),
+            ("h", "b"), // cycle back
+            ("d", "h"), // long edge
+        ] {
+            g.edges.push(edge(from, to));
+        }
+        g
+    }
+
+    #[test]
+    fn complex_graph_has_no_node_overlap_down() {
+        let scene = layout(&Diagram::Graph(complex_graph(Direction::Down))).expect("layout");
+        let rects = rects(&scene);
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                assert!(
+                    !overlaps(rects[i], rects[j]),
+                    "nodes {i} and {j} overlap: {:?} vs {:?}",
+                    (rects[i].x, rects[i].y, rects[i].width, rects[i].height),
+                    (rects[j].x, rects[j].y, rects[j].width, rects[j].height),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn complex_graph_has_no_node_overlap_right() {
+        let scene = layout(&Diagram::Graph(complex_graph(Direction::Right))).expect("layout");
+        let rects = rects(&scene);
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                assert!(
+                    !overlaps(rects[i], rects[j]),
+                    "nodes {i} and {j} overlap in direction=right"
+                );
+            }
+        }
+    }
+
+    /// Scene.width/height はテキスト・ラベル・矢印を含む正規化済み境界。
+    #[test]
+    fn bounds_are_normalized_and_cover_everything() {
+        let mut g = GraphDiagram::new(Direction::Right);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.edges.push(Edge::new(
+            "a",
+            "b",
+            Some("a very long edge label indeed".to_string()),
+            ArrowType::Triangle,
+        ));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+        let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&scene.items);
+        assert!(
+            min_x.abs() < 1e-9 && min_y.abs() < 1e-9,
+            "origin normalized"
+        );
+        assert!((max_x - scene.width).abs() < 1e-9);
+        assert!((max_y - scene.height).abs() < 1e-9);
+        // The long edge label must widen the scene beyond the node boxes.
+        let rects = rects(&scene);
+        let node_max_y = rects.iter().map(|r| r.y + r.height).fold(0.0f64, f64::max);
+        assert!(scene.height >= node_max_y);
+    }
+
+    #[test]
+    fn self_loop_is_error() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.edges.push(edge("a", "a"));
+        let result = layout(&Diagram::Graph(g));
+        assert!(result.is_err(), "self loops must be rejected");
     }
 }

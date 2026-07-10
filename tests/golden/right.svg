@@ -1,14 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.72 588.00 79.92" width="588.00" height="79.92">
-  <rect x="-20.00" y="-20.72" width="588.00" height="79.92" fill="#ffffff"/>
-  <rect x="0.00" y="0.00" width="88.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
-  <text x="44.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">ソース</text>
-  <rect x="238.00" y="0.00" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
-  <text x="274.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">処理</text>
-  <rect x="460.00" y="0.00" width="88.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
-  <text x="504.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">出力先</text>
-  <polyline points="88.00,19.60 228.00,19.60" fill="none" stroke="#000000" stroke-width="1.50"/>
-  <polygon points="238.00,19.60 228.00,24.60 228.00,14.60" fill="#000000" stroke="none"/>
-  <polyline points="310.00,19.60 450.00,19.60" fill="none" stroke="#000000" stroke-width="1.50"/>
-  <polygon points="460.00,19.60 450.00,24.60 450.00,14.60" fill="#000000" stroke="none"/>
-  <text x="385.00" y="15.60" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">送信</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 588.00 79.92" width="588.00" height="79.92">
+  <rect x="-20.00" y="-20.00" width="588.00" height="79.92" fill="#ffffff"/>
+  <rect x="0.00" y="0.72" width="88.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="44.00" y="25.92" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">ソース</text>
+  <rect x="238.00" y="0.72" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="274.00" y="25.92" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">処理</text>
+  <rect x="460.00" y="0.72" width="88.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="504.00" y="25.92" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">出力先</text>
+  <polyline points="88.00,20.32 228.00,20.32" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="238.00,20.32 228.00,25.32 228.00,15.32" fill="#000000" stroke="none"/>
+  <polyline points="310.00,20.32 450.00,20.32" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="460.00,20.32 450.00,25.32 450.00,15.32" fill="#000000" stroke="none"/>
+  <text x="385.00" y="16.32" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">送信</text>
 </svg>

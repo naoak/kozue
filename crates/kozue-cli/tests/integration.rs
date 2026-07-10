@@ -28,7 +28,7 @@ fn compile(src: &str) -> String {
     kozue_render_svg::render(&scene)
 }
 
-const GOLDEN_CASES: &[&str] = &["chain", "branch", "right"];
+const GOLDEN_CASES: &[&str] = &["chain", "branch", "right", "cycle", "skip", "wide_right"];
 
 #[test]
 fn golden_svgs_match() {
@@ -103,6 +103,101 @@ fn rendering_is_deterministic_across_processes() {
         svg1, svg2,
         "same input must produce byte-identical SVG across separate process invocations"
     );
+}
+
+/// Numeric validity of every golden layout: node boxes stay inside the
+/// normalized scene bounds and never overlap each other.
+#[test]
+fn golden_layouts_are_well_formed() {
+    use kozue_ir::{Scene, SceneItem};
+
+    fn node_rects(scene: &Scene) -> Vec<&kozue_ir::Rect> {
+        scene
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                SceneItem::Rect(r) => Some(r),
+                _ => None,
+            })
+            .collect()
+    }
+
+    for name in GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let src = std::fs::read_to_string(&kzd).unwrap();
+        let diagram = kozue_dsl::parse(&src).expect("golden input must parse");
+        let scene = kozue_layout::layout(&diagram).expect("golden layout must succeed");
+        let rects = node_rects(&scene);
+
+        // Every node box lies inside the scene bounds.
+        for r in &rects {
+            assert!(
+                r.x >= -1e-6
+                    && r.y >= -1e-6
+                    && r.x + r.width <= scene.width + 1e-6
+                    && r.y + r.height <= scene.height + 1e-6,
+                "{name}: node box out of scene bounds"
+            );
+        }
+
+        // No two node boxes overlap.
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                let (a, b) = (rects[i], rects[j]);
+                let disjoint = a.x + a.width <= b.x + 1e-6
+                    || b.x + b.width <= a.x + 1e-6
+                    || a.y + a.height <= b.y + 1e-6
+                    || b.y + b.height <= a.y + 1e-6;
+                assert!(disjoint, "{name}: node boxes {i} and {j} overlap");
+            }
+        }
+    }
+}
+
+/// Straight chains stay collinear after the Sugiyama pipeline.
+#[test]
+fn golden_chains_are_collinear() {
+    use kozue_ir::SceneItem;
+
+    // chain.kzd: direction down → all node centers share one X.
+    let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let scene = kozue_layout::layout(&diagram).unwrap();
+    let centers_x: Vec<f64> = scene
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            SceneItem::Rect(r) => Some(r.x + r.width / 2.0),
+            _ => None,
+        })
+        .collect();
+    assert!(centers_x.len() >= 2);
+    for cx in &centers_x[1..] {
+        assert!(
+            (cx - centers_x[0]).abs() < 1e-6,
+            "chain.kzd nodes must be vertically aligned"
+        );
+    }
+
+    // right.kzd: direction right → all node centers share one Y.
+    let src = std::fs::read_to_string(golden_dir().join("right.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let scene = kozue_layout::layout(&diagram).unwrap();
+    let centers_y: Vec<f64> = scene
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            SceneItem::Rect(r) => Some(r.y + r.height / 2.0),
+            _ => None,
+        })
+        .collect();
+    assert!(centers_y.len() >= 2);
+    for cy in &centers_y[1..] {
+        assert!(
+            (cy - centers_y[0]).abs() < 1e-6,
+            "right.kzd nodes must be horizontally aligned"
+        );
+    }
 }
 
 #[test]
