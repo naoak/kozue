@@ -1,0 +1,10 @@
+diagram chain {
+  direction down
+
+  a: "入力"
+  b: "変換"
+  c: "出力"
+
+  a -> b : "read"
+  b -> c : "write"
+}

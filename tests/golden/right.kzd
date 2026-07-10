@@ -1,0 +1,10 @@
+diagram pipeline {
+  direction right
+
+  src:  "ソース"
+  mid:  "処理"
+  dst:  "出力先"
+
+  src -> mid
+  mid -> dst : "送信"
+}

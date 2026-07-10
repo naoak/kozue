@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 240.00 357.60" width="240.00" height="357.60">
+  <rect x="-20.00" y="-20.00" width="240.00" height="357.60" fill="#ffffff"/>
+  <rect x="64.00" y="0.00" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="100.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">開始</text>
+  <rect x="0.00" y="139.20" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="36.00" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">はい</text>
+  <rect x="112.00" y="139.20" width="88.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="156.00" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">いいえ</text>
+  <rect x="64.00" y="278.40" width="72.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="100.00" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">終了</text>
+  <polyline points="90.99,39.20 49.19,130.11" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="45.01,139.20 44.65,128.03 53.73,132.20" fill="#000000" stroke="none"/>
+  <text x="68.00" y="85.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">OK</text>
+  <polyline points="107.89,39.20 144.38,129.92" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="148.11,139.20 139.74,131.79 149.02,128.06" fill="#000000" stroke="none"/>
+  <text x="128.00" y="85.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">NG</text>
+  <polyline points="45.01,178.40 86.81,269.31" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="90.99,278.40 82.27,271.40 91.35,267.23" fill="#000000" stroke="none"/>
+  <polyline points="148.11,178.40 111.62,269.12" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="107.89,278.40 106.98,267.26 116.26,270.99" fill="#000000" stroke="none"/>
+</svg>

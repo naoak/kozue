@@ -1,0 +1,13 @@
+diagram branch {
+  direction down
+
+  start: "開始"
+  yes:   "はい"
+  no:    "いいえ"
+  end:   "終了"
+
+  start -> yes : "OK"
+  start -> no : "NG"
+  yes -> end
+  no -> end
+}

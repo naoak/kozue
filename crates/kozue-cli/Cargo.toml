@@ -1,0 +1,17 @@
+[package]
+name = "kozue-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kozue"
+path = "src/main.rs"
+
+[dependencies]
+kozue-ir.workspace = true
+kozue-text.workspace = true
+kozue-layout.workspace = true
+kozue-render-svg.workspace = true
+kozue-dsl.workspace = true
+clap.workspace = true

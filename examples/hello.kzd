@@ -1,0 +1,10 @@
+diagram flow {
+  direction down
+
+  start: "開始"
+  proc:  "処理する"
+  end:   "終了"
+
+  start -> proc : "次へ"
+  proc -> end
+}
