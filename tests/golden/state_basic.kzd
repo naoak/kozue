@@ -1,0 +1,14 @@
+// Basic state diagram: traffic light
+diagram state_basic {
+  // states
+  state idle: "Idle"
+  state active: "Active"
+  state done: "Done"
+
+  // transitions
+  [*] -> idle
+  idle -> active : "start"
+  active -> active : "tick"
+  active -> done : "finish"
+  done -> [*]
+}

@@ -19,8 +19,8 @@
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, Edge, GraphDiagram, LineStyle, Message, Node, Participant,
-    SequenceDiagram, SequenceItem,
+    ArrowType, Diagram, Direction, Edge, Endpoint, GraphDiagram, LineStyle, Message, Node,
+    Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -44,6 +44,13 @@ enum Stmt {
         label_lit_span: Option<std::ops::Range<usize>>,
     },
     DirectionError(std::ops::Range<usize>),
+    StateDecl {
+        id: String,
+        id_span: std::ops::Range<usize>,
+        label: Option<String>,
+        label_lit_span: Option<std::ops::Range<usize>>,
+    },
+    StateTransition(StateTransStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +62,29 @@ struct EdgeStmt {
     label: Option<String>,
     /// Span of the label string literal (including quotes), if present.
     label_lit_span: Option<std::ops::Range<usize>>,
+}
+
+/// A state endpoint: either `[*]` or a state ID.
+#[derive(Debug, Clone)]
+enum RawEndpoint {
+    Pseudo,
+    Id(String),
+}
+
+#[derive(Debug, Clone)]
+struct StateTransStmt {
+    from: RawEndpoint,
+    from_span: std::ops::Range<usize>,
+    to: RawEndpoint,
+    to_span: std::ops::Range<usize>,
+    label: Option<String>,
+    label_lit_span: Option<std::ops::Range<usize>>,
+    /// True if written with `-->` (dashed). Dashed transitions are not valid in
+    /// state diagrams; we parse them anyway so `build_state_diagram` can emit an
+    /// explicit diagnostic instead of a generic syntax error.
+    dashed: bool,
+    /// Span of the arrow token, for the dashed-not-supported diagnostic.
+    arrow_span: std::ops::Range<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +201,110 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             }
         });
 
+    // state declaration: `state id` or `state id: "label"`
+    let state_decl = text::keyword("state")
+        .padded_by(kzd_ws())
+        .ignore_then(ident_spanned())
+        .then(
+            just(':')
+                .padded_by(kzd_ws())
+                .ignore_then(string_lit_spanned())
+                .or_not(),
+        )
+        .map(|((id, id_span), label_opt)| {
+            let (label, label_lit_span) = match label_opt {
+                Some((l, s)) => (Some(l), Some(s)),
+                None => (None, None),
+            };
+            Stmt::StateDecl {
+                id,
+                id_span,
+                label,
+                label_lit_span,
+            }
+        });
+
+    // [*] pseudostate token parser — captures span before padding.
+    let pseudo_inner = just('[')
+        .then(just('*'))
+        .then(just(']'))
+        .map_with_span(|_, span| (RawEndpoint::Pseudo, span));
+    let pseudo = pseudo_inner.padded_by(kzd_ws());
+
+    let id_endpoint = ident_spanned().map(|(id, span)| (RawEndpoint::Id(id), span));
+
+    // Arrow between pseudostate endpoints: solid `->` or dashed `-->`. We accept
+    // the dashed form so a wrong `[*] --> s` yields an explicit "dashed edges are
+    // not supported" diagnostic rather than a generic syntax error. `-->` must be
+    // tried first since it shares the `->` suffix.
+    let state_arrow = just("-->")
+        .to(true)
+        .or(just("->").to(false))
+        .map_with_span(|dashed, span| (dashed, span))
+        .padded_by(kzd_ws());
+
+    // Transitions with [*] on the left: `[*] -> id` or `[*] -> [*]`
+    let pseudo_clone = pseudo.clone();
+    let id_ep_clone = id_endpoint.clone();
+    let state_trans_pseudo_left = pseudo
+        .clone()
+        .then(state_arrow.clone())
+        .then(pseudo_clone.or(id_ep_clone))
+        .then(
+            just(':')
+                .padded_by(kzd_ws())
+                .ignore_then(string_lit_spanned())
+                .or_not(),
+        )
+        .map(
+            |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::StateTransition(StateTransStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    dashed,
+                    arrow_span,
+                })
+            },
+        );
+
+    // Transitions with [*] on the right: `id -> [*]`
+    let state_trans_pseudo_right = id_endpoint
+        .clone()
+        .then(state_arrow.clone())
+        .then(pseudo.clone())
+        .then(
+            just(':')
+                .padded_by(kzd_ws())
+                .ignore_then(string_lit_spanned())
+                .or_not(),
+        )
+        .map(
+            |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::StateTransition(StateTransStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    dashed,
+                    arrow_span,
+                })
+            },
+        );
+
     // Dashed edge: `a --> b` optionally `: "label"`
     let dashed_edge = ident_spanned()
         .then_ignore(just("-->").padded_by(kzd_ws()))
@@ -242,7 +376,14 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             }
         });
 
-    let stmt = direction.or(participant).or(dashed_edge).or(edge).or(node);
+    let stmt = direction
+        .or(participant)
+        .or(state_decl)
+        .or(state_trans_pseudo_left)
+        .or(state_trans_pseudo_right)
+        .or(dashed_edge)
+        .or(edge)
+        .or(node);
     let body = stmt.repeated().padded_by(kzd_ws());
 
     text::keyword("diagram")
@@ -285,6 +426,38 @@ fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
         .iter()
         .any(|s| matches!(s, Stmt::Participant { .. }));
     let has_node = ast.stmts.iter().any(|s| matches!(s, Stmt::Node { .. }));
+    let has_state = ast
+        .stmts
+        .iter()
+        .any(|s| matches!(s, Stmt::StateDecl { .. } | Stmt::StateTransition(_)));
+
+    // A representative span for the state-diagram signal — a `state` declaration
+    // or a pseudostate/`[*]` transition. Points the mix diagnostic at the actual
+    // offending syntax rather than the whole source. (chumsky char offsets; never
+    // `src.len()` in bytes, which diverges on non-ASCII input.)
+    let state_signal_span = || {
+        ast.stmts.iter().find_map(|s| match s {
+            Stmt::StateDecl { id_span, .. } => Some(id_span.clone()),
+            Stmt::StateTransition(t) => Some(t.from_span.clone()),
+            _ => None,
+        })
+    };
+
+    if has_state && has_participant {
+        return Err(vec![CompileError {
+            message: "cannot mix state-diagram syntax with `participant` declarations".to_string(),
+            span: state_signal_span().unwrap_or(0..0),
+            secondary: None,
+        }]);
+    }
+
+    if has_state && has_node {
+        return Err(vec![CompileError {
+            message: "cannot mix state-diagram syntax with plain node declarations".to_string(),
+            span: state_signal_span().unwrap_or(0..0),
+            secondary: None,
+        }]);
+    }
 
     if has_participant && has_node {
         let span = ast
@@ -305,7 +478,9 @@ fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
         }]);
     }
 
-    if has_participant {
+    if has_state {
+        build_state_diagram(ast, src)
+    } else if has_participant {
         build_sequence_diagram(ast, src)
     } else {
         let dashed_err: Vec<CompileError> = ast
@@ -382,7 +557,11 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     .nodes
                     .insert(id.clone(), Node::new(id.clone(), label_str));
             }
-            Stmt::Edge(_) | Stmt::DashedEdge(_) | Stmt::Participant { .. } => {}
+            Stmt::Edge(_)
+            | Stmt::DashedEdge(_)
+            | Stmt::Participant { .. }
+            | Stmt::StateDecl { .. }
+            | Stmt::StateTransition(_) => {}
         }
     }
     graph.direction = direction;
@@ -434,6 +613,175 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
 
     if errors.is_empty() {
         Ok(Diagram::Graph(graph))
+    } else {
+        Err(errors)
+    }
+}
+
+/// Build a [`StateDiagram`] from the AST.
+fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
+    let mut diagram = StateDiagram::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+    let mut first_decl_spans: std::collections::BTreeMap<String, std::ops::Range<usize>> =
+        std::collections::BTreeMap::new();
+
+    // Process explicit state declarations.
+    for stmt in &ast.stmts {
+        match stmt {
+            Stmt::Direction(_, span) => {
+                errors.push(CompileError {
+                    message: "`direction` is not valid in state diagrams".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::DirectionError(span) => {
+                errors.push(CompileError {
+                    message: "expected `down` or `right` after `direction`".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::DashedEdge(e) => {
+                errors.push(CompileError {
+                    message: "dashed edges (`-->`) are not supported in state diagrams; use `->` for transitions".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+            }
+            Stmt::StateDecl {
+                id,
+                id_span,
+                label,
+                label_lit_span,
+            } => {
+                if diagram.states.contains_key(id) {
+                    errors.push(CompileError {
+                        message: format!("duplicate state declaration `{}`", id),
+                        span: id_span.clone(),
+                        secondary: first_decl_spans
+                            .get(id)
+                            .map(|s| (s.clone(), "first declared here".to_string())),
+                    });
+                    continue;
+                }
+                let label_str = label.clone().unwrap_or_else(|| id.clone());
+                if let Some(lit_span) = label_lit_span {
+                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+                        errors.push(CompileError {
+                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                            span: err_span,
+                            secondary: None,
+                        });
+                    }
+                }
+                first_decl_spans.insert(id.clone(), id_span.clone());
+                diagram
+                    .states
+                    .insert(id.clone(), State::new(id.clone(), label_str));
+            }
+            _ => {}
+        }
+    }
+
+    // Process transitions.
+    for stmt in &ast.stmts {
+        match stmt {
+            Stmt::StateTransition(t) => {
+                // Dashed transitions are not valid in state diagrams. We parsed
+                // the `-->` form only to give this explicit diagnostic.
+                if t.dashed {
+                    errors.push(CompileError {
+                        message: "dashed edges (`-->`) are not supported in state diagrams; use `->` for transitions".to_string(),
+                        span: t.arrow_span.clone(),
+                        secondary: None,
+                    });
+                    continue;
+                }
+
+                let from_ep = match &t.from {
+                    RawEndpoint::Pseudo => Endpoint::Initial,
+                    RawEndpoint::Id(id) => Endpoint::State(id.clone()),
+                };
+                let to_ep = match &t.to {
+                    RawEndpoint::Pseudo => Endpoint::Final,
+                    RawEndpoint::Id(id) => Endpoint::State(id.clone()),
+                };
+
+                // Validate: [*] -> [*] makes no sense.
+                if matches!(from_ep, Endpoint::Initial) && matches!(to_ep, Endpoint::Final) {
+                    errors.push(CompileError {
+                        message: "`[*] -> [*]` is not valid; initial pseudostate cannot transition directly to final pseudostate".to_string(),
+                        span: t.from_span.start..t.to_span.end,
+                        secondary: None,
+                    });
+                    continue;
+                }
+
+                // Auto-declare referenced state IDs.
+                if let Endpoint::State(id) = &from_ep {
+                    if !diagram.states.contains_key(id) {
+                        diagram
+                            .states
+                            .insert(id.clone(), State::new(id.clone(), id.clone()));
+                    }
+                }
+                if let Endpoint::State(id) = &to_ep {
+                    if !diagram.states.contains_key(id) {
+                        diagram
+                            .states
+                            .insert(id.clone(), State::new(id.clone(), id.clone()));
+                    }
+                }
+
+                if let Some(lit_span) = &t.label_lit_span {
+                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+                        errors.push(CompileError {
+                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                            span: err_span,
+                            secondary: None,
+                        });
+                    }
+                }
+
+                diagram
+                    .transitions
+                    .push(Transition::new(from_ep, to_ep, t.label.clone()));
+            }
+            Stmt::Edge(e) => {
+                // In a state diagram, plain `id -> id` edges are treated as state transitions.
+                let from_ep = Endpoint::State(e.from.clone());
+                let to_ep = Endpoint::State(e.to.clone());
+
+                if !diagram.states.contains_key(&e.from) {
+                    diagram
+                        .states
+                        .insert(e.from.clone(), State::new(e.from.clone(), e.from.clone()));
+                }
+                if !diagram.states.contains_key(&e.to) {
+                    diagram
+                        .states
+                        .insert(e.to.clone(), State::new(e.to.clone(), e.to.clone()));
+                }
+                if let Some(lit_span) = &e.label_lit_span {
+                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+                        errors.push(CompileError {
+                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                            span: err_span,
+                            secondary: None,
+                        });
+                    }
+                }
+                diagram
+                    .transitions
+                    .push(Transition::new(from_ep, to_ep, e.label.clone()));
+            }
+            _ => continue,
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(Diagram::State(diagram))
     } else {
         Err(errors)
     }
@@ -888,7 +1236,10 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         .iter()
         .enumerate()
         .filter_map(|(i, s)| {
-            if matches!(s, Stmt::Node { .. } | Stmt::Participant { .. }) {
+            if matches!(
+                s,
+                Stmt::Node { .. } | Stmt::Participant { .. } | Stmt::StateDecl { .. }
+            ) {
                 Some(i)
             } else {
                 None
@@ -901,7 +1252,10 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         .iter()
         .enumerate()
         .filter_map(|(i, s)| {
-            if matches!(s, Stmt::Edge(_) | Stmt::DashedEdge(_)) {
+            if matches!(
+                s,
+                Stmt::Edge(_) | Stmt::DashedEdge(_) | Stmt::StateTransition(_)
+            ) {
                 Some(i)
             } else {
                 None
@@ -1023,6 +1377,26 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
                 .unwrap_or(e.to_span.end);
             (e.from_span.start, end)
         }
+        Stmt::StateDecl {
+            id_span,
+            label_lit_span,
+            ..
+        } => {
+            let end = label_lit_span
+                .as_ref()
+                .map(|s| s.end)
+                .unwrap_or(id_span.end);
+            (id_span.start, end)
+        }
+        Stmt::StateTransition(t) => {
+            let end = t
+                .label_lit_span
+                .as_ref()
+                .map(|s| s.end)
+                .unwrap_or(t.to_span.end);
+            let start = t.from_span.start.min(t.to_span.start);
+            (start, end)
+        }
     }
 }
 
@@ -1041,6 +1415,13 @@ fn format_decl_stmt(stmt: &Stmt) -> String {
                 format!("participant {}: {}", id, format_string_lit(label_str))
             } else {
                 format!("participant {}", id)
+            }
+        }
+        Stmt::StateDecl { id, label, .. } => {
+            if let Some(label_str) = label {
+                format!("state {}: {}", id, format_string_lit(label_str))
+            } else {
+                format!("state {}", id)
             }
         }
         _ => String::new(),
@@ -1062,6 +1443,26 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
                 format!("{} --> {} : {}", e.from, e.to, format_string_lit(label_str))
             } else {
                 format!("{} --> {}", e.from, e.to)
+            }
+        }
+        Stmt::StateTransition(t) => {
+            let from_str = match &t.from {
+                RawEndpoint::Pseudo => "[*]".to_string(),
+                RawEndpoint::Id(id) => id.clone(),
+            };
+            let to_str = match &t.to {
+                RawEndpoint::Pseudo => "[*]".to_string(),
+                RawEndpoint::Id(id) => id.clone(),
+            };
+            if let Some(label_str) = &t.label {
+                format!(
+                    "{} -> {} : {}",
+                    from_str,
+                    to_str,
+                    format_string_lit(label_str)
+                )
+            } else {
+                format!("{} -> {}", from_str, to_str)
             }
         }
         _ => String::new(),
@@ -1597,8 +1998,8 @@ mod tests {
             .collect();
         kzd_files.sort();
         assert!(
-            kzd_files.len() >= 9,
-            "expected at least 9 golden .kzd files, found {}",
+            kzd_files.len() >= 10,
+            "expected at least 10 golden .kzd files, found {}",
             kzd_files.len()
         );
 
@@ -1642,5 +2043,159 @@ mod tests {
         // Idempotent.
         let formatted2 = format_kzd(&formatted).expect("second format");
         assert_eq!(formatted, formatted2, "fmt must be idempotent");
+    }
+
+    // --- M7a: State diagram tests ---
+
+    #[test]
+    fn parses_state_diagram_basic() {
+        let src = r#"diagram traffic {
+  state idle: "Idle"
+  state active: "Active"
+  [*] -> idle
+  idle -> active : "start"
+  active -> idle : "stop"
+  active -> [*]
+}"#;
+        let d = parse(src).expect("should parse");
+        let Diagram::State(s) = d else {
+            panic!("expected State, got {:?}", d)
+        };
+        assert_eq!(s.states.len(), 2);
+        assert_eq!(s.transitions.len(), 4);
+        assert_eq!(s.states["idle"].label, "Idle");
+    }
+
+    #[test]
+    fn state_auto_declaration() {
+        let src = r#"diagram d {
+  [*] -> foo
+  foo -> bar
+  bar -> [*]
+}"#;
+        let d = parse(src).expect("should parse");
+        let Diagram::State(s) = d else { panic!() };
+        assert!(s.states.contains_key("foo"));
+        assert!(s.states.contains_key("bar"));
+    }
+
+    #[test]
+    fn state_self_transition() {
+        let src = r#"diagram d {
+  state s: "S"
+  [*] -> s
+  s -> s : "loop"
+}"#;
+        let d = parse(src).expect("should parse");
+        let Diagram::State(sd) = d else { panic!() };
+        assert_eq!(sd.transitions.len(), 2);
+        let self_t = sd.transitions.iter().find(|t| {
+            matches!(&t.from, Endpoint::State(id) if id == "s")
+                && matches!(&t.to, Endpoint::State(id) if id == "s")
+        });
+        assert!(self_t.is_some(), "self transition should be present");
+    }
+
+    #[test]
+    fn state_with_explicit_label() {
+        let src = r#"diagram d {
+  state waiting: "Waiting for input"
+  [*] -> waiting
+}"#;
+        let d = parse(src).expect("should parse");
+        let Diagram::State(s) = d else { panic!() };
+        assert_eq!(s.states["waiting"].label, "Waiting for input");
+    }
+
+    #[test]
+    fn state_direction_is_error() {
+        let src = r#"diagram d {
+  state s: "S"
+  direction down
+  [*] -> s
+}"#;
+        let err = parse(src).expect_err("direction in state diagram should be error");
+        assert!(
+            err.iter().any(|e| e
+                .message
+                .contains("`direction` is not valid in state diagrams")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn state_dashed_edge_is_error() {
+        let src = r#"diagram d {
+  state a: "A"
+  state b: "B"
+  [*] -> a
+  a --> b
+}"#;
+        let err = parse(src).expect_err("dashed edge in state diagram should be error");
+        assert!(
+            err.iter().any(|e| e.message.contains("dashed edges")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn state_dashed_pseudo_transition_is_explicit_error() {
+        // Regression: `[*] --> s` / `s --> [*]` must yield the explicit
+        // "dashed edges" diagnostic, not a generic syntax error.
+        for src in ["diagram d {\n  [*] --> s\n}", "diagram d {\n  s --> [*]\n}"] {
+            let err = parse(src).expect_err("dashed pseudo transition should error");
+            assert!(
+                err.iter().any(|e| e.message.contains("dashed edges")),
+                "src {src:?} got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn state_mix_error_points_at_transition_not_whole_source() {
+        // Regression: when the state signal is only a `[*]` transition (no
+        // `state` decl), the mix diagnostic must point at the transition, not
+        // span the whole source, and must use char (not byte) offsets.
+        let src = "diagram d {\n  participant p\n  [*] -> s\n}";
+        let err = parse(src).expect_err("mixing participant with state should error");
+        let e = &err[0];
+        assert!(e.message.contains("state-diagram syntax"), "got: {err:?}");
+        // The span must be a small slice (the `[*]`), not the entire document.
+        assert!(
+            e.span.end - e.span.start < src.chars().count(),
+            "span should be narrow, got {:?}",
+            e.span
+        );
+    }
+
+    #[test]
+    fn fmt_state_diagram_idempotent() {
+        let src = r#"diagram traffic {
+  state idle: "Idle"
+  state active: "Active"
+
+  [*] -> idle
+  idle -> active : "start"
+  active -> [*]
+}"#;
+        let formatted = format_kzd(src).expect("should format");
+        let formatted2 = format_kzd(&formatted).expect("second format should succeed");
+        assert_eq!(formatted, formatted2, "fmt must be idempotent");
+    }
+
+    #[test]
+    fn fmt_state_semantic_preservation() {
+        let src = r#"diagram traffic {
+  state idle: "Idle"
+  state active: "Active"
+
+  [*] -> idle
+  idle -> active : "start"
+  active -> [*]
+}"#;
+        let formatted = format_kzd(src).expect("should format");
+        let d1 = parse(src).expect("original should parse");
+        let d2 = parse(&formatted).expect("formatted should parse");
+        assert_eq!(d1, d2, "fmt must preserve state diagram semantics");
     }
 }

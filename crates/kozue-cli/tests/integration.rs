@@ -973,3 +973,116 @@ fn png_rendering_is_deterministic_across_processes() {
         "CLI PNG output must match the committed branch.png golden"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M7a: State diagram golden tests
+// ---------------------------------------------------------------------------
+
+const STATE_GOLDEN_CASES: &[&str] = &["state_basic"];
+
+fn compile_state(src: &str) -> String {
+    let diagram = kozue_dsl::parse(src).expect("state golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("state golden layout must succeed");
+    kozue_render_svg::render(&scene)
+}
+
+#[test]
+fn state_golden_svgs_match() {
+    for name in STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let svg_path = golden_dir().join(format!("{name}.svg"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_state(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&svg_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                svg_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn state_golden_pngs_match() {
+    for name in STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let png_path = golden_dir().join(format!("{name}.png"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = {
+            let diagram = kozue_dsl::parse(&src).expect("state golden input must parse");
+            let scene = kozue_layout::layout(&diagram).expect("state golden layout must succeed");
+            kozue_render_png::render(&scene).expect("state golden PNG render must succeed")
+        };
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&png_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read(&png_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                png_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "golden PNG mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn state_golden_term_match() {
+    for name in STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let txt_path = golden_dir().join(format!("{name}.txt"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = {
+            let diagram = kozue_dsl::parse(&src).expect("state golden input must parse");
+            let scene = kozue_layout::layout(&diagram).expect("state golden layout must succeed");
+            kozue_render_term::render(&scene)
+        };
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&txt_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&txt_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                txt_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "term golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn state_rendering_is_deterministic() {
+    let kzd = golden_dir().join("state_basic.kzd");
+    let src = std::fs::read_to_string(&kzd).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let scene1 = kozue_layout::layout(&diagram).unwrap();
+    let scene2 = kozue_layout::layout(&diagram).unwrap();
+    let svg1 = kozue_render_svg::render(&scene1);
+    let svg2 = kozue_render_svg::render(&scene2);
+    assert_eq!(svg1, svg2, "state rendering must be deterministic");
+}

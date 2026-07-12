@@ -20,20 +20,21 @@ mod cycle;
 mod layering;
 mod ordering;
 mod sequence;
+mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign,
 };
 
-const FONT_SIZE: f64 = 16.0;
-const PAD_X: f64 = 20.0;
-const PAD_Y: f64 = 10.0;
-const NODE_GAP: f64 = 40.0; // minimum clearance between nodes within a layer
-const LAYER_GAP_DOWN: f64 = 100.0;
-const LAYER_GAP_RIGHT: f64 = 150.0;
-const ARROW_LEN: f64 = 10.0;
-const ARROW_HALF_W: f64 = 5.0;
+pub(crate) const FONT_SIZE: f64 = 16.0;
+pub(crate) const PAD_X: f64 = 20.0;
+pub(crate) const PAD_Y: f64 = 10.0;
+pub(crate) const NODE_GAP: f64 = 40.0; // minimum clearance between nodes within a layer
+pub(crate) const LAYER_GAP_DOWN: f64 = 100.0;
+pub(crate) const LAYER_GAP_RIGHT: f64 = 150.0;
+pub(crate) const ARROW_LEN: f64 = 10.0;
+pub(crate) const ARROW_HALF_W: f64 = 5.0;
 
 /// An error produced by the layout pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,16 +51,16 @@ impl std::fmt::Display for LayoutError {
 impl std::error::Error for LayoutError {}
 
 /// A positioned node box.
-struct Placed {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    label: String,
+pub(crate) struct Placed {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
+    pub(crate) label: String,
 }
 
 impl Placed {
-    fn center(&self) -> (f64, f64) {
+    pub(crate) fn center(&self) -> (f64, f64) {
         (self.x + self.width / 2.0, self.y + self.height / 2.0)
     }
 }
@@ -72,6 +73,7 @@ pub fn layout(diagram: &Diagram) -> Result<Scene, LayoutError> {
     match diagram {
         Diagram::Graph(g) => layout_graph(g),
         Diagram::Sequence(s) => Ok(sequence::layout_sequence(s)),
+        Diagram::State(s) => state::layout_state(s),
         _ => Err(LayoutError {
             message: "unsupported diagram variant".to_string(),
         }),
@@ -255,7 +257,7 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
 ///
 /// `pts` are the edge's routing points in original edge orientation:
 /// `[from_center, bends.., to_center]` (length >= 2).
-fn push_edge(
+pub(crate) fn push_edge(
     items: &mut Vec<SceneItem>,
     mut pts: Vec<(f64, f64)>,
     from: &Placed,
@@ -814,6 +816,113 @@ mod tests {
             "c's header left ({}) must not overlap b's header right ({})",
             c_left,
             b_right
+        );
+    }
+
+    // --- M7a: State diagram layout tests ---
+
+    #[test]
+    fn state_layout_basic_scene_has_positive_bounds() {
+        let mut sd = kozue_ir::StateDiagram::new();
+        sd.states
+            .insert("idle".into(), kozue_ir::State::new("idle", "Idle"));
+        sd.states
+            .insert("active".into(), kozue_ir::State::new("active", "Active"));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::Initial,
+            kozue_ir::Endpoint::State("idle".into()),
+            None,
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("idle".into()),
+            kozue_ir::Endpoint::State("active".into()),
+            Some("start".to_string()),
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("active".into()),
+            kozue_ir::Endpoint::Final,
+            None,
+        ));
+        let scene = layout(&Diagram::State(sd)).expect("state layout");
+        assert!(scene.width > 0.0);
+        assert!(scene.height > 0.0);
+    }
+
+    #[test]
+    fn state_layout_determinism() {
+        let mut sd = kozue_ir::StateDiagram::new();
+        sd.states.insert("a".into(), kozue_ir::State::new("a", "A"));
+        sd.states.insert("b".into(), kozue_ir::State::new("b", "B"));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::Initial,
+            kozue_ir::Endpoint::State("a".into()),
+            None,
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("a".into()),
+            kozue_ir::Endpoint::State("b".into()),
+            None,
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("b".into()),
+            kozue_ir::Endpoint::Final,
+            None,
+        ));
+        let scene1 = layout(&Diagram::State(sd.clone())).unwrap();
+        let scene2 = layout(&Diagram::State(sd)).unwrap();
+        assert_eq!(scene1, scene2, "state layout must be deterministic");
+    }
+
+    #[test]
+    fn state_self_transition_does_not_panic() {
+        let mut sd = kozue_ir::StateDiagram::new();
+        sd.states.insert("s".into(), kozue_ir::State::new("s", "S"));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::Initial,
+            kozue_ir::Endpoint::State("s".into()),
+            None,
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("s".into()),
+            kozue_ir::Endpoint::State("s".into()),
+            Some("self".to_string()),
+        ));
+        let scene = layout(&Diagram::State(sd)).expect("self-transition must not panic");
+        assert!(scene.width > 0.0);
+    }
+
+    #[test]
+    fn state_named_like_pseudostate_sentinel_is_not_corrupted() {
+        // Regression: a real state named `__initial__` must NOT collide with the
+        // synthetic pseudostate marker — pseudostate roles are keyed by index,
+        // not by matching a magic id string, so it renders as a normal box.
+        let mut sd = kozue_ir::StateDiagram::new();
+        sd.states.insert(
+            "__initial__".into(),
+            kozue_ir::State::new("__initial__", "Real"),
+        );
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::Initial,
+            kozue_ir::Endpoint::State("__initial__".into()),
+            None,
+        ));
+        let scene = layout(&Diagram::State(sd)).expect("layout");
+        // Exactly one real state → exactly one Rect; its label survives.
+        let rects = scene
+            .items
+            .iter()
+            .filter(|i| matches!(i, SceneItem::Rect(_)))
+            .count();
+        assert_eq!(
+            rects, 1,
+            "real state must render as a box, not a pseudostate"
+        );
+        assert!(
+            scene
+                .items
+                .iter()
+                .any(|i| matches!(i, SceneItem::Text(t) if t.content == "Real")),
+            "real state label must survive"
         );
     }
 }

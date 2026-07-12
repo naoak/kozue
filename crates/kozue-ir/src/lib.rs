@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 pub enum Diagram {
     Graph(GraphDiagram),
     Sequence(SequenceDiagram),
+    State(StateDiagram),
 }
 
 /// Layout direction for a graph diagram.
@@ -186,6 +187,67 @@ impl Edge {
             label,
             arrow,
         }
+    }
+}
+
+/// A state diagram: a set of states and transitions between them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateDiagram {
+    pub states: IndexMap<String, State>,
+    pub transitions: Vec<Transition>,
+}
+
+impl StateDiagram {
+    pub fn new() -> Self {
+        StateDiagram {
+            states: IndexMap::new(),
+            transitions: Vec::new(),
+        }
+    }
+}
+
+impl Default for StateDiagram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A state in a state diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct State {
+    pub id: String,
+    pub label: String,
+}
+
+impl State {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        State {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// An endpoint of a transition.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Endpoint {
+    Initial,
+    Final,
+    State(String),
+}
+
+/// A transition between two endpoints in a state diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transition {
+    pub from: Endpoint,
+    pub to: Endpoint,
+    pub label: Option<String>,
+}
+
+impl Transition {
+    pub fn new(from: Endpoint, to: Endpoint, label: Option<String>) -> Self {
+        Transition { from, to, label }
     }
 }
 
