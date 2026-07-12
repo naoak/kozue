@@ -7,14 +7,18 @@
 mod position;
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
+use kozue_ir::Diagram;
 use position::SpanUnit;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, Location, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    DocumentFormattingParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -63,6 +67,17 @@ pub fn detect_language(uri: &Url, init_lang: Option<&str>) -> Option<Language> {
 // ---------------------------------------------------------------------------
 // Diagnostics conversion
 // ---------------------------------------------------------------------------
+
+/// Parse `text` in `lang` to the shared IR, discarding diagnostics. All three
+/// frontends produce the same [`Diagram`], so IR-only features (hover) work
+/// uniformly across languages. Returns `None` on parse failure.
+fn parse_to_ir(text: &str, lang: Language) -> Option<Diagram> {
+    match lang {
+        Language::Kozue => kozue_dsl::parse(text).ok(),
+        Language::Mermaid => kozue_mermaid::parse(text).ok(),
+        Language::Plantuml => kozue_plantuml::parse(text).ok(),
+    }
+}
 
 /// Convert frontend errors for `text` to LSP diagnostics. Pure fn, no async.
 ///
@@ -131,6 +146,85 @@ pub fn to_lsp_diagnostics(uri: &Url, text: &str, lang: Language) -> Vec<Diagnost
 }
 
 // ---------------------------------------------------------------------------
+// M6b: hover and formatting helpers (pure, no async, testable)
+// ---------------------------------------------------------------------------
+
+/// Scan `text` for an identifier (word chars: `[A-Za-z0-9_-]`) that contains
+/// the byte offset `byte`.  Returns the byte range and the slice, or `None`
+/// if the cursor is on whitespace or punctuation.
+pub(crate) fn identifier_at(text: &str, byte: usize) -> Option<(Range<usize>, &str)> {
+    let byte = byte.min(text.len());
+    // Snap to a char boundary (shouldn't be needed with p2b, but be safe).
+    let byte = {
+        let mut b = byte;
+        while b > 0 && !text.is_char_boundary(b) {
+            b -= 1;
+        }
+        b
+    };
+
+    // Check that the character at `byte` is a word character.
+    let ch = text[byte..].chars().next().unwrap_or(' ');
+    if !is_word_char(ch) {
+        return None;
+    }
+
+    // Scan left to find word start.
+    let start = text[..byte]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !is_word_char(*c))
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+
+    // Scan right to find word end.
+    let end = byte
+        + text[byte..]
+            .char_indices()
+            .find(|(_, c)| !is_word_char(*c))
+            .map(|(i, _)| i)
+            .unwrap_or(text[byte..].len());
+
+    Some((start..end, &text[start..end]))
+}
+
+/// Matches the DSL identifier grammar (chumsky `text::ident()`): ASCII
+/// alphanumerics and `_`. Notably NOT hyphen — otherwise the no-space arrow
+/// syntax `a->b` would extract `a-` and miss the node lookup — and NOT Unicode
+/// alphanumerics, which the lexer does not accept as identifier characters.
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Build a markdown hover string for an identifier found in `diagram`.
+///
+/// For a [`Diagram::Graph`] the id is looked up in `nodes`.
+/// For a [`Diagram::Sequence`] the id is looked up in `participants`.
+/// Returns `None` if `word` is not a known id.
+pub(crate) fn hover_for_word(diagram: &Diagram, word: &str) -> Option<String> {
+    match diagram {
+        Diagram::Graph(g) => {
+            let node = g.nodes.get(word)?;
+            Some(format!(
+                "**node** `{id}`\n\nLabel: {label}",
+                id = node.id,
+                label = node.label
+            ))
+        }
+        Diagram::Sequence(s) => {
+            let p = s.participants.get(word)?;
+            Some(format!(
+                "**participant** `{id}`\n\nLabel: {label}",
+                id = p.id,
+                label = p.label
+            ))
+        }
+        // Diagram is #[non_exhaustive]; new variants carry no hover info yet.
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LSP backend
 // ---------------------------------------------------------------------------
 
@@ -177,6 +271,8 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -226,6 +322,99 @@ impl LanguageServer for Backend {
         // Clear any diagnostics we published for this document so they don't
         // linger in the client after it is closed.
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let pos = params.text_document_position_params.position;
+
+        let init_lang_guard = self.init_lang.lock().await;
+        let lang = detect_language(uri, init_lang_guard.as_deref());
+        drop(init_lang_guard);
+
+        // Hover needs only the IR, so it works for every supported language
+        // (unlike formatting, which is DSL-only). Unknown extension → no hover.
+        let lang = match lang {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+
+        let text = {
+            let docs = self.docs.lock().await;
+            docs.get(uri).cloned()
+        };
+        let text = match text {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // Parse the document; broken files produce no hover.
+        let diagram = match parse_to_ir(&text, lang) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let byte = position::position_to_byte_offset(&text, pos);
+        let (span, word) = match identifier_at(&text, byte) {
+            Some((span, w)) => (span, w),
+            None => return Ok(None),
+        };
+
+        let md = match hover_for_word(&diagram, word) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }),
+            // Byte-unit span → the editor highlights the exact hovered token.
+            range: Some(position::to_range(&text, &span, SpanUnit::Byte)),
+        }))
+    }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+
+        let init_lang_guard = self.init_lang.lock().await;
+        let lang = detect_language(uri, init_lang_guard.as_deref());
+        drop(init_lang_guard);
+
+        // Formatting is only implemented for Kozue DSL files.
+        if lang != Some(Language::Kozue) {
+            return Ok(None);
+        }
+
+        let text = {
+            let docs = self.docs.lock().await;
+            docs.get(uri).cloned()
+        };
+        let text = match text {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        // On parse error return None — never corrupt the document.
+        let formatted = match kozue_dsl::format_kzd(&text) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+
+        // Build a single TextEdit that replaces the whole document.
+        let end = position::end_of_document_position(&text);
+        let edit = TextEdit {
+            range: tower_lsp::lsp_types::Range {
+                start: tower_lsp::lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end,
+            },
+            new_text: formatted,
+        };
+        Ok(Some(vec![edit]))
     }
 }
 
@@ -413,5 +602,94 @@ mod tests {
         // Should point somewhere non-trivial (not the default zero range only).
         let _ = related[0].location.range.start.line;
         let _: Position = related[0].location.range.start;
+    }
+
+    // ---- identifier_at ----
+
+    #[test]
+    fn identifier_at_start_of_word() {
+        let text = "foo bar";
+        // byte 0 → start of "foo"
+        let (range, word) = identifier_at(text, 0).unwrap();
+        assert_eq!(word, "foo");
+        assert_eq!(range, 0..3);
+    }
+
+    #[test]
+    fn identifier_at_middle_of_word() {
+        let text = "hello world";
+        // byte 2 → inside "hello"
+        let (range, word) = identifier_at(text, 2).unwrap();
+        assert_eq!(word, "hello");
+        assert_eq!(range, 0..5);
+    }
+
+    #[test]
+    fn identifier_at_end_of_word() {
+        let text = "abc xyz";
+        // byte 2 → last char of "abc"
+        let (range, word) = identifier_at(text, 2).unwrap();
+        assert_eq!(word, "abc");
+        assert_eq!(range, 0..3);
+    }
+
+    #[test]
+    fn identifier_at_whitespace_is_none() {
+        let text = "foo bar";
+        // byte 3 → space
+        assert!(identifier_at(text, 3).is_none());
+    }
+
+    #[test]
+    fn identifier_at_stops_at_hyphen() {
+        // `-` is not an identifier char (matches the DSL lexer). In `a->b` the
+        // word under the cursor on `a` is just "a", so node lookup succeeds.
+        let text = "a->b";
+        let (range, word) = identifier_at(text, 0).unwrap();
+        assert_eq!(word, "a");
+        assert_eq!(range, 0..1);
+        // Cursor on the trailing `b`.
+        let (_, word) = identifier_at(text, 3).unwrap();
+        assert_eq!(word, "b");
+    }
+
+    // ---- hover across frontends (shared IR) ----
+
+    #[test]
+    fn hover_works_for_mermaid_via_shared_ir() {
+        // Mermaid parses to the same IR, so hover_for_word resolves its nodes.
+        let src = "flowchart TD\n  a --> b";
+        let diagram = parse_to_ir(src, Language::Mermaid).expect("mermaid parses");
+        assert!(hover_for_word(&diagram, "a").is_some());
+    }
+
+    // ---- hover_for_word ----
+
+    #[test]
+    fn hover_for_word_unknown_id_is_none() {
+        let src = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let diagram = kozue_dsl::parse(src).unwrap();
+        assert!(hover_for_word(&diagram, "z").is_none());
+    }
+
+    #[test]
+    fn hover_for_word_graph_node_returns_markdown() {
+        let src = "diagram d {\n  a: \"Alpha\"\n  b: \"Beta\"\n  a -> b\n}";
+        let diagram = kozue_dsl::parse(src).unwrap();
+        let md = hover_for_word(&diagram, "a").unwrap();
+        assert!(md.contains("node"), "expected 'node' in: {md}");
+        assert!(md.contains("Alpha"), "expected label in: {md}");
+    }
+
+    #[test]
+    fn hover_for_word_sequence_participant_returns_markdown() {
+        let src = "diagram s {\n  participant alice: \"Alice\"\n  participant bob: \"Bob\"\n  alice -> bob : \"hi\"\n}";
+        let diagram = kozue_dsl::parse(src).unwrap();
+        let md = hover_for_word(&diagram, "alice").unwrap();
+        assert!(
+            md.contains("participant"),
+            "expected 'participant' in: {md}"
+        );
+        assert!(md.contains("Alice"), "expected label in: {md}");
     }
 }

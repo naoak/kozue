@@ -39,6 +39,12 @@ npm run compile
 
 To use a custom binary path, set `"kozue.serverPath"` in your VSCode `settings.json`.
 
-### Scope (M6a)
+### Scope (M6b)
 
-M6a provides **diagnostics only**. Hover, formatting, go-to-definition, and other LSP features are planned for M6b.
+The LSP server currently provides:
+
+- **Diagnostics** — parse errors appear as squiggles in real time (M6a).
+- **Hover** — hovering over a node or participant id shows its label as Markdown (M6b). Works for all supported languages (kozue, Mermaid, PlantUML), since they share one IR.
+- **Formatting** — running "Format Document" on a `.kozue`/`.kzd` file reformats it with `kozue fmt` (M6b). Mermaid and PlantUML files are left untouched (no formatter exists for them yet).
+
+Go-to-definition and other features are planned for future milestones.

@@ -36,8 +36,12 @@ the [kozue-lsp](../../crates/kozue-lsp) language server.
    ```
    By default the extension looks for `kozue-lsp` on your `PATH`.
 
-## Scope (M6a)
+## Features (M6b)
 
-M6a provides **diagnostics only** — parse errors are highlighted as you type.
-Hover documentation, code formatting, go-to-definition, and other LSP features
-are planned for M6b.
+| Feature | File types | Notes |
+|---------|-----------|-------|
+| Diagnostics | `.kozue`, `.kzd`, `.mmd`, `.mermaid`, `.puml`, `.plantuml`, `.pu`, `.iuml` | Parse errors highlighted as you type |
+| Hover | all (kozue, Mermaid, PlantUML) | Shows node/participant id and label as Markdown |
+| Format Document | `.kozue`, `.kzd` | Reformats the whole file using `kozue fmt`; no-op on parse errors |
+
+Go-to-definition and other features are planned for future milestones.

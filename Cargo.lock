@@ -582,6 +582,7 @@ name = "kozue-lsp"
 version = "0.1.0"
 dependencies = [
  "kozue-dsl",
+ "kozue-ir",
  "kozue-mermaid",
  "kozue-plantuml",
  "tokio",

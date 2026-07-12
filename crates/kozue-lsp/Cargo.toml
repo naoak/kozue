@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 kozue-dsl.workspace = true
+kozue-ir.workspace = true
 kozue-mermaid.workspace = true
 kozue-plantuml.workspace = true
 # LSP types (incl. Url) are re-exported from tower-lsp::lsp_types; depending on

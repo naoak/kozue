@@ -6,6 +6,66 @@
 use std::ops::Range;
 use tower_lsp::lsp_types::Position;
 
+// ---------------------------------------------------------------------------
+// New helpers for M6b (hover / formatting)
+// ---------------------------------------------------------------------------
+
+/// Return the LSP [`Position`] that represents the very end of `text`.
+///
+/// Used to build a whole-document [`TextEdit`] range.
+/// - Empty document → `(0, 0)`.
+/// - Document ending without a newline → end of last content line.
+/// - Document ending with a trailing newline → start of the empty line after it.
+pub(crate) fn end_of_document_position(text: &str) -> Position {
+    to_position(text, text.len(), SpanUnit::Byte)
+}
+
+/// Convert an LSP [`Position`] (UTF-16 line/character) back to a byte offset
+/// within `text`. Never panics; clamps at line end / EOF.
+///
+/// - Walks lines by counting `'\n'` characters.
+/// - Within the target line, accumulates `char::len_utf16()` until the
+///   requested UTF-16 character column is reached.
+pub(crate) fn position_to_byte_offset(text: &str, pos: Position) -> usize {
+    // Find the byte offset of the start of the target line.
+    let mut line_start = 0;
+    let mut current_line = 0u32;
+    for (i, b) in text.bytes().enumerate() {
+        if current_line == pos.line {
+            break;
+        }
+        if b == b'\n' {
+            current_line += 1;
+            line_start = i + 1;
+        }
+    }
+    // If we never reached the target line, clamp to EOF.
+    if current_line < pos.line {
+        return text.len();
+    }
+
+    // Walk chars in the line accumulating UTF-16 units until we hit pos.character.
+    let line_text = &text[line_start..];
+    let mut utf16_col = 0u32;
+    for (byte_off, ch) in line_text.char_indices() {
+        // Stop at newline (don't cross into next line).
+        if ch == '\n' {
+            return line_start + byte_off;
+        }
+        // Return this char's start byte when pos.character falls at its start or
+        // *inside* its UTF-16 span. Snapping back to the char start (rather than
+        // forward to the next char) makes this a conservative inverse of
+        // `to_position`: a cursor between the two surrogates of an astral char
+        // resolves to that char, not the following token.
+        if utf16_col + ch.len_utf16() as u32 > pos.character {
+            return line_start + byte_off;
+        }
+        utf16_col += ch.len_utf16() as u32;
+    }
+    // Past end of line / EOF.
+    line_start + line_text.len()
+}
+
 /// The unit a frontend's diagnostic spans are measured in.
 ///
 /// `kozue-dsl` (chumsky) emits character indices; `kozue-mermaid` and
@@ -459,5 +519,254 @@ mod tests {
                 character: 2
             }
         );
+    }
+
+    // ---- end_of_document_position ----
+
+    #[test]
+    fn end_of_doc_empty() {
+        assert_eq!(
+            end_of_document_position(""),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn end_of_doc_trailing_newline() {
+        // "abc\n" → end is position (1, 0): the empty line after the '\n'.
+        assert_eq!(
+            end_of_document_position("abc\n"),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn end_of_doc_no_trailing_newline() {
+        // "abc" → end is (0, 3).
+        assert_eq!(
+            end_of_document_position("abc"),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+    }
+
+    #[test]
+    fn end_of_doc_multiline() {
+        // "a\nb\nc" → end is (2, 1).
+        assert_eq!(
+            end_of_document_position("a\nb\nc"),
+            Position {
+                line: 2,
+                character: 1
+            }
+        );
+    }
+
+    #[test]
+    fn end_of_doc_cjk() {
+        // "あ\nい" → CJK are 1 UTF-16 unit each → end is (1, 1).
+        assert_eq!(
+            end_of_document_position("あ\nい"),
+            Position {
+                line: 1,
+                character: 1
+            }
+        );
+    }
+
+    #[test]
+    fn end_of_doc_emoji() {
+        // "🎉" → 2 UTF-16 units → end is (0, 2).
+        assert_eq!(
+            end_of_document_position("🎉"),
+            Position {
+                line: 0,
+                character: 2
+            }
+        );
+    }
+
+    // ---- position_to_byte_offset ----
+
+    #[test]
+    fn p2b_ascii_basic() {
+        let text = "hello";
+        // position (0, 3) → byte 3 ('l').
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 3
+                }
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn p2b_ascii_start() {
+        let text = "hello";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn p2b_empty_doc() {
+        let text = "";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn p2b_multiline() {
+        let text = "abc\ndef";
+        // line 1, char 2 → 'd'=byte4, 'e'=byte5 → byte 6 ('f').
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 1,
+                    character: 2
+                }
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn p2b_cjk() {
+        // "あx": "あ" = 3 bytes, 1 UTF-16 unit. Position (0,1) → byte 3.
+        let text = "あx";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 1
+                }
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn p2b_emoji_astral() {
+        // "🎉x": "🎉" = 4 bytes, 2 UTF-16 units. Position (0,2) → byte 4.
+        let text = "🎉x";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 2
+                }
+            ),
+            4
+        );
+    }
+
+    #[test]
+    fn p2b_emoji_midpoint_snaps_back() {
+        // "🎉x": a position landing between the two surrogates of "🎉" (col 1)
+        // must snap BACK to the emoji's start (byte 0), not forward to 'x'.
+        let text = "🎉x";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 1
+                }
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn p2b_past_line_end_clamps() {
+        // Position past end of line clamps to the line's end byte.
+        let text = "abc\ndef";
+        // line 0 ends at byte 3 (the '\n'); col 100 → byte 3.
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 100
+                }
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn p2b_past_eof_clamps() {
+        // Line past end of document → EOF.
+        let text = "abc";
+        assert_eq!(
+            position_to_byte_offset(
+                text,
+                Position {
+                    line: 99,
+                    character: 0
+                }
+            ),
+            3
+        );
+    }
+
+    #[test]
+    fn p2b_roundtrip_ascii() {
+        // to_position(text, position_to_byte_offset(text, p), Byte) == p
+        let text = "hello\nworld";
+        for (line, character) in [(0, 0), (0, 3), (0, 5), (1, 0), (1, 5)] {
+            let p = Position { line, character };
+            let byte = position_to_byte_offset(text, p);
+            assert_eq!(
+                to_position(text, byte, SpanUnit::Byte),
+                p,
+                "round-trip failed at ({line},{character})"
+            );
+        }
+    }
+
+    #[test]
+    fn p2b_roundtrip_emoji() {
+        // Emoji: each 🎉 takes 2 UTF-16 units, 4 bytes.
+        let text = "🎉🎉\nabc";
+        for (line, character) in [(0, 0), (0, 2), (0, 4), (1, 0), (1, 3)] {
+            let p = Position { line, character };
+            let byte = position_to_byte_offset(text, p);
+            assert_eq!(
+                to_position(text, byte, SpanUnit::Byte),
+                p,
+                "round-trip failed at ({line},{character})"
+            );
+        }
     }
 }
