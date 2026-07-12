@@ -1,0 +1,18 @@
+[package]
+name = "kozue-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kozue-lsp"
+path = "src/main.rs"
+
+[dependencies]
+kozue-dsl.workspace = true
+kozue-mermaid.workspace = true
+kozue-plantuml.workspace = true
+# LSP types (incl. Url) are re-exported from tower-lsp::lsp_types; depending on
+# the lsp-types crate directly would pull a second, incompatible version.
+tower-lsp.workspace = true
+tokio.workspace = true
