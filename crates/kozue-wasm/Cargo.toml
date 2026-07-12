@@ -1,0 +1,18 @@
+[package]
+name = "kozue-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kozue-ir.workspace = true
+kozue-dsl.workspace = true
+kozue-mermaid.workspace = true
+kozue-plantuml.workspace = true
+kozue-layout.workspace = true
+kozue-render-svg.workspace = true
+kozue-render-png.workspace = true
+wasm-bindgen.workspace = true
