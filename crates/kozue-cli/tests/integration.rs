@@ -879,3 +879,97 @@ fn term_render_term_flag_via_cli() {
     assert!(status.success(), "render --format term should succeed");
     assert!(!content.is_empty(), "term output should be non-empty");
 }
+
+// ---------------------------------------------------------------------------
+// M5a: PNG golden tests and determinism
+// ---------------------------------------------------------------------------
+
+fn compile_png(src: &str) -> Vec<u8> {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("golden layout must succeed");
+    kozue_render_png::render(&scene).expect("golden PNG render must succeed")
+}
+
+const PNG_GOLDEN_CASES: &[&str] = &["chain", "branch", "seq_basic"];
+
+#[test]
+fn golden_pngs_match() {
+    for name in PNG_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let png_path = golden_dir().join(format!("{name}.png"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_png(&src);
+
+        // Allow regenerating goldens with UPDATE_GOLDEN=1.
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&png_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read(&png_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                png_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "golden PNG mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn png_rendering_is_deterministic_across_processes() {
+    let kzd = golden_dir().join("branch.kzd");
+    let bin = env!("CARGO_BIN_EXE_kozue");
+
+    let tmp = std::env::temp_dir();
+    let out1 = tmp.join("kozue_png_det_test_1.png");
+    let out2 = tmp.join("kozue_png_det_test_2.png");
+
+    let status1 = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "png",
+            kzd.to_str().unwrap(),
+            "-o",
+            out1.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (first run)");
+    assert!(status1.success(), "first kozue PNG run failed");
+
+    let status2 = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "png",
+            kzd.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (second run)");
+    assert!(status2.success(), "second kozue PNG run failed");
+
+    let png1 = std::fs::read(&out1).expect("read first output");
+    let png2 = std::fs::read(&out2).expect("read second output");
+    let _ = std::fs::remove_file(&out1);
+    let _ = std::fs::remove_file(&out2);
+
+    assert_eq!(
+        png1, png2,
+        "same input must produce byte-identical PNG across separate process invocations"
+    );
+
+    // Tie the cross-process output back to the committed golden so a stable but
+    // wrong regression is caught here too, not only by the in-process test.
+    let golden = std::fs::read(golden_dir().join("branch.png")).expect("read branch.png golden");
+    assert_eq!(
+        png1, golden,
+        "CLI PNG output must match the committed branch.png golden"
+    );
+}

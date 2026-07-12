@@ -26,6 +26,7 @@ enum Format {
     #[default]
     Svg,
     Term,
+    Png,
 }
 
 #[derive(Subcommand)]
@@ -40,7 +41,7 @@ enum Command {
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
-        /// Output format: `svg` (default) or `term` (plain-text terminal).
+        /// Output format: `svg` (default), `term` (plain-text terminal), or `png` (raster PNG).
         #[arg(long, default_value = "svg")]
         format: Format,
     },
@@ -184,6 +185,20 @@ fn run_render(
                 None => {
                     print!("{text}");
                 }
+            }
+        }
+        Format::Png => {
+            let png = match kozue_render_png::render(&scene) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("error: PNG render failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out_path = output.unwrap_or_else(|| input.with_extension("png"));
+            if let Err(e) = std::fs::write(&out_path, &png) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
             }
         }
     }

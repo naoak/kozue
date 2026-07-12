@@ -17,8 +17,10 @@ kozue-render-term.workspace = true
 kozue-dsl.workspace = true
 kozue-mermaid.workspace = true
 kozue-plantuml.workspace = true
+kozue-render-png.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
 kozue-render-term.workspace = true
 kozue-plantuml.workspace = true
+kozue-render-png.workspace = true

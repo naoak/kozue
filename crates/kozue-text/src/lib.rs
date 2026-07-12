@@ -57,6 +57,102 @@ fn metrics() -> &'static FontMetrics {
     })
 }
 
+/// Outline command returned by [`glyph_outline`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OutlineCmd {
+    MoveTo {
+        x: f32,
+        y: f32,
+    },
+    LineTo {
+        x: f32,
+        y: f32,
+    },
+    QuadTo {
+        x1: f32,
+        y1: f32,
+        x: f32,
+        y: f32,
+    },
+    CurveTo {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        x: f32,
+        y: f32,
+    },
+    Close,
+}
+
+/// Returns units_per_em from the embedded DejaVu Sans font.
+pub fn units_per_em() -> f64 {
+    metrics().units_per_em
+}
+
+/// Advance width in font units for `ch`. Missing glyph falls back to units_per_em (1 em).
+pub fn glyph_advance_units(ch: char) -> f64 {
+    let m = metrics();
+    m.advances
+        .get(&ch)
+        .copied()
+        .unwrap_or(m.units_per_em as u32) as f64
+}
+
+thread_local! {
+    /// Per-thread cached font face for glyph outlining. `ttf_parser::Face` is
+    /// not `Send`/`Sync`, so it cannot live in the global `OnceLock` alongside
+    /// [`FontMetrics`]; a thread-local avoids re-parsing the font on every
+    /// glyph while staying deterministic.
+    static FACE: ttf_parser::Face<'static> = ttf_parser::Face::parse(FONT_BYTES, 0)
+        .expect("embedded DejaVu Sans font must parse — font data is corrupted");
+}
+
+/// Outline of a single glyph in font units, y-up (font coordinate space).
+/// Returns empty Vec for chars with no glyph (e.g. Japanese) — caller draws blank.
+pub fn glyph_outline(ch: char) -> Vec<OutlineCmd> {
+    FACE.with(|face| {
+        let gid = match face.glyph_index(ch) {
+            Some(g) => g,
+            None => return Vec::new(),
+        };
+        let mut builder = OutlineBuilder { cmds: Vec::new() };
+        if face.outline_glyph(gid, &mut builder).is_none() {
+            return Vec::new();
+        }
+        builder.cmds
+    })
+}
+
+struct OutlineBuilder {
+    cmds: Vec<OutlineCmd>,
+}
+
+impl ttf_parser::OutlineBuilder for OutlineBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.cmds.push(OutlineCmd::MoveTo { x, y });
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.cmds.push(OutlineCmd::LineTo { x, y });
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.cmds.push(OutlineCmd::QuadTo { x1, y1, x, y });
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.cmds.push(OutlineCmd::CurveTo {
+            x1,
+            y1,
+            x2,
+            y2,
+            x,
+            y,
+        });
+    }
+    fn close(&mut self) {
+        self.cmds.push(OutlineCmd::Close);
+    }
+}
+
 /// Measure the rendered size of `text` at `font_size` (in px).
 ///
 /// Returns `(width, height)` where `height == font_size * 1.2`. Width is the
@@ -108,5 +204,37 @@ mod tests {
         let font_size = 20.0;
         let (w, _) = measure("開始", font_size);
         assert!((w - 2.0 * font_size).abs() < 1e-9);
+    }
+
+    #[test]
+    fn units_per_em_is_positive() {
+        assert!(units_per_em() > 0.0);
+    }
+
+    #[test]
+    fn glyph_outline_a_is_non_empty_and_starts_with_move() {
+        let cmds = glyph_outline('A');
+        assert!(!cmds.is_empty(), "outline for 'A' must be non-empty");
+        assert!(
+            matches!(cmds[0], OutlineCmd::MoveTo { .. }),
+            "outline must start with MoveTo"
+        );
+    }
+
+    #[test]
+    fn glyph_outline_missing_is_empty() {
+        // Japanese character has no glyph in DejaVu Sans
+        let cmds = glyph_outline('あ');
+        assert!(cmds.is_empty(), "missing glyph must return empty outline");
+    }
+
+    #[test]
+    fn glyph_advance_units_missing_equals_units_per_em() {
+        let upm = units_per_em();
+        let advance = glyph_advance_units('あ');
+        assert!(
+            (advance - upm).abs() < 1e-9,
+            "missing glyph advance must equal units_per_em"
+        );
     }
 }

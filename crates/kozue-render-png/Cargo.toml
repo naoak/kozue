@@ -1,0 +1,10 @@
+[package]
+name = "kozue-render-png"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kozue-ir.workspace = true
+kozue-text.workspace = true
+tiny-skia.workspace = true
