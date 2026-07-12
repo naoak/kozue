@@ -442,6 +442,88 @@ fn mermaid_rendering_is_deterministic_across_processes() {
 }
 
 // ---------------------------------------------------------------------------
+// PlantUML golden tests
+// ---------------------------------------------------------------------------
+
+const PLANTUML_GOLDEN_CASES: &[&str] = &["plantuml_seq"];
+
+fn compile_plantuml(src: &str) -> String {
+    let diagram = kozue_plantuml::parse(src).expect("plantuml golden input must parse");
+    let scene = kozue_layout::layout(&diagram).expect("plantuml golden layout must succeed");
+    kozue_render_svg::render(&scene)
+}
+
+#[test]
+fn plantuml_golden_svgs_match() {
+    for name in PLANTUML_GOLDEN_CASES {
+        let puml = golden_dir().join(format!("{name}.puml"));
+        let svg_path = golden_dir().join(format!("{name}.svg"));
+        let src = std::fs::read_to_string(&puml)
+            .unwrap_or_else(|e| panic!("read {}: {e}", puml.display()));
+        let actual = compile_plantuml(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&svg_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                svg_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "plantuml golden mismatch for {name}.puml (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// Verify that PlantUML rendering is deterministic across separate process invocations.
+#[test]
+fn plantuml_rendering_is_deterministic_across_processes() {
+    let puml = golden_dir().join("plantuml_seq.puml");
+    let bin = env!("CARGO_BIN_EXE_kozue");
+
+    let tmp = std::env::temp_dir();
+    let out1 = tmp.join("kozue_puml_det_test_1.svg");
+    let out2 = tmp.join("kozue_puml_det_test_2.svg");
+
+    let status1 = std::process::Command::new(bin)
+        .args([
+            "render",
+            puml.to_str().unwrap(),
+            "-o",
+            out1.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (first run)");
+    assert!(status1.success(), "first kozue plantuml run failed");
+
+    let status2 = std::process::Command::new(bin)
+        .args([
+            "render",
+            puml.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (second run)");
+    assert!(status2.success(), "second kozue plantuml run failed");
+
+    let svg1 = std::fs::read(&out1).expect("read first output");
+    let svg2 = std::fs::read(&out2).expect("read second output");
+    let _ = std::fs::remove_file(&out1);
+    let _ = std::fs::remove_file(&out2);
+
+    assert_eq!(
+        svg1, svg2,
+        "same plantuml input must produce byte-identical SVG across separate process invocations"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Fix 4: CLI routing tests — uppercase extension and --lang override
 // ---------------------------------------------------------------------------
 

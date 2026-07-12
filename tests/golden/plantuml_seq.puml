@@ -1,0 +1,12 @@
+@startuml
+' PlantUML シーケンス図のゴールデンテスト
+participant クライアント as C
+participant "APIサーバ" as S
+participant データベース as DB
+
+C -> S : POST /login
+S --> C : 200 OK
+S -> DB : SELECT user
+DB --> S : row
+C -> C : セッション保存
+@enduml

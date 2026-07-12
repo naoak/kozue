@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 620.38 384.00" width="620.38" height="384.00">
+  <rect x="-20.00" y="-20.00" width="620.38" height="384.00" fill="#ffffff"/>
+  <rect x="0.00" y="0.00" width="136.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="68.00" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">クライアント</text>
+  <polyline points="68.00,39.20 68.00,344.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="229.88" y="0.00" width="113.31" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="286.54" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">APIサーバ</text>
+  <polyline points="286.54,39.20 286.54,344.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="444.38" y="0.00" width="136.00" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="512.38" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">データベース</text>
+  <polyline points="512.38,39.20 512.38,344.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="68.00,80.00 276.54,80.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="286.54,80.00 276.54,75.00 276.54,85.00" fill="#000000" stroke="none"/>
+  <text x="177.27" y="76.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">POST /login</text>
+  <polyline points="286.54,128.00 78.00,128.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="68.00,128.00 78.00,123.00 78.00,133.00" fill="#000000" stroke="none"/>
+  <text x="177.27" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">200 OK</text>
+  <polyline points="286.54,176.00 502.38,176.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="512.38,176.00 502.38,171.00 502.38,181.00" fill="#000000" stroke="none"/>
+  <text x="399.46" y="172.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">SELECT user</text>
+  <polyline points="512.38,224.00 296.54,224.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="286.54,224.00 296.54,219.00 296.54,229.00" fill="#000000" stroke="none"/>
+  <text x="399.46" y="220.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">row</text>
+  <polyline points="68.00,272.00 98.00,272.00 98.00,296.00 78.00,296.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="68.00,296.00 78.00,291.00 78.00,301.00" fill="#000000" stroke="none"/>
+  <text x="102.00" y="276.76" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">セッション保存</text>
+</svg>

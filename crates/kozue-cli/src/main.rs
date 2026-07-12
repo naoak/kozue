@@ -17,6 +17,7 @@ struct Cli {
 enum Lang {
     Kozue,
     Mermaid,
+    Plantuml,
 }
 
 /// Output format selector.
@@ -76,6 +77,7 @@ enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CompatLang {
     Mermaid,
+    Plantuml,
 }
 
 fn main() -> ExitCode {
@@ -109,6 +111,7 @@ fn detect_lang(input: &Path, lang: Option<Lang>) -> Lang {
         .as_deref()
     {
         Some("mmd") | Some("mermaid") => Lang::Mermaid,
+        Some("puml") | Some("plantuml") | Some("pu") | Some("iuml") => Lang::Plantuml,
         _ => Lang::Kozue,
     }
 }
@@ -140,6 +143,13 @@ fn run_render(
             Ok(d) => d,
             Err(errs) => {
                 kozue_mermaid::report_errors(&filename, &src, &errs);
+                return ExitCode::FAILURE;
+            }
+        },
+        Lang::Plantuml => match kozue_plantuml::parse(&src) {
+            Ok(d) => d,
+            Err(errs) => {
+                kozue_plantuml::report_errors(&filename, &src, &errs);
                 return ExitCode::FAILURE;
             }
         },
@@ -198,6 +208,9 @@ fn run_check(input: &Path, lang: Option<Lang>) -> ExitCode {
         Lang::Mermaid => kozue_mermaid::parse(&src).map(|_| ()).map_err(|errs| {
             kozue_mermaid::report_errors(&filename, &src, &errs);
         }),
+        Lang::Plantuml => kozue_plantuml::parse(&src).map(|_| ()).map_err(|errs| {
+            kozue_plantuml::report_errors(&filename, &src, &errs);
+        }),
     };
 
     match result {
@@ -210,7 +223,7 @@ fn run_check(input: &Path, lang: Option<Lang>) -> ExitCode {
 }
 
 fn run_fmt(input: &Path, check: bool, stdout: bool) -> ExitCode {
-    // Reject Mermaid files immediately.
+    // Reject Mermaid and PlantUML files immediately.
     match input
         .extension()
         .and_then(|e| e.to_str())
@@ -219,6 +232,10 @@ fn run_fmt(input: &Path, check: bool, stdout: bool) -> ExitCode {
     {
         Some("mmd") | Some("mermaid") => {
             eprintln!("error: fmt is not supported for Mermaid input");
+            return ExitCode::FAILURE;
+        }
+        Some("puml") | Some("plantuml") | Some("pu") | Some("iuml") => {
+            eprintln!("error: fmt is not supported for PlantUML input");
             return ExitCode::FAILURE;
         }
         _ => {}
@@ -268,6 +285,7 @@ fn run_fmt(input: &Path, check: bool, stdout: bool) -> ExitCode {
 fn run_compat(language: CompatLang) -> ExitCode {
     match language {
         CompatLang::Mermaid => print_mermaid_compat(),
+        CompatLang::Plantuml => print_plantuml_compat(),
     }
     ExitCode::SUCCESS
 }
@@ -276,6 +294,55 @@ fn print_mermaid_compat() {
     use kozue_mermaid::features::{Support, FEATURES};
 
     println!("Mermaid compatibility — kozue-mermaid frontend");
+    println!();
+    // Column widths.
+    let name_w = FEATURES.iter().map(|f| f.name.len()).max().unwrap_or(10) + 2;
+    let status_w = 11usize;
+    println!(
+        "{:<name_w$} {:<status_w$} Notes",
+        "Feature",
+        "Status",
+        name_w = name_w,
+        status_w = status_w,
+    );
+    println!("{}", "-".repeat(name_w + status_w + 40));
+    for f in FEATURES {
+        let status = format!("{} {}", f.support.symbol(), f.support.as_str());
+        println!(
+            "{:<name_w$} {:<status_w$} {}",
+            f.name,
+            status,
+            f.note,
+            name_w = name_w,
+            status_w = status_w,
+        );
+    }
+    println!();
+    let supported = FEATURES
+        .iter()
+        .filter(|f| f.support == Support::Supported)
+        .count();
+    let partial = FEATURES
+        .iter()
+        .filter(|f| f.support == Support::Partial)
+        .count();
+    let unsupported = FEATURES
+        .iter()
+        .filter(|f| f.support == Support::Unsupported)
+        .count();
+    println!(
+        "Total: {} supported, {} partial, {} unsupported (out of {})",
+        supported,
+        partial,
+        unsupported,
+        FEATURES.len(),
+    );
+}
+
+fn print_plantuml_compat() {
+    use kozue_plantuml::features::{Support, FEATURES};
+
+    println!("PlantUML compatibility — kozue-plantuml frontend");
     println!();
     // Column widths.
     let name_w = FEATURES.iter().map(|f| f.name.len()).max().unwrap_or(10) + 2;

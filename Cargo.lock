@@ -222,6 +222,7 @@ dependencies = [
  "kozue-ir",
  "kozue-layout",
  "kozue-mermaid",
+ "kozue-plantuml",
  "kozue-render-svg",
  "kozue-render-term",
  "kozue-text",
@@ -259,6 +260,14 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "indexmap",
+ "kozue-ir",
+]
+
+[[package]]
+name = "kozue-plantuml"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
  "kozue-ir",
 ]
 
