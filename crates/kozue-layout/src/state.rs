@@ -279,6 +279,8 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
             &placed[to],
             trans_label,
             ArrowType::Triangle,
+            // Push mutual-transition labels further out so they don't overlap.
+            offsets[k],
         );
     }
 

@@ -241,6 +241,8 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
             &placed[to],
             edge.label.as_deref(),
             edge.arrow,
+            // Push mutual-edge labels further out so they don't overlap.
+            offsets[k],
         );
     }
 
@@ -332,6 +334,10 @@ pub(crate) fn push_edge(
     to: &Placed,
     label: Option<&str>,
     arrow: ArrowType,
+    // Extra displacement for the label anchor, used to push the labels of two
+    // mutual edges apart so their text does not overlap at the shared midpoint.
+    // `(0.0, 0.0)` for ordinary single edges.
+    label_offset: (f64, f64),
 ) {
     let last = pts.len() - 1;
     // Clip the endpoints to the node borders.
@@ -387,8 +393,8 @@ pub(crate) fn push_edge(
         let (mx, my) = polyline_midpoint(&pts);
         let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
         items.push(SceneItem::Text(Text {
-            x: mx,
-            y: my - 4.0,
+            x: mx + label_offset.0,
+            y: my + label_offset.1 - 4.0,
             size: FONT_SIZE * 0.85,
             align: TextAlign::Middle,
             content: label.to_string(),
