@@ -42,8 +42,8 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, Edge, GraphDiagram, LineStyle, Message, Node, Participant,
-    SequenceDiagram, SequenceItem,
+    ArrowType, Diagram, Direction, Edge, Endpoint, GraphDiagram, LineStyle, Message, Node,
+    Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -78,7 +78,7 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
 
     if lines.is_empty() {
         errors.push(Diagnostic::new(
-            "empty diagram: expected `flowchart` or `sequenceDiagram` header",
+            "empty diagram: expected `flowchart`, `sequenceDiagram`, or `stateDiagram-v2` header",
             0..source.len().max(1),
         ));
         return Err(errors);
@@ -130,10 +130,20 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
             }
         };
         parse_flowchart(&lines[1..], source, direction, &mut errors)
+    } else if let Some(rest) = strip_keyword_ci(header_trimmed, "stateDiagram-v2")
+        .or_else(|| strip_keyword_ci(header_trimmed, "stateDiagram"))
+    {
+        if !rest.trim().is_empty() {
+            errors.push(Diagnostic::new(
+                "unexpected tokens after `stateDiagram`; the header must be on its own line",
+                header_offset..header_offset + header_line.len(),
+            ));
+        }
+        parse_state(&lines[1..], source, &mut errors)
     } else {
         errors.push(Diagnostic::new(
             format!(
-                "unrecognised diagram header `{}`; expected `flowchart`, `graph`, or `sequenceDiagram`",
+                "unrecognised diagram header `{}`; expected `flowchart`, `graph`, `sequenceDiagram`, or `stateDiagram-v2`",
                 header_trimmed.chars().take(40).collect::<String>()
             ),
             header_offset..header_offset + header_line.len(),
@@ -488,6 +498,259 @@ fn parse_sequence(
 }
 
 // ---------------------------------------------------------------------------
+// State diagram parser
+// ---------------------------------------------------------------------------
+
+/// Parse a Mermaid `stateDiagram-v2` (or `stateDiagram`) body.
+///
+/// Supported:
+/// - `[*] --> S` (initial), `S --> [*]` (final)
+/// - `S --> T` and `S --> T : label`
+/// - `state "long description" as s` and `state s`
+/// - auto-declaration of states referenced only in transitions
+///
+/// Unsupported constructs (composite `state s { … }`, `direction`, `note`,
+/// fork/join/choice `<<…>>`, concurrency `--`, `state s : description`) are
+/// reported as positioned "unsupported" errors rather than silently dropped.
+fn parse_state(
+    lines: &[(usize, &str)],
+    _source: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Result<Diagram, Vec<Diagnostic>> {
+    // Explicit state declarations, in source order: id -> (label, decl span).
+    let mut decls: IndexMap<String, (String, Range<usize>)> = IndexMap::new();
+    // Raw transitions collected in source order.
+    struct RawTrans {
+        from: Endpoint,
+        to: Endpoint,
+        label: Option<String>,
+    }
+    let mut transitions: Vec<RawTrans> = Vec::new();
+
+    for &(offset, line) in lines {
+        let trimmed = line.trim();
+        let span = offset..offset + line.len();
+
+        // Semicolon separator (we only handle newline-separated statements).
+        if trimmed.contains(';') {
+            errors.push(Diagnostic::new(
+                "unsupported: semicolon statement separator; use newlines instead (kozue does not support this yet)",
+                span,
+            ));
+            continue;
+        }
+
+        // Composite states: any brace opens/closes a nested region.
+        if trimmed.contains('{') || trimmed == "}" {
+            errors.push(Diagnostic::new(
+                "unsupported: composite/nested state (`state s { … }`); kozue does not support this yet",
+                span,
+            ));
+            continue;
+        }
+
+        // Fork / join / choice / history pseudostates use `<<…>>` stereotypes.
+        if trimmed.contains("<<") {
+            errors.push(Diagnostic::new(
+                "unsupported: fork/join/choice/history pseudostate (`<<…>>`); kozue does not support this yet",
+                span,
+            ));
+            continue;
+        }
+
+        // Transitions (contain the `-->` arrow). Checked before the `direction`,
+        // `note`, and `state` keyword guards so that a state whose id happens to
+        // be one of those keywords (`note --> A`, `direction --> A`) is still
+        // parsed as a transition rather than misreported as an unsupported feature.
+        if trimmed.contains("-->") {
+            match parse_state_transition(trimmed) {
+                Ok((from, to, label)) => {
+                    if matches!(from, Endpoint::Initial) && matches!(to, Endpoint::Final) {
+                        errors.push(Diagnostic::new(
+                            "`[*] --> [*]` is not valid; initial pseudostate cannot transition directly to final pseudostate",
+                            span,
+                        ));
+                        continue;
+                    }
+                    transitions.push(RawTrans { from, to, label });
+                }
+                Err(msg) => errors.push(Diagnostic::new(msg, span)),
+            }
+            continue;
+        }
+
+        // `direction TB/LR/…` — kozue state layout is fixed top-down.
+        if strip_keyword_ci(trimmed, "direction").is_some() {
+            errors.push(Diagnostic::new(
+                "unsupported: direction in state diagrams; kozue lays state diagrams top-down (kozue does not support this yet)",
+                span,
+            ));
+            continue;
+        }
+
+        // Notes.
+        if strip_keyword_ci(trimmed, "note").is_some() {
+            errors.push(Diagnostic::new(
+                "unsupported: note (kozue does not support this yet)",
+                span,
+            ));
+            continue;
+        }
+
+        // State declarations: `state "desc" as id` or `state id`.
+        if let Some(rest) = strip_keyword_ci(trimmed, "state") {
+            match parse_state_decl(rest.trim()) {
+                Ok((id, label)) => {
+                    if decls.contains_key(&id) {
+                        errors.push(Diagnostic::new(
+                            format!("duplicate state declaration `{id}`"),
+                            span,
+                        ));
+                    } else {
+                        decls.insert(id, (label, span));
+                    }
+                }
+                Err(msg) => errors.push(Diagnostic::new(msg, span)),
+            }
+            continue;
+        }
+
+        // Unrecognised (e.g. `S : description` state-body text, bare ids).
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+    }
+
+    // Build the diagram: explicit declarations first (source order), then
+    // auto-declare any state referenced only in transitions.
+    let mut diagram = StateDiagram::new();
+    for (id, (label, _span)) in &decls {
+        diagram
+            .states
+            .insert(id.clone(), State::new(id.clone(), label.clone()));
+    }
+    for rt in &transitions {
+        for ep in [&rt.from, &rt.to] {
+            if let Endpoint::State(id) = ep {
+                if !diagram.states.contains_key(id) {
+                    diagram
+                        .states
+                        .insert(id.clone(), State::new(id.clone(), id.clone()));
+                }
+            }
+        }
+    }
+    for rt in transitions {
+        diagram
+            .transitions
+            .push(Transition::new(rt.from, rt.to, rt.label));
+    }
+
+    if errors.is_empty() {
+        Ok(Diagram::State(diagram))
+    } else {
+        Err(errors.clone())
+    }
+}
+
+/// Parse a state transition line `FROM --> TO` or `FROM --> TO : label`.
+///
+/// Returns `(from_endpoint, to_endpoint, optional_label)`.
+fn parse_state_transition(trimmed: &str) -> Result<(Endpoint, Endpoint, Option<String>), String> {
+    let idx = trimmed
+        .find("-->")
+        .expect("caller guarantees the line contains `-->`");
+    let from_part = trimmed[..idx].trim();
+    let after = trimmed[idx + 3..].trim();
+
+    // Split the target from an optional `: label`.
+    let (to_part, label) = match after.find(':') {
+        Some(ci) => {
+            let target = after[..ci].trim();
+            let lbl = after[ci + 1..].trim();
+            let label = if lbl.is_empty() {
+                None
+            } else {
+                Some(lbl.to_string())
+            };
+            (target, label)
+        }
+        None => (after, None),
+    };
+
+    let from = parse_state_endpoint(from_part, true)?;
+    let to = parse_state_endpoint(to_part, false)?;
+    Ok((from, to, label))
+}
+
+/// Parse a single transition endpoint. `[*]` maps to [`Endpoint::Initial`] on the
+/// left (`is_source`) and [`Endpoint::Final`] on the right; otherwise the token
+/// must be a bare state identifier.
+fn parse_state_endpoint(part: &str, is_source: bool) -> Result<Endpoint, String> {
+    let part = part.trim();
+    if part == "[*]" {
+        return Ok(if is_source {
+            Endpoint::Initial
+        } else {
+            Endpoint::Final
+        });
+    }
+    match split_id(part) {
+        Some((id, rest)) if rest.trim().is_empty() => Ok(Endpoint::State(id)),
+        _ => Err(format!(
+            "syntax error: expected a state identifier or `[*]`, got `{}`",
+            part.chars().take(40).collect::<String>()
+        )),
+    }
+}
+
+/// Parse the text following the `state` keyword: `"long description" as id` or a
+/// bare `id`.
+fn parse_state_decl(rest: &str) -> Result<(String, String), String> {
+    if rest.is_empty() {
+        return Err("expected a state identifier after `state`".to_string());
+    }
+    // Quoted display form: `state "desc" as id`.
+    if let Some(after_open) = rest.strip_prefix('"') {
+        let close = after_open
+            .find('"')
+            .ok_or("unterminated quoted state description")?;
+        let label = after_open[..close].to_string();
+        let after = after_open[close + 1..].trim();
+        let id = after
+            .strip_prefix("as ")
+            .or_else(|| after.strip_prefix("AS "))
+            .ok_or("expected `as <id>` after quoted state description")?
+            .trim();
+        match split_id(id) {
+            Some((id, tail)) if tail.trim().is_empty() => Ok((id, label)),
+            _ => Err(format!(
+                "invalid state identifier `{}`",
+                id.chars().take(40).collect::<String>()
+            )),
+        }
+    } else {
+        // Bare `state id`. Reject trailing tokens (e.g. `state s : desc`,
+        // which is a state-description assignment kozue does not support).
+        match split_id(rest) {
+            Some((id, tail)) if tail.trim().is_empty() => Ok((id.clone(), id)),
+            Some((_, tail)) if tail.trim_start().starts_with(':') => Err(
+                "unsupported: state description (`state s : …`); kozue does not support this yet"
+                    .to_string(),
+            ),
+            _ => Err(format!(
+                "invalid state declaration `{}`",
+                rest.chars().take(40).collect::<String>()
+            )),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Line tokenisation helpers
 // ---------------------------------------------------------------------------
 
@@ -509,17 +772,21 @@ fn logical_lines(source: &str) -> Vec<(usize, &str)> {
 }
 
 /// Strip a keyword prefix (case-insensitive) and return the rest, or None.
+///
+/// Uses `str::get` for the prefix slice so a non-ASCII first character (whose
+/// byte length straddles `keyword.len()`) returns `None` rather than panicking.
 fn strip_keyword_ci<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
-    if (s.len() >= keyword.len()
-        && s[..keyword.len()].eq_ignore_ascii_case(keyword)
-        // Must be followed by whitespace or end-of-string (word boundary).
-        && (s.len() == keyword.len()
-            || s[keyword.len()..].starts_with(|c: char| c.is_ascii_whitespace() || c == '\0')))
-        || s.eq_ignore_ascii_case(keyword)
-    {
-        Some(&s[keyword.len()..])
-    } else {
-        None
+    match s.get(..keyword.len()) {
+        Some(prefix)
+            if prefix.eq_ignore_ascii_case(keyword)
+                // Must be followed by whitespace or end-of-string (word boundary).
+                && (s.len() == keyword.len()
+                    || s[keyword.len()..]
+                        .starts_with(|c: char| c.is_ascii_whitespace() || c == '\0')) =>
+        {
+            Some(&s[keyword.len()..])
+        }
+        _ => None,
     }
 }
 
@@ -1325,5 +1592,160 @@ mod tests {
                 .any(|e| e.message.contains("unsupported") && e.message.contains("&")),
             "got: {errs:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // State diagram tests
+    // -----------------------------------------------------------------------
+
+    fn state(d: &Diagram) -> &StateDiagram {
+        match d {
+            Diagram::State(s) => s,
+            other => panic!("expected state diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_basic_v2() {
+        let src = "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Running : start\n  Running --> [*]\n";
+        let d = parse(src).expect("should parse");
+        let s = state(&d);
+        assert!(s.states.contains_key("Idle"));
+        assert!(s.states.contains_key("Running"));
+        assert_eq!(s.transitions.len(), 3);
+        assert_eq!(s.transitions[0].from, Endpoint::Initial);
+        assert_eq!(s.transitions[0].to, Endpoint::State("Idle".into()));
+        assert_eq!(s.transitions[1].label.as_deref(), Some("start"));
+        assert_eq!(s.transitions[2].to, Endpoint::Final);
+    }
+
+    #[test]
+    fn state_plain_header_also_accepted() {
+        let src = "stateDiagram\n  [*] --> A\n  A --> [*]\n";
+        let d = parse(src).expect("plain stateDiagram header should parse");
+        assert_eq!(state(&d).transitions.len(), 2);
+    }
+
+    #[test]
+    fn state_quoted_description_and_alias() {
+        let src = "stateDiagram-v2\n  state \"Long Name\" as s1\n  [*] --> s1\n";
+        let d = parse(src).expect("should parse");
+        let s = state(&d);
+        assert_eq!(s.states.get("s1").unwrap().label, "Long Name");
+    }
+
+    #[test]
+    fn state_bare_declaration() {
+        let src = "stateDiagram-v2\n  state Alone\n  [*] --> Alone\n";
+        let d = parse(src).expect("should parse");
+        let s = state(&d);
+        assert_eq!(s.states.get("Alone").unwrap().label, "Alone");
+    }
+
+    #[test]
+    fn state_transition_without_label() {
+        let src = "stateDiagram-v2\n  A --> B\n";
+        let d = parse(src).expect("should parse");
+        assert_eq!(state(&d).transitions[0].label, None);
+    }
+
+    #[test]
+    fn state_initial_to_final_is_error() {
+        let src = "stateDiagram-v2\n  [*] --> [*]\n";
+        let errs = parse(src).expect_err("[*] --> [*] should be rejected");
+        assert!(
+            errs.iter().any(|e| e.message.contains("[*] --> [*]")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_composite_is_unsupported() {
+        let src = "stateDiagram-v2\n  state Outer {\n    [*] --> Inner\n  }\n";
+        let errs = parse(src).expect_err("composite state should be unsupported");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("composite")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_fork_join_is_unsupported() {
+        let src = "stateDiagram-v2\n  state fork_state <<fork>>\n";
+        let errs = parse(src).expect_err("fork should be unsupported");
+        assert!(
+            errs.iter().any(|e| e.message.contains("unsupported")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_direction_is_unsupported() {
+        let src = "stateDiagram-v2\n  direction LR\n  [*] --> A\n";
+        let errs = parse(src).expect_err("direction should be unsupported");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("direction")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_note_is_unsupported() {
+        let src = "stateDiagram-v2\n  [*] --> A\n  note right of A : hi\n";
+        let errs = parse(src).expect_err("note should be unsupported");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("note")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_description_assignment_is_unsupported() {
+        let src = "stateDiagram-v2\n  state s\n  s : some description\n";
+        let errs = parse(src).expect_err("state-description text should be rejected");
+        assert!(!errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn state_duplicate_declaration_is_error() {
+        let src = "stateDiagram-v2\n  state \"A\" as x\n  state \"B\" as x\n";
+        let errs = parse(src).expect_err("duplicate decl should error");
+        assert!(
+            errs.iter().any(|e| e.message.contains("duplicate")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_auto_declares_referenced_states() {
+        let src = "stateDiagram-v2\n  A --> B\n  B --> C\n";
+        let d = parse(src).expect("should parse");
+        let s = state(&d);
+        for id in ["A", "B", "C"] {
+            assert!(s.states.contains_key(id), "missing {id}");
+        }
+    }
+
+    #[test]
+    fn state_id_colliding_with_keyword_is_a_transition() {
+        // `note` / `direction` are legal Mermaid state ids; as a transition
+        // source they must be parsed as states, not misreported as unsupported.
+        let src = "stateDiagram-v2\n  note --> A\n  direction --> B\n";
+        let d = parse(src).expect("keyword-named states should parse");
+        let s = state(&d);
+        assert!(s.states.contains_key("note"));
+        assert!(s.states.contains_key("direction"));
+        assert_eq!(s.transitions.len(), 2);
+    }
+
+    #[test]
+    fn state_non_ascii_unrecognised_line_does_not_panic() {
+        // A non-ASCII bare line must yield a diagnostic, not a byte-boundary panic.
+        let src = "stateDiagram-v2\n  ああ\n";
+        let errs = parse(src).expect_err("non-ascii bare line should error");
+        assert!(!errs.is_empty());
     }
 }

@@ -59,6 +59,16 @@ pub const FEATURES: &[Feature] = &[
         note: "M4 target: PlantUML sequence diagrams parsed into SequenceDiagram IR",
     },
     Feature {
+        name: "state diagram",
+        support: Support::Supported,
+        note: "detected when the @startuml body uses `[*]` or a `state` declaration; parsed into StateDiagram IR",
+    },
+    Feature {
+        name: "diagram-kind inference",
+        support: Support::Partial,
+        note: "a body with no `[*]` and no `state` keyword (only `A --> B` lines) is read as a sequence diagram, since that is ambiguous with a dashed message",
+    },
+    Feature {
         name: "@startmindmap / @startgantt / @startjson / etc.",
         support: Support::Unsupported,
         note: "non-sequence @start<type> delimiters produce a clear unsupported error",
@@ -144,6 +154,42 @@ pub const FEATURES: &[Feature] = &[
         name: "colored arrows -[#red]>",
         support: Support::Unsupported,
         note: "reports an unsupported error",
+    },
+    // --- State diagram ---
+    Feature {
+        name: "state [*] --> S / S --> [*]",
+        support: Support::Supported,
+        note: "[*] as source maps to the initial pseudostate, as target to the final pseudostate",
+    },
+    Feature {
+        name: "state transition S --> T : label / S -> T",
+        support: Support::Supported,
+        note: "both `-->` and `->` are transitions in a state diagram; text after the colon is the label",
+    },
+    Feature {
+        name: "state S / state \"desc\" as S",
+        support: Support::Supported,
+        note: "bare and quoted-alias declarations; auto-declaration for states used only in transitions",
+    },
+    Feature {
+        name: "[*] --> [*]",
+        support: Support::Unsupported,
+        note: "reports an error; initial cannot transition directly to final",
+    },
+    Feature {
+        name: "composite state s { … }",
+        support: Support::Unsupported,
+        note: "reports an unsupported error; no nested regions or concurrency (`--`)",
+    },
+    Feature {
+        name: "fork / join / choice / history <<…>>",
+        support: Support::Unsupported,
+        note: "stereotype pseudostates report an unsupported error",
+    },
+    Feature {
+        name: "state description (S : text)",
+        support: Support::Unsupported,
+        note: "reports an unsupported error; internal state text not rendered",
     },
     // --- Comments ---
     Feature {

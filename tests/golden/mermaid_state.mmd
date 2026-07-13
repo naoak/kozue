@@ -1,0 +1,9 @@
+stateDiagram-v2
+    state "Idle" as idle
+    state "Active" as active
+    state "Done" as done
+    [*] --> idle
+    idle --> active : start
+    active --> active : tick
+    active --> done : finish
+    done --> [*]

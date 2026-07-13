@@ -363,7 +363,7 @@ fn seq_long_label_widens_columns() {
 // Mermaid golden tests
 // ---------------------------------------------------------------------------
 
-const MERMAID_GOLDEN_CASES: &[&str] = &["mermaid_flow", "mermaid_seq"];
+const MERMAID_GOLDEN_CASES: &[&str] = &["mermaid_flow", "mermaid_seq", "mermaid_state"];
 
 fn compile_mermaid(src: &str) -> String {
     let diagram = kozue_mermaid::parse(src).expect("mermaid golden input must parse");
@@ -445,7 +445,7 @@ fn mermaid_rendering_is_deterministic_across_processes() {
 // PlantUML golden tests
 // ---------------------------------------------------------------------------
 
-const PLANTUML_GOLDEN_CASES: &[&str] = &["plantuml_seq"];
+const PLANTUML_GOLDEN_CASES: &[&str] = &["plantuml_seq", "plantuml_state"];
 
 fn compile_plantuml(src: &str) -> String {
     let diagram = kozue_plantuml::parse(src).expect("plantuml golden input must parse");

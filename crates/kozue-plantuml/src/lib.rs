@@ -52,7 +52,8 @@ use std::ops::Range;
 
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
-    ArrowType, Diagram, LineStyle, Message, Participant, SequenceDiagram, SequenceItem,
+    ArrowType, Diagram, Endpoint, LineStyle, Message, Participant, SequenceDiagram, SequenceItem,
+    State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -159,14 +160,46 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
     };
     let body = &lines[1..body_end];
 
-    parse_sequence_body(body, source, &mut errors);
-
-    if errors.is_empty() {
-        // Re-parse cleanly to produce the diagram (errors already empty).
-        Ok(parse_sequence_clean(body))
+    // PlantUML uses `@startuml` for every diagram type; the kind is inferred from
+    // the body syntax. A `[*]` pseudostate or a `state` declaration unambiguously
+    // signals a state diagram; otherwise we treat the body as a sequence diagram
+    // (the M4 behaviour). A body with neither signal that happens to be a state
+    // machine written only as `A --> B` transitions is genuinely ambiguous with a
+    // dashed-message sequence, so we keep the sequence reading — documented in
+    // features.rs — rather than silently guessing.
+    if body_is_state(body) {
+        parse_state_body(body, source, &mut errors);
+        if errors.is_empty() {
+            Ok(parse_state_clean(body))
+        } else {
+            Err(errors)
+        }
     } else {
-        Err(errors)
+        parse_sequence_body(body, source, &mut errors);
+        if errors.is_empty() {
+            // Re-parse cleanly to produce the diagram (errors already empty).
+            Ok(parse_sequence_clean(body))
+        } else {
+            Err(errors)
+        }
     }
+}
+
+/// Does this body use state-diagram syntax? True when any logical line has a
+/// `[*]` pseudostate endpoint or begins with the `state` keyword.
+///
+/// The `[*]` check only inspects the part before a `:` label: a `[*]` inside a
+/// message/transition label (e.g. a sequence `A -> B : mark [*]`) is literal text,
+/// not a diagram-kind signal, so it must not misroute a sequence diagram here.
+fn body_is_state(lines: &[(usize, String)]) -> bool {
+    lines.iter().any(|(_, line)| {
+        let trimmed = line.trim();
+        let head = trimmed.split(':').next().unwrap_or(trimmed);
+        head.contains("[*]")
+            || split_keyword(trimmed)
+                .map(|(kw, _)| kw.eq_ignore_ascii_case("state"))
+                .unwrap_or(false)
+    })
 }
 
 /// Render diagnostics to stderr using ariadne (matches the kozue-dsl convention).
@@ -414,6 +447,294 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
 }
 
 // ---------------------------------------------------------------------------
+// State diagram parser
+// ---------------------------------------------------------------------------
+
+/// Keywords that are unsupported in a state-diagram body. Word-boundary matched.
+const STATE_UNSUPPORTED_KW: &[&str] = &[
+    "note", "hnote", "rnote", "hide", "show", "skinparam", "title", "header", "footer", "scale",
+    "caption", "legend",
+];
+
+/// Error-collecting pass over a PlantUML state-diagram body. Mirrors
+/// [`parse_sequence_body`]: it validates every line and pushes diagnostics, but
+/// does not build the diagram (that is [`parse_state_clean`], run only when this
+/// pass finds no errors).
+fn parse_state_body(lines: &[(usize, String)], _source: &str, errors: &mut Vec<Diagnostic>) {
+    let mut declared_ids: Vec<String> = Vec::new();
+    for (offset, line) in lines {
+        let trimmed = line.trim();
+        let span = *offset..offset + line.len();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Preprocessor directives.
+        if trimmed.starts_with('!') {
+            errors.push(Diagnostic::new(
+                "unsupported: PlantUML preprocessor directives (`!...`) are not supported; kozue targets a preprocessor-free subset",
+                span,
+            ));
+            continue;
+        }
+
+        // Composite / nested states.
+        if trimmed.contains('{') || trimmed == "}" {
+            errors.push(Diagnostic::new(
+                "unsupported: composite/nested state (`state s { … }`); kozue does not support this yet",
+                span,
+            ));
+            continue;
+        }
+
+        // Fork / join / choice / history pseudostates.
+        if trimmed.contains("<<") {
+            errors.push(Diagnostic::new(
+                "unsupported: fork/join/choice/history pseudostate (`<<…>>`); kozue does not support this yet",
+                span,
+            ));
+            continue;
+        }
+
+        // `left to right direction` / `top to bottom direction`.
+        if trimmed.eq_ignore_ascii_case("left to right direction")
+            || trimmed.eq_ignore_ascii_case("top to bottom direction")
+        {
+            errors.push(Diagnostic::new(
+                "unsupported: direction in state diagrams; kozue lays state diagrams top-down (kozue does not support this yet)",
+                span,
+            ));
+            continue;
+        }
+
+        // Concurrency separator inside composite states.
+        if trimmed == "--" || trimmed == "||" {
+            errors.push(Diagnostic::new(
+                "unsupported: concurrent region separator (`--` / `||`); kozue does not support this yet",
+                span,
+            ));
+            continue;
+        }
+
+        // State declarations: `state id` or `state "desc" as id`.
+        if let Some((kw, rest)) = split_keyword(trimmed) {
+            if kw.eq_ignore_ascii_case("state") {
+                match parse_state_decl_puml(rest.trim()) {
+                    Ok((id, _label)) => {
+                        if declared_ids.iter().any(|d| d == &id) {
+                            errors.push(Diagnostic::new(
+                                format!("duplicate state declaration `{id}`"),
+                                span,
+                            ));
+                        } else {
+                            declared_ids.push(id);
+                        }
+                    }
+                    Err(msg) => errors.push(Diagnostic::new(msg, span)),
+                }
+                continue;
+            }
+        }
+
+        // Transitions (contain a `->` / `-->` arrow).
+        if let Some(result) = try_parse_state_transition(trimmed) {
+            match result {
+                Ok((from, to, _label)) => {
+                    if matches!(from, Endpoint::Initial) && matches!(to, Endpoint::Final) {
+                        errors.push(Diagnostic::new(
+                            "`[*] --> [*]` is not valid; initial pseudostate cannot transition directly to final pseudostate",
+                            span,
+                        ));
+                    }
+                }
+                Err(msg) => errors.push(Diagnostic::new(msg, span)),
+            }
+            continue;
+        }
+
+        // Unsupported keywords (note/hide/skinparam/…).
+        let mut found_unsupported = false;
+        for &kw in STATE_UNSUPPORTED_KW {
+            if trimmed == kw
+                || (trimmed.starts_with(kw)
+                    && trimmed[kw.len()..].starts_with(|c: char| c.is_ascii_whitespace()))
+            {
+                errors.push(Diagnostic::new(
+                    format!("unsupported: {kw} (kozue does not support this yet)"),
+                    span.clone(),
+                ));
+                found_unsupported = true;
+                break;
+            }
+        }
+        if found_unsupported {
+            continue;
+        }
+
+        // Unrecognised line (e.g. `S : description` state-body text).
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+    }
+}
+
+/// Clean pass — only called when [`parse_state_body`] found no errors.
+fn parse_state_clean(lines: &[(usize, String)]) -> Diagram {
+    let mut diagram = StateDiagram::new();
+
+    let ensure_state = |diagram: &mut StateDiagram, id: &str, label: Option<&str>| {
+        if !diagram.states.contains_key(id) {
+            let lbl = label.unwrap_or(id).to_string();
+            diagram
+                .states
+                .insert(id.to_string(), State::new(id.to_string(), lbl));
+        }
+    };
+
+    // Explicit declarations first (source order), so their labels win.
+    for (_offset, line) in lines {
+        let trimmed = line.trim();
+        if let Some((kw, rest)) = split_keyword(trimmed) {
+            if kw.eq_ignore_ascii_case("state") {
+                if let Ok((id, label)) = parse_state_decl_puml(rest.trim()) {
+                    ensure_state(&mut diagram, &id, Some(&label));
+                }
+                continue;
+            }
+        }
+    }
+
+    // Then transitions, auto-declaring any endpoints not seen above.
+    for (_offset, line) in lines {
+        let trimmed = line.trim();
+        if let Some(Ok((from, to, label))) = try_parse_state_transition(trimmed) {
+            for ep in [&from, &to] {
+                if let Endpoint::State(id) = ep {
+                    ensure_state(&mut diagram, id, None);
+                }
+            }
+            diagram.transitions.push(Transition::new(from, to, label));
+        }
+    }
+
+    Diagram::State(diagram)
+}
+
+/// Parse the text after the `state` keyword: `"desc" as id` or a bare `id`.
+fn parse_state_decl_puml(rest: &str) -> Result<(String, String), String> {
+    if rest.is_empty() {
+        return Err("expected a state identifier after `state`".to_string());
+    }
+    // Quoted display form: `state "desc" as id`.
+    if let Some(after_open) = rest.strip_prefix('"') {
+        let close = after_open
+            .find('"')
+            .ok_or("unterminated quoted state description")?;
+        let label = after_open[..close].to_string();
+        let after = after_open[close + 1..].trim();
+        let id = strip_keyword_boundary_ci(after, "as")
+            .ok_or("expected `as <id>` after quoted state description")?
+            .trim();
+        if !is_single_token(id) {
+            return Err(format!(
+                "invalid state identifier `{}`",
+                id.chars().take(40).collect::<String>()
+            ));
+        }
+        Ok((id.to_string(), label))
+    } else {
+        // Bare `state id`. Reject `state s : desc` (state-description assignment)
+        // and any trailing tokens.
+        if rest.contains(':') {
+            return Err(
+                "unsupported: state description (`state s : …`); kozue does not support this yet"
+                    .to_string(),
+            );
+        }
+        if !is_single_token(rest) || !is_valid_participant_id(rest) {
+            return Err(format!(
+                "invalid state declaration `{}`",
+                rest.chars().take(40).collect::<String>()
+            ));
+        }
+        Ok((rest.to_string(), rest.to_string()))
+    }
+}
+
+/// (from endpoint, to endpoint, optional transition label)
+type StateTransResult = (Endpoint, Endpoint, Option<String>);
+
+/// Try to parse a PlantUML state transition `FROM --> TO` / `FROM -> TO`,
+/// optionally with a ` : label`. Returns `None` if the line has no arrow.
+fn try_parse_state_transition(line: &str) -> Option<Result<StateTransResult, String>> {
+    // Split off an optional `: label` FIRST, so an arrow sequence inside the
+    // label text (e.g. `A -> B : x --> y`) is not mistaken for the transition
+    // arrow. State identifiers never contain `:`, so the first colon is always
+    // the label separator.
+    let (endpoints, label) = match line.find(':') {
+        Some(ci) => {
+            let lbl = line[ci + 1..].trim();
+            let label = if lbl.is_empty() {
+                None
+            } else {
+                Some(lbl.to_string())
+            };
+            (line[..ci].trim(), label)
+        }
+        None => (line.trim(), None),
+    };
+
+    // Longest arrow first so `-->` is not split as `->`.
+    let arrow = if endpoints.contains("-->") {
+        "-->"
+    } else if endpoints.contains("->") {
+        "->"
+    } else {
+        return None;
+    };
+
+    let idx = endpoints.find(arrow).expect("arrow presence just checked");
+    let from_part = endpoints[..idx].trim();
+    let to_part = endpoints[idx + arrow.len()..].trim();
+
+    let from = match parse_state_endpoint_puml(from_part, true) {
+        Ok(ep) => ep,
+        Err(e) => return Some(Err(e)),
+    };
+    let to = match parse_state_endpoint_puml(to_part, false) {
+        Ok(ep) => ep,
+        Err(e) => return Some(Err(e)),
+    };
+    Some(Ok((from, to, label)))
+}
+
+/// Parse a transition endpoint. `[*]` maps to [`Endpoint::Initial`] as a source
+/// and [`Endpoint::Final`] as a target; otherwise a bare state identifier.
+fn parse_state_endpoint_puml(part: &str, is_source: bool) -> Result<Endpoint, String> {
+    let part = part.trim();
+    if part == "[*]" {
+        return Ok(if is_source {
+            Endpoint::Initial
+        } else {
+            Endpoint::Final
+        });
+    }
+    if is_single_token(part) && is_valid_participant_id(part) {
+        Ok(Endpoint::State(part.to_string()))
+    } else {
+        Err(format!(
+            "syntax error: expected a state identifier or `[*]`, got `{}`",
+            part.chars().take(40).collect::<String>()
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Comment masking (block `/' '/` and line `'`)
 // ---------------------------------------------------------------------------
 
@@ -636,15 +957,19 @@ fn split_keyword(line: &str) -> Option<(&str, &str)> {
 
 /// Strip `as ` keyword prefix with word-boundary check (case-insensitive).
 /// Returns the text after `as` if matched, None otherwise.
+///
+/// Uses `str::get` for the prefix slice so a non-ASCII leading character (whose
+/// byte length straddles `keyword.len()`) returns `None` rather than panicking.
 fn strip_keyword_boundary_ci<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
-    if s.len() >= keyword.len()
-        && s[..keyword.len()].eq_ignore_ascii_case(keyword)
-        && (s.len() == keyword.len()
-            || s[keyword.len()..].starts_with(|c: char| c.is_ascii_whitespace()))
-    {
-        Some(&s[keyword.len()..])
-    } else {
-        None
+    match s.get(..keyword.len()) {
+        Some(prefix)
+            if prefix.eq_ignore_ascii_case(keyword)
+                && (s.len() == keyword.len()
+                    || s[keyword.len()..].starts_with(|c: char| c.is_ascii_whitespace())) =>
+        {
+            Some(&s[keyword.len()..])
+        }
+        _ => None,
     }
 }
 
@@ -1230,5 +1555,161 @@ mod tests {
         let src = "@startuml\nnote over A: text\nalt success\nA -> B : hi\nend\n@enduml\n";
         let errs = parse_err(src);
         assert!(errs.len() >= 2, "expected multiple errors, got: {errs:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // State diagram tests
+    // -----------------------------------------------------------------------
+
+    fn parse_state_ok(src: &str) -> StateDiagram {
+        match parse(src).expect("should parse without errors") {
+            Diagram::State(s) => s,
+            other => panic!("expected State diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_basic_flow() {
+        let src = "@startuml\n[*] --> Idle\nIdle --> Running : start\nRunning --> [*]\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert!(s.states.contains_key("Idle"));
+        assert!(s.states.contains_key("Running"));
+        assert_eq!(s.transitions.len(), 3);
+        assert_eq!(s.transitions[0].from, Endpoint::Initial);
+        assert_eq!(s.transitions[0].to, Endpoint::State("Idle".into()));
+        assert_eq!(s.transitions[1].label.as_deref(), Some("start"));
+        assert_eq!(s.transitions[2].to, Endpoint::Final);
+    }
+
+    #[test]
+    fn state_solid_arrow_also_a_transition() {
+        // In a state diagram (signalled by `[*]`), `->` is a transition too.
+        let src = "@startuml\n[*] -> A\nA -> B\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert_eq!(s.transitions.len(), 2);
+        assert!(s.states.contains_key("A") && s.states.contains_key("B"));
+    }
+
+    #[test]
+    fn state_explicit_declaration_with_alias() {
+        let src = "@startuml\nstate \"Long Name\" as s1\n[*] --> s1\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert_eq!(s.states.get("s1").unwrap().label, "Long Name");
+    }
+
+    #[test]
+    fn state_bare_declaration() {
+        let src = "@startuml\nstate Alone\n[*] --> Alone\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert_eq!(s.states.get("Alone").unwrap().label, "Alone");
+    }
+
+    #[test]
+    fn state_without_pseudostate_but_with_state_keyword() {
+        // No `[*]`, but a `state` keyword still signals a state diagram.
+        let src = "@startuml\nstate A\nA --> B\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert_eq!(s.transitions.len(), 1);
+    }
+
+    #[test]
+    fn plain_dashed_message_stays_a_sequence() {
+        // No state signal at all → the `A --> B` reads as a sequence message.
+        let src = "@startuml\nA --> B : hi\n@enduml\n";
+        match parse(src).expect("should parse") {
+            Diagram::Sequence(_) => {}
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_initial_to_final_is_error() {
+        let src = "@startuml\n[*] --> [*]\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("[*] --> [*]")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_composite_is_unsupported() {
+        let src = "@startuml\nstate Outer {\n[*] --> Inner\n}\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("composite")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_fork_is_unsupported() {
+        let src = "@startuml\nstate fork_state <<fork>>\n[*] --> fork_state\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("unsupported")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_note_is_unsupported() {
+        let src = "@startuml\n[*] --> A\nnote right of A : hi\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("note")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_description_assignment_is_unsupported() {
+        let src = "@startuml\nstate A\nA : doing work\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(!errs.is_empty(), "got: {errs:?}");
+    }
+
+    #[test]
+    fn state_duplicate_declaration_is_error() {
+        let src = "@startuml\nstate \"A\" as x\nstate \"B\" as x\n[*] --> x\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("duplicate")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn state_transition_label_containing_arrow() {
+        // A label containing `-->` must not be mistaken for the transition arrow.
+        let src = "@startuml\n[*] -> A\nA -> B : x --> y\n@enduml\n";
+        let s = parse_state_ok(src);
+        assert_eq!(s.transitions.len(), 2);
+        assert_eq!(s.transitions[1].from, Endpoint::State("A".into()));
+        assert_eq!(s.transitions[1].to, Endpoint::State("B".into()));
+        assert_eq!(s.transitions[1].label.as_deref(), Some("x --> y"));
+    }
+
+    #[test]
+    fn state_non_ascii_after_alias_does_not_panic() {
+        // Non-ASCII trailing token after a quoted state must diagnose, not panic.
+        let src = "@startuml\nstate \"名前\" あ\n[*] --> x\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn pseudostate_marker_inside_message_label_stays_sequence() {
+        // `[*]` appears only inside a sequence message label — it must NOT be read
+        // as a state-diagram signal.
+        let src = "@startuml\nA -> B : send [*] token\n@enduml\n";
+        match parse(src).expect("should parse") {
+            Diagram::Sequence(s) => {
+                assert_eq!(s.items.len(), 1);
+            }
+            other => panic!("expected Sequence, got {other:?}"),
+        }
     }
 }

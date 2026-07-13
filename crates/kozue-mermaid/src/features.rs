@@ -59,6 +59,11 @@ pub const FEATURES: &[Feature] = &[
         support: Support::Supported,
         note: "participant declarations, ->> and -->> messages, self-messages",
     },
+    Feature {
+        name: "stateDiagram-v2 / stateDiagram",
+        support: Support::Supported,
+        note: "[*] pseudostates, --> transitions with labels, `state \"desc\" as id`, auto-declared states",
+    },
     // --- Flowchart directions ---
     Feature {
         name: "direction TD / TB",
@@ -207,6 +212,57 @@ pub const FEATURES: &[Feature] = &[
         name: "activate / deactivate",
         support: Support::Unsupported,
         note: "reports an unsupported error",
+    },
+    // --- State diagram ---
+    Feature {
+        name: "state [*] --> S / S --> [*]",
+        support: Support::Supported,
+        note: "[*] as source maps to the initial pseudostate, as target to the final pseudostate",
+    },
+    Feature {
+        name: "state transition label S --> T : label",
+        support: Support::Supported,
+        note: "text after the colon becomes the transition label",
+    },
+    Feature {
+        name: "state \"description\" as id",
+        support: Support::Supported,
+        note: "quoted display name used as label; bare `state id` also accepted",
+    },
+    Feature {
+        name: "auto-declare states in transitions",
+        support: Support::Supported,
+        note: "states referenced only in transitions are declared with id as label",
+    },
+    Feature {
+        name: "[*] --> [*]",
+        support: Support::Unsupported,
+        note: "reports an error; initial cannot transition directly to final",
+    },
+    Feature {
+        name: "composite / nested state s { … }",
+        support: Support::Unsupported,
+        note: "reports an unsupported error; no nested regions",
+    },
+    Feature {
+        name: "fork / join / choice / history <<…>>",
+        support: Support::Unsupported,
+        note: "stereotype pseudostates report an unsupported error",
+    },
+    Feature {
+        name: "state direction",
+        support: Support::Unsupported,
+        note: "reports an unsupported error; kozue lays state diagrams top-down",
+    },
+    Feature {
+        name: "state note",
+        support: Support::Unsupported,
+        note: "reports an unsupported error",
+    },
+    Feature {
+        name: "state description (S : text)",
+        support: Support::Unsupported,
+        note: "reports an unsupported error; internal state text not rendered",
     },
     // --- Common ---
     Feature {
