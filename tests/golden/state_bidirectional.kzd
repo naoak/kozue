@@ -1,0 +1,10 @@
+// Bidirectional transitions: A <-> B (a -> b and b -> a)
+diagram state_bidirectional {
+  state a: "A"
+  state b: "B"
+
+  [*] -> a
+  a -> b : "go"
+  b -> a : "back"
+  b -> [*]
+}

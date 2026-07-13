@@ -978,7 +978,7 @@ fn png_rendering_is_deterministic_across_processes() {
 // M7a: State diagram golden tests
 // ---------------------------------------------------------------------------
 
-const STATE_GOLDEN_CASES: &[&str] = &["state_basic"];
+const STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 
 fn compile_state(src: &str) -> String {
     let diagram = kozue_dsl::parse(src).expect("state golden input must parse");

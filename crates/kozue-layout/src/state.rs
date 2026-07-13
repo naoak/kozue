@@ -14,12 +14,18 @@ const SELF_LOOP_OFFSET: f64 = 25.0;
 const CIRCLE_POINTS: usize = 20;
 
 fn circle_path(cx: f64, cy: f64, r: f64, filled: bool) -> Path {
-    let points: Vec<(f64, f64)> = (0..CIRCLE_POINTS)
+    let mut points: Vec<(f64, f64)> = (0..CIRCLE_POINTS)
         .map(|i| {
             let angle = i as f64 * 2.0 * std::f64::consts::PI / CIRCLE_POINTS as f64;
             (cx + r * angle.cos(), cy + r * angle.sin())
         })
         .collect();
+    // Close the ring: an unfilled circle renders as an open polyline, so repeat
+    // the first point to join the last segment back to the start (otherwise the
+    // stroked outer circle of a final state has a visible gap at angle 0).
+    if let Some(&first) = points.first() {
+        points.push(first);
+    }
     Path {
         points,
         filled,
