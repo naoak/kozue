@@ -19,6 +19,7 @@ mod coords;
 mod cycle;
 mod layering;
 mod ordering;
+pub mod semantic;
 mod sequence;
 mod state;
 
@@ -26,6 +27,8 @@ use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign,
 };
+
+pub use semantic::SemanticLayout;
 
 pub(crate) const FONT_SIZE: f64 = 16.0;
 pub(crate) const PAD_X: f64 = 20.0;
@@ -65,22 +68,175 @@ impl Placed {
     }
 }
 
-/// Lay out a semantic [`Diagram`] into a [`Scene`].
+/// The combined output of a full layout pass: the renderable scene together with
+/// the semantic-to-geometry mapping.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutOutput {
+    /// The renderable scene (drawing primitives). Identical to the value
+    /// returned by [`layout`].
+    pub scene: Scene,
+    /// Semantic-to-geometry mapping for exchange exporters, editors, etc.
+    pub semantic: SemanticLayout,
+}
+
+/// Lay out a semantic [`Diagram`] into a [`Scene`] together with the
+/// [`SemanticLayout`] that maps diagram elements to their geometric positions.
 ///
 /// Cycles are supported: back edges are reversed internally for layering and
 /// drawn in their original direction. Self-loop edges are rejected.
-pub fn layout(diagram: &Diagram) -> Result<Scene, LayoutError> {
+pub fn layout_full(diagram: &Diagram) -> Result<LayoutOutput, LayoutError> {
     match diagram {
-        Diagram::Graph(g) => layout_graph(g),
-        Diagram::Sequence(s) => Ok(sequence::layout_sequence(s)),
-        Diagram::State(s) => state::layout_state(s),
+        Diagram::Graph(g) => layout_graph_full(g),
+        Diagram::Sequence(s) => Ok(sequence::layout_sequence_full(s)),
+        Diagram::State(s) => state::layout_state_full(s),
         _ => Err(LayoutError {
             message: "unsupported diagram variant".to_string(),
         }),
     }
 }
 
-fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
+/// Lay out a semantic [`Diagram`] into a [`Scene`].
+///
+/// Cycles are supported: back edges are reversed internally for layering and
+/// drawn in their original direction. Self-loop edges are rejected.
+///
+/// This is a backward-compatible wrapper around [`layout_full`]; it returns
+/// only the [`Scene`] and discards the [`SemanticLayout`].
+pub fn layout(diagram: &Diagram) -> Result<Scene, LayoutError> {
+    layout_full(diagram).map(|o| o.scene)
+}
+
+/// Pure-geometry result of computing one edge's route.
+///
+/// Produced by [`compute_edge_geom`] and consumed by both
+/// [`push_edge_geom`] (which emits [`SceneItem`]s) and the [`SemanticLayout`]
+/// builder. This ensures the Scene and the SemanticLayout are always derived
+/// from the same clipped endpoint computation.
+pub(crate) struct EdgeGeom {
+    /// Routing points (clipped at node borders), source-to-target order.
+    pub(crate) route: Vec<(f64, f64)>,
+}
+
+/// Compute the geometry for a single edge without emitting any [`SceneItem`]s.
+///
+/// `pts` are the routing points **in original edge orientation** (from center,
+/// bends…, to center). The function clips the endpoints to the node borders
+/// and returns the full route.
+///
+/// Label anchor computation is left to the caller because it requires the
+/// actual label text (for width-aware displacement of mutual-edge labels).
+pub(crate) fn compute_edge_geom(mut pts: Vec<(f64, f64)>, from: &Placed, to: &Placed) -> EdgeGeom {
+    let last = pts.len() - 1;
+    pts[0] = clip_to_rect(from, pts[1].0, pts[1].1);
+    let end = clip_to_rect(to, pts[last - 1].0, pts[last - 1].1);
+    pts[last] = end;
+
+    EdgeGeom { route: pts }
+}
+
+/// Compute the anchor (text center) for an edge/transition label.
+///
+/// Single source of truth shared by [`push_edge_geom`] (Scene text position)
+/// and the `SemanticLayout` builders (graph/state), so the two never diverge.
+///
+/// - `route` is the clipped polyline; the anchor sits at its arc-length midpoint.
+/// - For an ordinary single edge (`offset == (0, 0)`) the anchor is the midpoint
+///   lifted 4px up.
+/// - For a mutual edge (non-zero `offset`) the anchor is displaced along the
+///   offset direction by half the label's projected extent plus [`LABEL_GAP`],
+///   so the two mutual labels never overlap regardless of text length.
+pub(crate) fn edge_label_anchor(
+    route: &[(f64, f64)],
+    tw: f64,
+    th: f64,
+    offset: (f64, f64),
+) -> (f64, f64) {
+    let (mx, my) = polyline_midpoint(route);
+    if offset == (0.0, 0.0) {
+        (mx, my - 4.0)
+    } else {
+        let (ox, oy) = offset;
+        let len = (ox * ox + oy * oy).sqrt().max(1e-6);
+        let (ux, uy) = (ox / len, oy / len);
+        let half = ux.abs() * (tw / 2.0) + uy.abs() * (th / 2.0);
+        let d = half + LABEL_GAP;
+        (mx + ux * d, my + uy * d)
+    }
+}
+
+/// Emit [`SceneItem`]s for one edge given its pre-computed geometry.
+///
+/// This is the "emit" half of what was previously a single `push_edge`
+/// function. It produces identical output to the old `push_edge`.
+pub(crate) fn push_edge_geom(
+    items: &mut Vec<SceneItem>,
+    geom: &EdgeGeom,
+    label: Option<&str>,
+    arrow: ArrowType,
+    label_offset: (f64, f64),
+) {
+    let pts = &geom.route;
+    let last = pts.len() - 1;
+    let end = pts[last];
+
+    let draw_arrow = !matches!(arrow, ArrowType::None);
+
+    if draw_arrow {
+        let dx = end.0 - pts[last - 1].0;
+        let dy = end.1 - pts[last - 1].1;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let ux = dx / len;
+        let uy = dy / len;
+        let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
+
+        let mut line_pts = pts.clone();
+        line_pts[last] = line_end;
+        items.push(SceneItem::Path(Path {
+            points: line_pts,
+            filled: false,
+            dashed: false,
+        }));
+
+        let px = -uy;
+        let py = ux;
+        let left = (
+            line_end.0 + px * ARROW_HALF_W,
+            line_end.1 + py * ARROW_HALF_W,
+        );
+        let right = (
+            line_end.0 - px * ARROW_HALF_W,
+            line_end.1 - py * ARROW_HALF_W,
+        );
+        items.push(SceneItem::Path(Path {
+            points: vec![end, left, right],
+            filled: true,
+            dashed: false,
+        }));
+    } else {
+        items.push(SceneItem::Path(Path {
+            points: pts.clone(),
+            filled: false,
+            dashed: false,
+        }));
+    }
+
+    if let Some(label) = label {
+        let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
+        let (lx, ly) = edge_label_anchor(pts, tw, th, label_offset);
+        items.push(SceneItem::Text(Text {
+            x: lx,
+            y: ly,
+            size: FONT_SIZE * 0.85,
+            align: TextAlign::Middle,
+            content: label.to_string(),
+            text_width: tw,
+            text_height: th,
+        }));
+    }
+}
+
+fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     // Node index order = declaration order.
     let ids: Vec<&String> = g.nodes.keys().collect();
     let index_of: IndexMap<&str, usize> = ids
@@ -202,7 +358,10 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
     // Build scene items: nodes first, then edges.
     let mut items: Vec<SceneItem> = Vec::new();
 
-    for p in &placed {
+    // Semantic node layouts (pre-translation; adjusted below).
+    let mut sem_nodes: Vec<semantic::NodeLayout> = Vec::new();
+
+    for (v, p) in placed.iter().enumerate() {
         items.push(SceneItem::Rect(Rect {
             x: p.x,
             y: p.y,
@@ -221,10 +380,24 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
             text_width: tw,
             text_height: th,
         }));
+
+        sem_nodes.push(semantic::NodeLayout {
+            id: ids[v].clone(),
+            rect: Rect {
+                x: p.x,
+                y: p.y,
+                width: p.width,
+                height: p.height,
+                rx: 4.0,
+            },
+            label_anchor: semantic::Point::new(cx, cy + FONT_SIZE * 0.35),
+        });
     }
 
     // Separate parallel/mutual edges so they don't draw on top of each other.
     let offsets = parallel_edge_offsets(&raw_edges, &placed);
+    let mut sem_edges: Vec<semantic::EdgeLayout> = Vec::new();
+
     for (k, &(from, to)) in raw_edges.iter().enumerate() {
         // Chain points in layout (acyclic) orientation; restore the original
         // direction so the arrowhead points along the declared edge.
@@ -234,27 +407,70 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         }
         bow_polyline(&mut pts, offsets[k]);
         let edge = &g.edges[edge_ids[k]];
-        push_edge(
+
+        // Compute geometry once; emit scene items and build SemanticLayout from it.
+        let geom = compute_edge_geom(pts, &placed[from], &placed[to]);
+        // Label anchor from the shared helper (same value as the Scene text).
+        let sem_label_anchor = edge.label.as_deref().map(|lbl| {
+            let (tw, th) = kozue_text::measure(lbl, FONT_SIZE * 0.85);
+            let (lx, ly) = edge_label_anchor(&geom.route, tw, th, offsets[k]);
+            semantic::Point::new(lx, ly)
+        });
+
+        push_edge_geom(
             &mut items,
-            pts,
-            &placed[from],
-            &placed[to],
+            &geom,
             edge.label.as_deref(),
             edge.arrow,
-            // Push mutual-edge labels further out so they don't overlap.
             offsets[k],
         );
+
+        sem_edges.push(semantic::EdgeLayout {
+            index: edge_ids[k],
+            from: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].from.clone()),
+            to: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].to.clone()),
+            route: geom
+                .route
+                .iter()
+                .map(|&(x, y)| semantic::Point::new(x, y))
+                .collect(),
+            label_anchor: sem_label_anchor,
+        });
     }
 
     // Normalize: layout owns the bounds, including text and arrowheads.
     let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&items);
     bounds::translate(&mut items, -min_x, -min_y);
 
-    Ok(Scene {
+    // Apply the same translation to all semantic coordinates.
+    for nl in &mut sem_nodes {
+        nl.rect.x -= min_x;
+        nl.rect.y -= min_y;
+        nl.label_anchor.x -= min_x;
+        nl.label_anchor.y -= min_y;
+    }
+    for el in &mut sem_edges {
+        for pt in &mut el.route {
+            pt.x -= min_x;
+            pt.y -= min_y;
+        }
+        if let Some(la) = &mut el.label_anchor {
+            la.x -= min_x;
+            la.y -= min_y;
+        }
+    }
+
+    let scene = Scene {
         width: max_x - min_x,
         height: max_y - min_y,
         items,
-    })
+    };
+    let semantic = SemanticLayout::Graph(semantic::GraphLayout {
+        nodes: sem_nodes,
+        edges: sem_edges,
+    });
+
+    Ok(LayoutOutput { scene, semantic })
 }
 
 /// Draw one edge as a polyline through its bend points, with an optional
@@ -329,101 +545,8 @@ pub(crate) fn bow_polyline(pts: &mut Vec<(f64, f64)>, offset: (f64, f64)) {
     }
 }
 
-pub(crate) fn push_edge(
-    items: &mut Vec<SceneItem>,
-    mut pts: Vec<(f64, f64)>,
-    from: &Placed,
-    to: &Placed,
-    label: Option<&str>,
-    arrow: ArrowType,
-    // Extra displacement for the label anchor, used to push the labels of two
-    // mutual edges apart so their text does not overlap at the shared midpoint.
-    // `(0.0, 0.0)` for ordinary single edges.
-    label_offset: (f64, f64),
-) {
-    let last = pts.len() - 1;
-    // Clip the endpoints to the node borders.
-    pts[0] = clip_to_rect(from, pts[1].0, pts[1].1);
-    let end = clip_to_rect(to, pts[last - 1].0, pts[last - 1].1);
-    pts[last] = end;
-
-    let draw_arrow = !matches!(arrow, ArrowType::None);
-
-    if draw_arrow {
-        // Pull the final segment back so the tip of the arrow sits on the border.
-        let dx = end.0 - pts[last - 1].0;
-        let dy = end.1 - pts[last - 1].1;
-        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-        let ux = dx / len;
-        let uy = dy / len;
-        let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
-
-        let mut line_pts = pts.clone();
-        line_pts[last] = line_end;
-        items.push(SceneItem::Path(Path {
-            points: line_pts,
-            filled: false,
-            dashed: false,
-        }));
-
-        // Arrowhead triangle at `end`, pointing along (ux, uy).
-        let px = -uy; // perpendicular
-        let py = ux;
-        let left = (
-            line_end.0 + px * ARROW_HALF_W,
-            line_end.1 + py * ARROW_HALF_W,
-        );
-        let right = (
-            line_end.0 - px * ARROW_HALF_W,
-            line_end.1 - py * ARROW_HALF_W,
-        );
-        items.push(SceneItem::Path(Path {
-            points: vec![end, left, right],
-            filled: true,
-            dashed: false,
-        }));
-    } else {
-        // No arrowhead: draw the line all the way to the node border.
-        items.push(SceneItem::Path(Path {
-            points: pts.clone(),
-            filled: false,
-            dashed: false,
-        }));
-    }
-
-    if let Some(label) = label {
-        let (mx, my) = polyline_midpoint(&pts);
-        let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
-        // For a mutual edge (`label_offset` non-zero) push the label fully onto
-        // its own side of the shared midpoint: displace the (middle-anchored)
-        // center along the perpendicular by half the label's own extent
-        // (projected onto that axis) plus a gap. Because the displacement scales
-        // with the label's width, the two labels' inner edges never cross the
-        // midpoint — so they cannot overlap no matter how long the text is.
-        let (lx, ly) = if label_offset == (0.0, 0.0) {
-            (mx, my - 4.0)
-        } else {
-            let (ox, oy) = label_offset;
-            let len = (ox * ox + oy * oy).sqrt().max(1e-6);
-            let (ux, uy) = (ox / len, oy / len);
-            let half = ux.abs() * (tw / 2.0) + uy.abs() * (th / 2.0);
-            let d = half + LABEL_GAP;
-            (mx + ux * d, my + uy * d)
-        };
-        items.push(SceneItem::Text(Text {
-            x: lx,
-            y: ly,
-            size: FONT_SIZE * 0.85,
-            align: TextAlign::Middle,
-            content: label.to_string(),
-            text_width: tw,
-            text_height: th,
-        }));
-    }
-}
-
 /// The point at half the arc length of a polyline.
-fn polyline_midpoint(pts: &[(f64, f64)]) -> (f64, f64) {
+pub(crate) fn polyline_midpoint(pts: &[(f64, f64)]) -> (f64, f64) {
     let total: f64 = pts
         .windows(2)
         .map(|w| {
@@ -1114,6 +1237,134 @@ mod tests {
                 .iter()
                 .any(|i| matches!(i, SceneItem::Text(t) if t.content == "Real")),
             "real state label must survive"
+        );
+    }
+
+    // --- SemanticLayout (layout_full) contract tests ---
+
+    /// `layout_full().scene` must be byte-for-byte the same Scene as `layout()`,
+    /// and the semantic graph layout must mirror the scene: nodes in declaration
+    /// order with the same rects, edge label anchor at the same point as the
+    /// scene Text item.
+    #[test]
+    fn semantic_graph_matches_scene() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.edges
+            .push(Edge::new("a", "b", Some("go".into()), ArrowType::Triangle));
+        let d = Diagram::Graph(g);
+
+        let out = layout_full(&d).expect("layout_full");
+        assert_eq!(out.scene, layout(&d).unwrap(), "scene must be unchanged");
+
+        let SemanticLayout::Graph(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Graph");
+        };
+        // Nodes: declaration order, rects identical to the scene rects.
+        let ids: Vec<&str> = sem.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+        let scene_rects = rects(&out.scene);
+        assert_eq!(sem.nodes.len(), scene_rects.len());
+        for (nl, r) in sem.nodes.iter().zip(&scene_rects) {
+            assert_eq!(&&nl.rect, r, "semantic node rect must match scene rect");
+        }
+        // Edge: declaration index, endpoints, label anchor == scene Text position.
+        assert_eq!(sem.edges.len(), 1);
+        let el = &sem.edges[0];
+        assert_eq!(el.index, 0);
+        assert_eq!(el.from.id, "a");
+        assert_eq!(el.to.id, "b");
+        assert!(el.route.len() >= 2);
+        let anchor = el.label_anchor.as_ref().expect("labeled edge has anchor");
+        let text = out
+            .scene
+            .items
+            .iter()
+            .find_map(|i| match i {
+                SceneItem::Text(t) if t.content == "go" => Some(t),
+                _ => None,
+            })
+            .expect("edge label text in scene");
+        assert_eq!((anchor.x, anchor.y), (text.x, text.y));
+    }
+
+    /// State transitions must come back in declaration order even though the
+    /// layout emits regular transitions and self-transitions in separate passes.
+    #[test]
+    fn semantic_state_transitions_are_in_declaration_order() {
+        let mut sd = kozue_ir::StateDiagram::new();
+        sd.states.insert("a".into(), kozue_ir::State::new("a", "A"));
+        sd.states.insert("b".into(), kozue_ir::State::new("b", "B"));
+        // Declaration order: self-loop first, then regular, then to-final.
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("a".into()),
+            kozue_ir::Endpoint::State("a".into()),
+            Some("again".into()),
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("a".into()),
+            kozue_ir::Endpoint::State("b".into()),
+            None,
+        ));
+        sd.transitions.push(kozue_ir::Transition::new(
+            kozue_ir::Endpoint::State("b".into()),
+            kozue_ir::Endpoint::Final,
+            None,
+        ));
+        let out = layout_full(&Diagram::State(sd)).expect("layout_full");
+        let SemanticLayout::State(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::State");
+        };
+        let indices: Vec<usize> = sem.transitions.iter().map(|t| t.index).collect();
+        assert_eq!(
+            indices,
+            [0, 1, 2],
+            "transitions must be in declaration order"
+        );
+        assert_eq!(
+            sem.transitions[0].from,
+            semantic::StateEndpointId::State("a".into())
+        );
+        assert_eq!(
+            sem.transitions[0].to,
+            semantic::StateEndpointId::State("a".into())
+        );
+        assert_eq!(sem.transitions[2].to, semantic::StateEndpointId::Final);
+        assert!(sem.initial.is_none());
+        assert!(sem.final_state.is_some());
+        let states: Vec<&str> = sem.states.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(states, ["a", "b"]);
+    }
+
+    /// Sequence message `index` is the index into `SequenceDiagram::items`,
+    /// and participants come back in declaration order.
+    #[test]
+    fn semantic_sequence_message_index_is_item_index() {
+        let mut seq = kozue_ir::SequenceDiagram::new();
+        seq_participant(&mut seq, "a", "Alice");
+        seq_participant(&mut seq, "b", "Bob");
+        seq_message(&mut seq, "a", "b", Some("hi"));
+        seq_message(&mut seq, "b", "b", None); // self-message
+        let out = layout_full(&Diagram::Sequence(seq)).expect("layout_full");
+        let SemanticLayout::Sequence(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Sequence");
+        };
+        let pids: Vec<&str> = sem.participants.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(pids, ["a", "b"]);
+        for p in &sem.participants {
+            assert!(p.lifeline_y1 > p.lifeline_y0);
+        }
+        assert_eq!(sem.messages.len(), 2);
+        assert_eq!(sem.messages[0].index, 0);
+        assert_eq!(sem.messages[0].from, "a");
+        assert_eq!(sem.messages[0].to, "b");
+        assert!(sem.messages[0].label_anchor.is_some());
+        assert_eq!(sem.messages[1].index, 1);
+        assert!(sem.messages[1].label_anchor.is_none());
+        assert!(
+            sem.messages[1].route.len() >= 3,
+            "self-message route is a multi-segment polyline"
         );
     }
 }

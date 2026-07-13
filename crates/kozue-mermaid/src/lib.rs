@@ -1607,7 +1607,8 @@ mod tests {
 
     #[test]
     fn state_basic_v2() {
-        let src = "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Running : start\n  Running --> [*]\n";
+        let src =
+            "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Running : start\n  Running --> [*]\n";
         let d = parse(src).expect("should parse");
         let s = state(&d);
         assert!(s.states.contains_key("Idle"));

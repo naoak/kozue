@@ -452,8 +452,18 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
 
 /// Keywords that are unsupported in a state-diagram body. Word-boundary matched.
 const STATE_UNSUPPORTED_KW: &[&str] = &[
-    "note", "hnote", "rnote", "hide", "show", "skinparam", "title", "header", "footer", "scale",
-    "caption", "legend",
+    "note",
+    "hnote",
+    "rnote",
+    "hide",
+    "show",
+    "skinparam",
+    "title",
+    "header",
+    "footer",
+    "scale",
+    "caption",
+    "legend",
 ];
 
 /// Error-collecting pass over a PlantUML state-diagram body. Mirrors

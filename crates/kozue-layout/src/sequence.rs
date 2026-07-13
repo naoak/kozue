@@ -6,6 +6,7 @@ use kozue_ir::{
 };
 
 use crate::bounds;
+use crate::semantic;
 
 const FONT_SIZE: f64 = 16.0;
 const PAD_X: f64 = 20.0;
@@ -22,7 +23,7 @@ const LIFELINE_EXTRA: f64 = 24.0; // extra space below last message
 const ARROW_LEN: f64 = 10.0;
 const ARROW_HALF_W: f64 = 5.0;
 
-pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
+pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput {
     // Collect participant IDs in insertion order.
     let ids: Vec<&String> = seq.participants.keys().collect();
     let n = ids.len();
@@ -154,12 +155,15 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
     let diagram_bottom = MSG_START_Y + msg_count as f64 * MSG_ROW_HEIGHT + LIFELINE_EXTRA;
 
     let mut items: Vec<SceneItem> = Vec::new();
+    let mut sem_participants: Vec<semantic::ParticipantLayout> = Vec::new();
+    let mut sem_messages: Vec<semantic::MessageLayout> = Vec::new();
 
     // Draw participant headers and lifelines.
     for (i, id) in ids.iter().enumerate() {
         let label = &seq.participants[*id].label;
         let (hw, _hh) = header_sizes[i];
         let cx = col_x[i];
+        let lifeline_top = HEADER_TOP + header_height;
 
         // Header rect (use uniform header_height for all boxes).
         items.push(SceneItem::Rect(Rect {
@@ -183,12 +187,25 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
         }));
 
         // Lifeline: dashed vertical line from bottom of header to diagram_bottom.
-        let lifeline_top = HEADER_TOP + header_height;
         items.push(SceneItem::Path(Path {
             points: vec![(cx, lifeline_top), (cx, diagram_bottom)],
             filled: false,
             dashed: true,
         }));
+
+        sem_participants.push(semantic::ParticipantLayout {
+            id: (*id).clone(),
+            header_rect: Rect {
+                x: cx - hw / 2.0,
+                y: HEADER_TOP,
+                width: hw,
+                height: header_height,
+                rx: HEADER_RX,
+            },
+            lifeline_x: cx,
+            lifeline_y0: lifeline_top,
+            lifeline_y1: diagram_bottom,
+        });
     }
 
     // Draw messages.
@@ -227,7 +244,7 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
             }));
 
             // Label to the right of the fold.
-            if let Some(label) = &msg.label {
+            let label_anchor = if let Some(label) = &msg.label {
                 let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
                 items.push(SceneItem::Text(Text {
                     x: x1 + 4.0,
@@ -238,7 +255,29 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
                     text_width: tw,
                     text_height: th,
                 }));
-            }
+                // Semantic anchor: center of label text (Start-aligned → x is the left edge)
+                Some(semantic::Point::new(
+                    x1 + 4.0 + tw / 2.0,
+                    y0 + FONT_SIZE * 0.85 * 0.35,
+                ))
+            } else {
+                None
+            };
+
+            // Route: the self-loop polyline (same points as the path above, tip is the end)
+            let route = vec![
+                semantic::Point::new(x0, y0),
+                semantic::Point::new(x1, y0),
+                semantic::Point::new(x1, y1),
+                semantic::Point::new(x0, y1),
+            ];
+            sem_messages.push(semantic::MessageLayout {
+                index: row,
+                from: msg.from.clone(),
+                to: msg.to.clone(),
+                route,
+                label_anchor,
+            });
         } else {
             // Horizontal arrow from fi to ti.
             let x_from = col_x[fi];
@@ -266,7 +305,7 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
             }));
 
             // Label above center of line.
-            if let Some(label) = &msg.label {
+            let label_anchor = if let Some(label) = &msg.label {
                 let mx = (x_from + x_to) / 2.0;
                 let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
                 items.push(SceneItem::Text(Text {
@@ -278,7 +317,23 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
                     text_width: tw,
                     text_height: th,
                 }));
-            }
+                Some(semantic::Point::new(mx, y - 4.0))
+            } else {
+                None
+            };
+
+            // Route: source → tip of arrow.
+            let route = vec![
+                semantic::Point::new(x_from, y),
+                semantic::Point::new(x_to, y),
+            ];
+            sem_messages.push(semantic::MessageLayout {
+                index: row,
+                from: msg.from.clone(),
+                to: msg.to.clone(),
+                route,
+                label_anchor,
+            });
         }
     }
 
@@ -286,9 +341,37 @@ pub(crate) fn layout_sequence(seq: &SequenceDiagram) -> Scene {
     let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&items);
     bounds::translate(&mut items, -min_x, -min_y);
 
-    Scene {
+    // Apply the same translation to all semantic coordinates.
+    for p in &mut sem_participants {
+        p.header_rect.x -= min_x;
+        p.header_rect.y -= min_y;
+        p.lifeline_x -= min_x;
+        p.lifeline_y0 -= min_y;
+        p.lifeline_y1 -= min_y;
+    }
+    for m in &mut sem_messages {
+        for pt in &mut m.route {
+            pt.x -= min_x;
+            pt.y -= min_y;
+        }
+        if let Some(la) = &mut m.label_anchor {
+            la.x -= min_x;
+            la.y -= min_y;
+        }
+    }
+
+    let scene = Scene {
         width: max_x - min_x,
         height: max_y - min_y,
         items,
+    };
+    let sem = crate::semantic::SemanticLayout::Sequence(semantic::SequenceLayout {
+        participants: sem_participants,
+        messages: sem_messages,
+    });
+
+    crate::LayoutOutput {
+        scene,
+        semantic: sem,
     }
 }

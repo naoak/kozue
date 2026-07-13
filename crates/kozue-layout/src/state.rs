@@ -3,8 +3,8 @@
 use kozue_ir::{ArrowType, Path, Rect, Scene, SceneItem, StateDiagram, Text, TextAlign};
 
 use super::{
-    bounds, coords, cycle, layering, ordering, LayoutError, Placed, ARROW_HALF_W, ARROW_LEN,
-    FONT_SIZE, LAYER_GAP_DOWN, NODE_GAP, PAD_X, PAD_Y,
+    bounds, coords, cycle, layering, ordering, semantic, LayoutError, Placed, ARROW_HALF_W,
+    ARROW_LEN, FONT_SIZE, LAYER_GAP_DOWN, NODE_GAP, PAD_X, PAD_Y,
 };
 
 const STATE_CIRCLE_R: f64 = 8.0;
@@ -33,7 +33,9 @@ fn circle_path(cx: f64, cy: f64, r: f64, filled: bool) -> Path {
     }
 }
 
-pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError> {
+pub(crate) fn layout_state_full(
+    diagram: &StateDiagram,
+) -> Result<crate::LayoutOutput, LayoutError> {
     let mut node_ids: Vec<String> = Vec::new();
     let mut node_labels: Vec<String> = Vec::new();
 
@@ -92,10 +94,18 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
 
     let n = node_ids.len();
     if n == 0 {
-        return Ok(Scene {
-            width: 0.0,
-            height: 0.0,
-            items: Vec::new(),
+        return Ok(crate::LayoutOutput {
+            scene: Scene {
+                width: 0.0,
+                height: 0.0,
+                items: Vec::new(),
+            },
+            semantic: semantic::SemanticLayout::State(semantic::StateLayout {
+                states: Vec::new(),
+                initial: None,
+                final_state: None,
+                transitions: Vec::new(),
+            }),
         });
     }
 
@@ -216,14 +226,22 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
         }
     };
 
-    // Build scene items.
+    // Build scene items and semantic layout in parallel.
     let mut items: Vec<SceneItem> = Vec::new();
+    let mut sem_states: Vec<semantic::StateNodeLayout> = Vec::new();
+    let mut sem_initial: Option<semantic::InitialLayout> = None;
+    let mut sem_final: Option<semantic::FinalLayout> = None;
+    let mut sem_transitions: Vec<semantic::TransitionLayout> = Vec::new();
 
     // Emit each real node. Roles are keyed by index, not id string.
     for (v, p) in placed.iter().enumerate() {
         if Some(v) == initial_idx {
             let (cx, cy) = p.center();
             items.push(SceneItem::Path(circle_path(cx, cy, STATE_CIRCLE_R, true)));
+            sem_initial = Some(semantic::InitialLayout {
+                center: semantic::Point::new(cx, cy),
+                radius: STATE_CIRCLE_R,
+            });
         } else if Some(v) == final_idx {
             let (cx, cy) = p.center();
             items.push(SceneItem::Path(circle_path(
@@ -238,6 +256,11 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
                 STATE_FINAL_OUTER_R,
                 false,
             )));
+            sem_final = Some(semantic::FinalLayout {
+                center: semantic::Point::new(cx, cy),
+                inner_radius: STATE_FINAL_INNER_R,
+                outer_radius: STATE_FINAL_OUTER_R,
+            });
         } else {
             // Regular state: rounded rect + label.
             items.push(SceneItem::Rect(Rect {
@@ -258,6 +281,18 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
                 text_width: tw,
                 text_height: th,
             }));
+
+            sem_states.push(semantic::StateNodeLayout {
+                id: node_ids[v].clone(),
+                rect: Rect {
+                    x: p.x,
+                    y: p.y,
+                    width: p.width,
+                    height: p.height,
+                    rx: 6.0,
+                },
+                label_anchor: semantic::Point::new(cx, cy + FONT_SIZE * 0.35),
+            });
         }
     }
 
@@ -271,17 +306,44 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
             pts.reverse();
         }
         super::bow_polyline(&mut pts, offsets[k]);
-        let trans_label = diagram.transitions[edge_to_trans[k]].label.as_deref();
-        super::push_edge(
+        let ti = edge_to_trans[k];
+        let trans = &diagram.transitions[ti];
+        let trans_label = trans.label.as_deref();
+
+        let geom = super::compute_edge_geom(pts, &placed[from], &placed[to]);
+        // Label anchor from the shared helper (same value as the Scene text).
+        let sem_label_anchor = trans_label.map(|lbl| {
+            let (tw, th) = kozue_text::measure(lbl, FONT_SIZE * 0.85);
+            let (lx, ly) = super::edge_label_anchor(&geom.route, tw, th, offsets[k]);
+            semantic::Point::new(lx, ly)
+        });
+
+        super::push_edge_geom(
             &mut items,
-            pts,
-            &placed[from],
-            &placed[to],
+            &geom,
             trans_label,
             ArrowType::Triangle,
-            // Push mutual-transition labels further out so they don't overlap.
             offsets[k],
         );
+
+        // These endpoints resolved to real indices when `raw_edges` was built,
+        // so they must resolve here too; the Scene already drew this transition,
+        // so the SemanticLayout must contain it as well (Scene/Semantic parity).
+        let sem_from = endpoint_to_id(&trans.from, initial_idx, final_idx)
+            .expect("transition endpoint must resolve; scene already drew it");
+        let sem_to = endpoint_to_id(&trans.to, initial_idx, final_idx)
+            .expect("transition endpoint must resolve; scene already drew it");
+        sem_transitions.push(semantic::TransitionLayout {
+            index: ti,
+            from: sem_from,
+            to: sem_to,
+            route: geom
+                .route
+                .iter()
+                .map(|&(x, y)| semantic::Point::new(x, y))
+                .collect(),
+            label_anchor: sem_label_anchor,
+        });
     }
 
     // Emit self-transitions.
@@ -339,7 +401,7 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
             dashed: false,
         }));
 
-        if let Some(label) = t.label.as_deref() {
+        let label_anchor = if let Some(label) = t.label.as_deref() {
             let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
             items.push(SceneItem::Text(Text {
                 x: box_right + SELF_LOOP_OFFSET / 2.0,
@@ -350,16 +412,91 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
                 text_width: tw,
                 text_height: th,
             }));
-        }
+            Some(semantic::Point::new(
+                box_right + SELF_LOOP_OFFSET / 2.0,
+                cy - SELF_LOOP_OFFSET - 4.0,
+            ))
+        } else {
+            None
+        };
+
+        sem_transitions.push(semantic::TransitionLayout {
+            index: ti,
+            from: semantic::StateEndpointId::State(state_id.clone()),
+            to: semantic::StateEndpointId::State(state_id.clone()),
+            route: loop_pts
+                .iter()
+                .map(|&(x, y)| semantic::Point::new(x, y))
+                .collect(),
+            label_anchor,
+        });
     }
+
+    // Restore declaration order: regular transitions and self-transitions were
+    // emitted in separate passes, so the collected `sem_transitions` are out of
+    // order. Each `index` is the original IR transition index, so a stable sort
+    // by it yields the declared order deterministically.
+    sem_transitions.sort_by_key(|t| t.index);
 
     // Normalize bounds.
     let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&items);
     bounds::translate(&mut items, -min_x, -min_y);
 
-    Ok(Scene {
+    // Apply the same translation to all semantic coordinates.
+    for s in &mut sem_states {
+        s.rect.x -= min_x;
+        s.rect.y -= min_y;
+        s.label_anchor.x -= min_x;
+        s.label_anchor.y -= min_y;
+    }
+    if let Some(init) = &mut sem_initial {
+        init.center.x -= min_x;
+        init.center.y -= min_y;
+    }
+    if let Some(fin) = &mut sem_final {
+        fin.center.x -= min_x;
+        fin.center.y -= min_y;
+    }
+    for tr in &mut sem_transitions {
+        for pt in &mut tr.route {
+            pt.x -= min_x;
+            pt.y -= min_y;
+        }
+        if let Some(la) = &mut tr.label_anchor {
+            la.x -= min_x;
+            la.y -= min_y;
+        }
+    }
+
+    let scene = Scene {
         width: max_x - min_x,
         height: max_y - min_y,
         items,
+    };
+    let sem = semantic::SemanticLayout::State(semantic::StateLayout {
+        states: sem_states,
+        initial: sem_initial,
+        final_state: sem_final,
+        transitions: sem_transitions,
+    });
+
+    Ok(crate::LayoutOutput {
+        scene,
+        semantic: sem,
     })
+}
+
+fn endpoint_to_id(
+    ep: &kozue_ir::Endpoint,
+    initial_idx: Option<usize>,
+    final_idx: Option<usize>,
+) -> Option<semantic::StateEndpointId> {
+    match ep {
+        kozue_ir::Endpoint::Initial if initial_idx.is_some() => {
+            Some(semantic::StateEndpointId::Initial)
+        }
+        kozue_ir::Endpoint::Final if final_idx.is_some() => Some(semantic::StateEndpointId::Final),
+        kozue_ir::Endpoint::State(id) => Some(semantic::StateEndpointId::State(id.clone())),
+        _ => None,
+    }
 }
