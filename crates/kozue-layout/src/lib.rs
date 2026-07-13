@@ -264,6 +264,8 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
 /// `[from_center, bends.., to_center]` (length >= 2).
 /// Perpendicular spacing between parallel edges sharing the same node pair.
 pub(crate) const EDGE_SEP: f64 = 14.0;
+/// Clearance between a mutual-edge label and the shared midpoint.
+pub(crate) const LABEL_GAP: f64 = 4.0;
 
 /// Compute a lateral offset vector for each edge so that multiple edges between
 /// the same pair of nodes (e.g. mutual `a -> b` / `b -> a`) are drawn apart
@@ -392,9 +394,25 @@ pub(crate) fn push_edge(
     if let Some(label) = label {
         let (mx, my) = polyline_midpoint(&pts);
         let (tw, th) = kozue_text::measure(label, FONT_SIZE * 0.85);
+        // For a mutual edge (`label_offset` non-zero) push the label fully onto
+        // its own side of the shared midpoint: displace the (middle-anchored)
+        // center along the perpendicular by half the label's own extent
+        // (projected onto that axis) plus a gap. Because the displacement scales
+        // with the label's width, the two labels' inner edges never cross the
+        // midpoint — so they cannot overlap no matter how long the text is.
+        let (lx, ly) = if label_offset == (0.0, 0.0) {
+            (mx, my - 4.0)
+        } else {
+            let (ox, oy) = label_offset;
+            let len = (ox * ox + oy * oy).sqrt().max(1e-6);
+            let (ux, uy) = (ox / len, oy / len);
+            let half = ux.abs() * (tw / 2.0) + uy.abs() * (th / 2.0);
+            let d = half + LABEL_GAP;
+            (mx + ux * d, my + uy * d)
+        };
         items.push(SceneItem::Text(Text {
-            x: mx + label_offset.0,
-            y: my + label_offset.1 - 4.0,
+            x: lx,
+            y: ly,
             size: FONT_SIZE * 0.85,
             align: TextAlign::Middle,
             content: label.to_string(),
@@ -550,6 +568,55 @@ mod tests {
             (offs[0].0 + offs[1].0).abs() < 1e-9 && (offs[0].1 + offs[1].1).abs() < 1e-9,
             "offsets must be equal and opposite, got {offs:?}"
         );
+    }
+
+    #[test]
+    fn mutual_edge_labels_never_overlap_even_when_long() {
+        // Root-cause regression: mutual-edge labels must not overlap regardless
+        // of text length. Displacement scales with each label's own width, so a
+        // long label extends further outward instead of crossing the midline.
+        for (la, lb) in [
+            ("go", "back"),
+            (
+                "a very long transition label",
+                "another extremely long label here",
+            ),
+        ] {
+            let mut g = GraphDiagram::new(Direction::Down);
+            g.nodes.insert("a".into(), node("a", "A"));
+            g.nodes.insert("b".into(), node("b", "B"));
+            let mut e1 = edge("a", "b");
+            e1.label = Some(la.to_string());
+            let mut e2 = edge("b", "a");
+            e2.label = Some(lb.to_string());
+            g.edges.push(e1);
+            g.edges.push(e2);
+            let scene = layout(&Diagram::Graph(g)).expect("layout");
+
+            let labels: Vec<&Text> = scene
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    SceneItem::Text(t) if t.content == la || t.content == lb => Some(t),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(labels.len(), 2, "both labels present");
+            // Middle-anchored: horizontal span is x ± text_width/2. The two must
+            // not overlap in x (edges here are vertical → labels split L/R).
+            let (l0, r0) = (
+                labels[0].x - labels[0].text_width / 2.0,
+                labels[0].x + labels[0].text_width / 2.0,
+            );
+            let (l1, r1) = (
+                labels[1].x - labels[1].text_width / 2.0,
+                labels[1].x + labels[1].text_width / 2.0,
+            );
+            assert!(
+                r0 <= l1 || r1 <= l0,
+                "labels {la:?}/{lb:?} overlap: [{l0},{r0}] vs [{l1},{r1}]"
+            );
+        }
     }
 
     #[test]
