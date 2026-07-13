@@ -13,8 +13,11 @@
         <mxCell id="initial" value="" style="ellipse;fillColor=#000000;strokeColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="55.32" y="20.00" width="16.00" height="16.00" as="geometry"/>
         </mxCell>
-        <mxCell id="final" value="" style="shape=doubleEllipse;fillColor=#000000;strokeColor=#000000;" vertex="1" parent="1">
+        <mxCell id="final" value="" style="ellipse;fillColor=none;strokeColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="51.32" y="414.40" width="24.00" height="24.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="final_inner" value="" style="ellipse;fillColor=#000000;strokeColor=#000000;" vertex="1" parent="final">
+          <mxGeometry x="6.00" y="6.00" width="12.00" height="12.00" as="geometry"/>
         </mxCell>
         <mxCell id="e0" value="" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="initial" target="n0" parent="1">
           <mxGeometry relative="1" as="geometry"/>

@@ -33,7 +33,8 @@
 //!   each edge becomes a connector with waypoints.
 //! - [`SemanticLayout::State`] — each named state becomes a rounded-rectangle
 //!   vertex; the initial pseudostate becomes a filled ellipse; the final
-//!   pseudostate becomes a double-ellipse. Transitions become connectors.
+//!   pseudostate becomes an outer stroked ring plus an inner filled dot (two
+//!   concentric ellipses). Transitions become connectors.
 //!
 //! [`SemanticLayout::Sequence`] and any future variants return
 //! [`RenderError::UnsupportedDiagram`] rather than silently dropping data.
@@ -315,21 +316,41 @@ fn render_state(s: &StateLayout) -> Result<String, RenderError> {
         ));
     }
 
-    // Final pseudostate (double ellipse)
+    // Final pseudostate: an outer stroked ring plus an inner filled dot, matching
+    // the SVG renderer. A single `shape=doubleEllipse;fillColor=#000000` renders
+    // as a solid black blob in draw.io (both fills are black, so the ring gap is
+    // invisible), so we emit two concentric ellipse cells instead. The outer ring
+    // (`final`) is the connectable cell that transitions target; the inner dot
+    // (`final_inner`) is decorative and drawn on top.
     if let Some(fin) = &s.final_state {
         let cx = fin.center.x + MARGIN;
         let cy = fin.center.y + MARGIN;
-        let r = fin.outer_radius;
+        let ro = fin.outer_radius;
+        let ri = fin.inner_radius;
         out.push_str(&format!(
             "        <mxCell id=\"final\" value=\"\" \
-             style=\"shape=doubleEllipse;fillColor=#000000;strokeColor=#000000;\" \
+             style=\"ellipse;fillColor=none;strokeColor=#000000;\" \
              vertex=\"1\" parent=\"1\">\n\
              \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
              \x20       </mxCell>\n",
-            f(cx - r),
-            f(cy - r),
-            f(r * 2.0),
-            f(r * 2.0),
+            f(cx - ro),
+            f(cy - ro),
+            f(ro * 2.0),
+            f(ro * 2.0),
+        ));
+        // The inner dot is a *child* of the outer ring (`parent="final"`) so the two
+        // move together when edited; its geometry is in the ring's local coordinate
+        // space (origin at the ring's top-left, i.e. `ro - ri` in from each side).
+        out.push_str(&format!(
+            "        <mxCell id=\"final_inner\" value=\"\" \
+             style=\"ellipse;fillColor=#000000;strokeColor=#000000;\" \
+             vertex=\"1\" parent=\"final\">\n\
+             \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+             \x20       </mxCell>\n",
+            f(ro - ri),
+            f(ro - ri),
+            f(ri * 2.0),
+            f(ri * 2.0),
         ));
     }
 
@@ -712,8 +733,25 @@ mod tests {
             "initial is filled ellipse"
         );
         assert!(
-            xml.contains("shape=doubleEllipse"),
-            "final is double ellipse"
+            xml.contains("id=\"final_inner\""),
+            "final has an inner filled dot cell"
+        );
+        assert!(
+            xml.contains("id=\"final_inner\" value=\"\" \
+             style=\"ellipse;fillColor=#000000;strokeColor=#000000;\" vertex=\"1\" parent=\"final\""),
+            "inner dot is a child of the outer ring so they move together"
+        );
+        assert!(
+            !xml.contains("target=\"final_inner\""),
+            "transitions target the outer ring, never the decorative inner dot"
+        );
+        assert!(
+            xml.contains("ellipse;fillColor=none;strokeColor=#000000;"),
+            "final outer ring is an unfilled ellipse"
+        );
+        assert!(
+            !xml.contains("shape=doubleEllipse"),
+            "final must not be a single solid doubleEllipse blob"
         );
         assert!(
             xml.contains("source=\"initial\""),
