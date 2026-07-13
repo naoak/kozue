@@ -223,6 +223,8 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         }));
     }
 
+    // Separate parallel/mutual edges so they don't draw on top of each other.
+    let offsets = parallel_edge_offsets(&raw_edges, &placed);
     for (k, &(from, to)) in raw_edges.iter().enumerate() {
         // Chain points in layout (acyclic) orientation; restore the original
         // direction so the arrowhead points along the declared edge.
@@ -230,6 +232,7 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
         if reversed[k] {
             pts.reverse();
         }
+        bow_polyline(&mut pts, offsets[k]);
         let edge = &g.edges[edge_ids[k]];
         push_edge(
             &mut items,
@@ -257,6 +260,71 @@ fn layout_graph(g: &GraphDiagram) -> Result<Scene, LayoutError> {
 ///
 /// `pts` are the edge's routing points in original edge orientation:
 /// `[from_center, bends.., to_center]` (length >= 2).
+/// Perpendicular spacing between parallel edges sharing the same node pair.
+pub(crate) const EDGE_SEP: f64 = 14.0;
+
+/// Compute a lateral offset vector for each edge so that multiple edges between
+/// the same pair of nodes (e.g. mutual `a -> b` / `b -> a`) are drawn apart
+/// instead of coincident. Edges with no parallel sibling get `(0.0, 0.0)`, so
+/// single-edge layouts are unchanged.
+///
+/// Edges are grouped by their *unordered* endpoint pair; the offset is measured
+/// along the perpendicular of that pair's canonical (low→high index) direction,
+/// so the two directions of a mutual pair land on opposite sides. Deterministic:
+/// grouping uses an `IndexMap` and offsets derive only from group membership.
+pub(crate) fn parallel_edge_offsets(
+    raw_edges: &[(usize, usize)],
+    placed: &[Placed],
+) -> Vec<(f64, f64)> {
+    let mut groups: IndexMap<(usize, usize), Vec<usize>> = IndexMap::new();
+    for (k, &(u, v)) in raw_edges.iter().enumerate() {
+        groups.entry((u.min(v), u.max(v))).or_default().push(k);
+    }
+
+    let mut offsets = vec![(0.0, 0.0); raw_edges.len()];
+    for (&(lo, hi), members) in &groups {
+        let m = members.len();
+        if m < 2 {
+            continue;
+        }
+        // Perpendicular unit vector of the canonical lo→hi direction.
+        let (lx, ly) = placed[lo].center();
+        let (hx, hy) = placed[hi].center();
+        let (dx, dy) = (hx - lx, hy - ly);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (px, py) = (-dy / len, dx / len);
+        for (i, &k) in members.iter().enumerate() {
+            // Center the group around 0: e.g. two edges → -0.5, +0.5.
+            let t = i as f64 - (m as f64 - 1.0) / 2.0;
+            offsets[k] = (px * t * EDGE_SEP, py * t * EDGE_SEP);
+        }
+    }
+    offsets
+}
+
+/// Apply a parallel-edge separation `offset` to a polyline. A straight two-point
+/// edge gains a bowed midpoint (offset applied at the middle) so the separation
+/// stays visible after the endpoints are clipped to the node borders; an already
+/// bent (dummy-routed) edge is translated wholesale. No-op for a zero offset.
+pub(crate) fn bow_polyline(pts: &mut Vec<(f64, f64)>, offset: (f64, f64)) {
+    let (ox, oy) = offset;
+    if ox == 0.0 && oy == 0.0 {
+        return;
+    }
+    if pts.len() == 2 {
+        let mid = (
+            (pts[0].0 + pts[1].0) / 2.0 + ox,
+            (pts[0].1 + pts[1].1) / 2.0 + oy,
+        );
+        pts.insert(1, mid);
+    } else {
+        for p in pts.iter_mut() {
+            p.0 += ox;
+            p.1 += oy;
+        }
+    }
+}
+
 pub(crate) fn push_edge(
     items: &mut Vec<SceneItem>,
     mut pts: Vec<(f64, f64)>,
@@ -444,6 +512,56 @@ mod tests {
         let scene = layout(&Diagram::Graph(g)).expect("layout");
         assert!(scene.width > 0.0);
         assert!(scene.height > 0.0);
+    }
+
+    #[test]
+    fn parallel_edge_offsets_only_separates_mutual_pairs() {
+        // A single a->b edge and one mutual pair. The singleton gets a zero
+        // offset (goldens unchanged); the mutual pair gets equal-and-opposite
+        // non-zero offsets.
+        let placed = vec![
+            Placed {
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+                label: "a".into(),
+            },
+            Placed {
+                x: 0.0,
+                y: 100.0,
+                width: 40.0,
+                height: 20.0,
+                label: "b".into(),
+            },
+        ];
+        // Singleton.
+        assert_eq!(parallel_edge_offsets(&[(0, 1)], &placed), vec![(0.0, 0.0)]);
+        // Mutual pair a->b, b->a.
+        let offs = parallel_edge_offsets(&[(0, 1), (1, 0)], &placed);
+        assert!(offs[0] != (0.0, 0.0) && offs[1] != (0.0, 0.0));
+        assert!(
+            (offs[0].0 + offs[1].0).abs() < 1e-9 && (offs[0].1 + offs[1].1).abs() < 1e-9,
+            "offsets must be equal and opposite, got {offs:?}"
+        );
+    }
+
+    #[test]
+    fn mutual_graph_edges_are_not_coincident() {
+        // Regression (M1 carryover): a <-> b must render as two separated lines.
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.edges.push(edge("a", "b"));
+        g.edges.push(edge("b", "a"));
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+        // The two edge polylines must not be identical.
+        let lines: Vec<&Path> = open_paths(&scene);
+        assert!(lines.len() >= 2);
+        assert_ne!(
+            lines[0].points, lines[1].points,
+            "mutual edges must be separated, not coincident"
+        );
     }
 
     /// direction=down で同一層に複数ノードが並ぶ場合、cross軸=X方向に

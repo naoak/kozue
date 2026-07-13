@@ -9,12 +9,12 @@
   <polyline points="37.49,406.40 36.90,410.11 35.20,413.45 32.54,416.11 29.20,417.81 25.49,418.40 21.78,417.81 18.43,416.11 15.78,413.45 14.08,410.11 13.49,406.40 14.08,402.69 15.78,399.35 18.43,396.69 21.78,394.99 25.49,394.40 29.20,394.99 32.54,396.69 35.20,399.35 36.90,402.69 37.49,406.40" fill="none" stroke="#000000" stroke-width="1.50"/>
   <polyline points="25.49,16.00 25.49,106.00" fill="none" stroke="#000000" stroke-width="1.50"/>
   <polygon points="25.49,116.00 20.49,106.00 30.49,106.00" fill="#000000" stroke="none"/>
-  <polyline points="25.49,155.20 25.49,245.20" fill="none" stroke="#000000" stroke-width="1.50"/>
-  <polygon points="25.49,255.20 20.49,245.20 30.49,245.20" fill="#000000" stroke="none"/>
-  <text x="25.49" y="201.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">go</text>
-  <polyline points="25.49,255.20 25.49,165.20" fill="none" stroke="#000000" stroke-width="1.50"/>
-  <polygon points="25.49,155.20 30.49,165.20 20.49,165.20" fill="#000000" stroke="none"/>
-  <text x="25.49" y="201.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">back</text>
+  <polyline points="27.46,155.20 32.49,205.20 28.46,245.25" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="27.46,255.20 23.49,244.75 33.44,245.75" fill="#000000" stroke="none"/>
+  <text x="32.49" y="201.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">go</text>
+  <polyline points="23.52,255.20 18.49,205.20 22.52,165.15" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="23.52,155.20 27.49,165.65 17.54,164.65" fill="#000000" stroke="none"/>
+  <text x="18.49" y="201.20" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">back</text>
   <polyline points="25.49,294.40 25.49,384.40" fill="none" stroke="#000000" stroke-width="1.50"/>
   <polygon points="25.49,394.40 20.49,384.40 30.49,384.40" fill="#000000" stroke="none"/>
 </svg>

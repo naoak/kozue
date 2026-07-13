@@ -261,12 +261,16 @@ pub(crate) fn layout_state(diagram: &StateDiagram) -> Result<Scene, LayoutError>
         }
     }
 
+    // Separate mutual transitions (e.g. `a -> b` and `b -> a`) so they render
+    // apart instead of coincident.
+    let offsets = super::parallel_edge_offsets(&raw_edges, &placed);
     // Emit regular transitions.
     for (k, &(from, to)) in raw_edges.iter().enumerate() {
         let mut pts: Vec<(f64, f64)> = lay.chains[k].iter().map(|&v| point_of(v)).collect();
         if reversed[k] {
             pts.reverse();
         }
+        super::bow_polyline(&mut pts, offsets[k]);
         let trans_label = diagram.transitions[edge_to_trans[k]].label.as_deref();
         super::push_edge(
             &mut items,
