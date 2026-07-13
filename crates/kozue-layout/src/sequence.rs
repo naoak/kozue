@@ -276,6 +276,7 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
                 from: msg.from.clone(),
                 to: msg.to.clone(),
                 route,
+                label: msg.label.clone(),
                 label_anchor,
             });
         } else {
@@ -332,6 +333,7 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
                 from: msg.from.clone(),
                 to: msg.to.clone(),
                 route,
+                label: msg.label.clone(),
                 label_anchor,
             });
         }

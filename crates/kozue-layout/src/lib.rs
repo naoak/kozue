@@ -383,6 +383,7 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
 
         sem_nodes.push(semantic::NodeLayout {
             id: ids[v].clone(),
+            label: p.label.clone(),
             rect: Rect {
                 x: p.x,
                 y: p.y,
@@ -429,11 +430,13 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
             index: edge_ids[k],
             from: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].from.clone()),
             to: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].to.clone()),
+            arrow: edge.arrow,
             route: geom
                 .route
                 .iter()
                 .map(|&(x, y)| semantic::Point::new(x, y))
                 .collect(),
+            label: edge.label.clone(),
             label_anchor: sem_label_anchor,
         });
     }

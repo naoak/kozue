@@ -27,6 +27,7 @@ enum Format {
     Svg,
     Term,
     Png,
+    Drawio,
 }
 
 #[derive(Subcommand)]
@@ -41,7 +42,7 @@ enum Command {
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
-        /// Output format: `svg` (default), `term` (plain-text terminal), or `png` (raster PNG).
+        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), or `drawio` (mxGraph XML).
         #[arg(long, default_value = "svg")]
         format: Format,
     },
@@ -156,13 +157,18 @@ fn run_render(
         },
     };
 
-    let scene = match kozue_layout::layout(&diagram) {
-        Ok(s) => s,
+    let layout_out = match kozue_layout::layout_full(&diagram) {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("error: layout failed: {}", e);
             return ExitCode::FAILURE;
         }
     };
+    let kozue_layout::LayoutOutput {
+        scene,
+        semantic: layout_semantic,
+        ..
+    } = layout_out;
 
     match format {
         Format::Svg => {
@@ -197,6 +203,20 @@ fn run_render(
             };
             let out_path = output.unwrap_or_else(|| input.with_extension("png"));
             if let Err(e) = std::fs::write(&out_path, &png) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        Format::Drawio => {
+            let drawio = match kozue_render_drawio::render(&layout_semantic) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: draw.io export failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out_path = output.unwrap_or_else(|| input.with_extension("drawio"));
+            if let Err(e) = std::fs::write(&out_path, &drawio) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
                 return ExitCode::FAILURE;
             }

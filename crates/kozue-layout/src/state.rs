@@ -284,6 +284,7 @@ pub(crate) fn layout_state_full(
 
             sem_states.push(semantic::StateNodeLayout {
                 id: node_ids[v].clone(),
+                label: p.label.clone(),
                 rect: Rect {
                     x: p.x,
                     y: p.y,
@@ -337,6 +338,7 @@ pub(crate) fn layout_state_full(
             index: ti,
             from: sem_from,
             to: sem_to,
+            label: trans.label.clone(),
             route: geom
                 .route
                 .iter()
@@ -424,6 +426,7 @@ pub(crate) fn layout_state_full(
             index: ti,
             from: semantic::StateEndpointId::State(state_id.clone()),
             to: semantic::StateEndpointId::State(state_id.clone()),
+            label: t.label.clone(),
             route: loop_pts
                 .iter()
                 .map(|&(x, y)| semantic::Point::new(x, y))

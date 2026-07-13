@@ -32,6 +32,10 @@ impl Point {
 pub struct NodeLayout {
     /// The node's stable string ID (from [`GraphDiagram::nodes`](kozue_ir::GraphDiagram)).
     pub id: String,
+    /// The display label text drawn in the node box (the same string emitted as
+    /// the Scene Text item). This is the label, not the ID: for `a: "入力"` it is
+    /// `"入力"`.
+    pub label: String,
     /// The bounding rectangle of the node box in scene coordinates.
     pub rect: Rect,
     /// The center of the text label (the anchor used when emitting the Text item).
@@ -62,9 +66,15 @@ pub struct EdgeLayout {
     pub from: GraphEndpoint,
     /// Target endpoint.
     pub to: GraphEndpoint,
+    /// Arrowhead style of this edge (from [`Edge::arrow`](kozue_ir::Edge)). Exporters
+    /// use this to distinguish a directed edge from an undirected one
+    /// ([`ArrowType::None`](kozue_ir::ArrowType)).
+    pub arrow: kozue_ir::ArrowType,
     /// Routing points of the edge polyline in scene coordinates, in source-to-target order.
     /// These are the clipped endpoints and any bend points through dummy nodes.
     pub route: Vec<Point>,
+    /// The edge's label text, if any (from [`Edge::label`](kozue_ir::Edge)).
+    pub label: Option<String>,
     /// Center of the edge label, if the edge has a label.
     pub label_anchor: Option<Point>,
 }
@@ -112,6 +122,8 @@ pub struct MessageLayout {
     pub to: String,
     /// Routing points of the message arrow in scene coordinates (source to tip).
     pub route: Vec<Point>,
+    /// The message's label text, if any (from [`Message::label`](kozue_ir::Message)).
+    pub label: Option<String>,
     /// Center of the message label, if any.
     pub label_anchor: Option<Point>,
 }
@@ -150,6 +162,10 @@ pub struct StateNodeLayout {
     /// [`StateDiagram::states`](kozue_ir::StateDiagram) and states auto-declared by
     /// first appearance in a transition endpoint.
     pub id: String,
+    /// The display label text drawn in the state box (the same string emitted as
+    /// the Scene Text item). For `state idle: "Idle"` it is `"Idle"`; for an
+    /// auto-declared state the label defaults to the ID.
+    pub label: String,
     /// The bounding rectangle of the state box in scene coordinates.
     pub rect: Rect,
     /// The center of the text label.
@@ -188,6 +204,8 @@ pub struct TransitionLayout {
     pub from: StateEndpointId,
     /// Target endpoint.
     pub to: StateEndpointId,
+    /// The transition's label text, if any (from [`Transition::label`](kozue_ir::Transition)).
+    pub label: Option<String>,
     /// Routing points of the transition polyline in scene coordinates.
     pub route: Vec<Point>,
     /// Center of the transition label, if any.

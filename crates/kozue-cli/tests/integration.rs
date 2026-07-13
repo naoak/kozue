@@ -1086,3 +1086,134 @@ fn state_rendering_is_deterministic() {
     let svg2 = kozue_render_svg::render(&scene2);
     assert_eq!(svg1, svg2, "state rendering must be deterministic");
 }
+
+// ---------------------------------------------------------------------------
+// M8b: draw.io golden tests
+// ---------------------------------------------------------------------------
+
+fn compile_drawio_kzd(src: &str) -> String {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    let layout_out = kozue_layout::layout_full(&diagram).expect("golden layout must succeed");
+    kozue_render_drawio::render(&layout_out.semantic).expect("golden draw.io render must succeed")
+}
+
+const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+
+#[test]
+fn drawio_graph_goldens_match() {
+    for name in DRAWIO_GRAPH_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let drawio_path = golden_dir().join(format!("{name}.drawio"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_drawio_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&drawio_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&drawio_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                drawio_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "draw.io golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn drawio_state_goldens_match() {
+    for name in DRAWIO_STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let drawio_path = golden_dir().join(format!("{name}.drawio"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_drawio_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&drawio_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&drawio_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                drawio_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "draw.io golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn drawio_render_is_deterministic() {
+    let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out1 = kozue_layout::layout_full(&diagram).unwrap();
+    let out2 = kozue_layout::layout_full(&diagram).unwrap();
+    let xml1 = kozue_render_drawio::render(&out1.semantic).unwrap();
+    let xml2 = kozue_render_drawio::render(&out2.semantic).unwrap();
+    assert_eq!(xml1, xml2, "draw.io render must be deterministic");
+}
+
+#[test]
+fn drawio_graph_edge_emits_waypoints_for_multilayer_edge() {
+    // skip.kzd has a -> d spanning three layers; its draw.io edge must carry an
+    // <Array as="points"> with the interior route points (route[1..n-1]).
+    let src = std::fs::read_to_string(golden_dir().join("skip.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out = kozue_layout::layout_full(&diagram).unwrap();
+    let xml = kozue_render_drawio::render(&out.semantic).unwrap();
+    assert!(
+        xml.contains("<Array as=\"points\">"),
+        "multi-layer graph edge must emit a waypoint Array: {xml}"
+    );
+    assert!(
+        xml.contains("<mxPoint "),
+        "waypoint Array must contain mxPoint children: {xml}"
+    );
+}
+
+#[test]
+fn drawio_sequence_returns_error() {
+    let src = std::fs::read_to_string(golden_dir().join("seq_basic.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out = kozue_layout::layout_full(&diagram).unwrap();
+    let result = kozue_render_drawio::render(&out.semantic);
+    assert!(
+        result.is_err(),
+        "sequence diagram must return an error for draw.io export"
+    );
+}
+
+#[test]
+fn drawio_cli_flag_produces_output() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let kzd = golden_dir().join("chain.kzd");
+    let tmp_out = std::env::temp_dir().join("kozue_drawio_flag_test.drawio");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "drawio",
+            kzd.to_str().unwrap(),
+            "-o",
+            tmp_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let content = std::fs::read_to_string(&tmp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_out);
+    assert!(status.success(), "render --format drawio should succeed");
+    assert!(!content.is_empty(), "draw.io output should be non-empty");
+    assert!(content.contains("<mxfile>"), "output must be mxfile XML");
+}
