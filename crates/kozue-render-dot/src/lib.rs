@@ -138,7 +138,12 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
                 node_id: edge.to.clone(),
             });
         }
-        out.push_str(&edge_stmt(&edge.from, &edge.to, edge.label.as_deref(), edge.arrow));
+        out.push_str(&edge_stmt(
+            &edge.from,
+            &edge.to,
+            edge.label.as_deref(),
+            edge.arrow,
+        ));
     }
 
     out.push_str("}\n");
@@ -157,7 +162,12 @@ fn edge_stmt(from: &str, to: &str, label: Option<&str>, arrow: ArrowType) -> Str
     if attrs.is_empty() {
         format!("  {} -> {};\n", quote(from), quote(to))
     } else {
-        format!("  {} -> {} [{}];\n", quote(from), quote(to), attrs.join(" "))
+        format!(
+            "  {} -> {} [{}];\n",
+            quote(from),
+            quote(to),
+            attrs.join(" ")
+        )
     }
 }
 
@@ -220,7 +230,12 @@ fn render_state(s: &StateDiagram) -> Result<String, RenderError> {
 fn transition_stmt(s: &StateDiagram, t: &Transition) -> Result<String, RenderError> {
     let from = endpoint_id(s, &t.from)?;
     let to = endpoint_id(s, &t.to)?;
-    Ok(edge_stmt(&from, &to, t.label.as_deref(), ArrowType::Triangle))
+    Ok(edge_stmt(
+        &from,
+        &to,
+        t.label.as_deref(),
+        ArrowType::Triangle,
+    ))
 }
 
 /// Resolve a transition endpoint to a DOT node identifier.
@@ -330,8 +345,11 @@ mod tests {
     fn state_emits_pseudostates_only_when_used() {
         let mut s = StateDiagram::new();
         s.states.insert("idle".into(), State::new("idle", "Idle"));
-        s.transitions
-            .push(Transition::new(Endpoint::Initial, Endpoint::State("idle".into()), None));
+        s.transitions.push(Transition::new(
+            Endpoint::Initial,
+            Endpoint::State("idle".into()),
+            None,
+        ));
         s.transitions.push(Transition::new(
             Endpoint::State("idle".into()),
             Endpoint::Final,

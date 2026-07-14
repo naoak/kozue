@@ -1002,15 +1002,7 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
             Point::new(p.lifeline_x, p.lifeline_y1),
         ];
         let (lx, ly, points, w, h) = route_geometry(&lifeline_route);
-        let mut lifeline = make_line(
-            &lifeline_id,
-            lx,
-            ly,
-            w,
-            h,
-            points,
-            /* dashed */ true,
-        );
+        let mut lifeline = make_line(&lifeline_id, lx, ly, w, h, points, /* dashed */ true);
         lifeline.group_ids = vec![group_id.clone()];
         elements.push(AnyElement::Line(lifeline));
     }
@@ -1043,7 +1035,16 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
         };
         let dashed = m.line == LineStyle::Dashed;
         let arrow = make_arrow(
-            &arrow_id, ax, ay, w, h, points, None, None, end_arrowhead, dashed,
+            &arrow_id,
+            ax,
+            ay,
+            w,
+            h,
+            points,
+            None,
+            None,
+            end_arrowhead,
+            dashed,
         );
         elements.push(AnyElement::Arrow(arrow));
 

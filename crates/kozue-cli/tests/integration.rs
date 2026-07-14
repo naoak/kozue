@@ -1448,8 +1448,7 @@ fn compile_excalidraw_kzd(src: &str) -> String {
 
 const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
-const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] =
-    &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 
 #[test]
 fn excalidraw_graph_goldens_match() {
@@ -1553,9 +1552,8 @@ fn excalidraw_goldens_are_well_formed_json() {
         .chain(EXCALIDRAW_SEQUENCE_GOLDEN_CASES.iter());
     for name in cases {
         let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
-        let content = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
-            panic!("read golden {}: {e}", excalidraw_path.display())
-        });
+        let content = std::fs::read_to_string(&excalidraw_path)
+            .unwrap_or_else(|e| panic!("read golden {}: {e}", excalidraw_path.display()));
         let value: serde_json::Value = serde_json::from_str(&content)
             .unwrap_or_else(|e| panic!("{name}.excalidraw is not valid JSON: {e}"));
         assert_eq!(
@@ -1591,9 +1589,15 @@ fn excalidraw_cli_flag_produces_output() {
         .expect("failed to run kozue");
     let content = std::fs::read_to_string(&tmp_out).unwrap_or_default();
     let _ = std::fs::remove_file(&tmp_out);
-    assert!(status.success(), "render --format excalidraw should succeed");
+    assert!(
+        status.success(),
+        "render --format excalidraw should succeed"
+    );
     assert!(!content.is_empty(), "Excalidraw output should be non-empty");
     let value: serde_json::Value =
         serde_json::from_str(&content).expect("output must be valid JSON");
-    assert_eq!(value["type"], "excalidraw", "output must be an Excalidraw scene");
+    assert_eq!(
+        value["type"], "excalidraw",
+        "output must be an Excalidraw scene"
+    );
 }
