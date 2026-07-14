@@ -1,5 +1,8 @@
 # kozue
 
+[![CI](https://github.com/naoak/kozue/actions/workflows/ci.yml/badge.svg)](https://github.com/naoak/kozue/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 kozue is a diagram compiler that takes a custom DSL (`.kzd`) as input and produces deterministic SVG output. It parses the DSL into a semantic IR, lays out the diagram with a naive layered algorithm, and renders it to SVG. The same input always produces byte-identical output.
 
 > **Note:** This project is in an early stage of active development. Expect frequent breaking changes.
