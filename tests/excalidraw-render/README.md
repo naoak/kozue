@@ -18,7 +18,7 @@ separately (locally or as its own CI job).
 
 ## Requirements
 
-- Node.js ≥ 20 (uses the built-in `node:test` runner; no test framework dependency)
+- Node.js ≥ 24 (uses the built-in `node:test` runner; no test framework dependency)
 
 ## Usage
 
