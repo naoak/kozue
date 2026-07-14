@@ -7,9 +7,22 @@ kozue is a diagram compiler that takes a custom DSL (`.kzd`) as input and produc
 ```sh
 kozue render examples/hello.kzd -o hello.svg
 kozue check examples/hello.kzd
+kozue fmt examples/hello.kzd
+kozue compat mermaid
 ```
 
-`render` compiles a diagram to SVG (defaults to `<input>.svg` if `-o` is omitted). `check` parses and semantically validates the input, printing `OK` on success. Parse and semantic errors are printed to stderr with a non-zero exit code.
+| Command | Purpose |
+| --- | --- |
+| `render` | Compiles a diagram to SVG (defaults to `<input>.svg` if `-o` is omitted) or another `--format`. |
+| `check` | Parses and semantically validates the input, printing `OK` on success. |
+| `fmt` | Rewrites a kozue DSL (`.kzd`) file into canonical normal form in place. `--check` exits non-zero if the file would change (for CI); `--stdout` writes the result to stdout instead of rewriting the file. |
+| `compat` | Prints a feature-compatibility table for a frontend language (`mermaid` or `plantuml`). |
+
+Parse and semantic errors are printed to stderr with a non-zero exit code.
+
+### Input languages
+
+The frontend is auto-detected from the input file extension: kozue DSL (`.kzd`), Mermaid (`.mmd`/`.mermaid`), and PlantUML (`.puml`/`.plantuml`/`.pu`/`.iuml`) all parse into the same semantic IR. Pass `--lang <kozue|mermaid|plantuml>` to `render` or `check` to override auto-detection. Run `kozue compat <language>` to see which features of a given frontend are supported.
 
 ### Output formats
 
@@ -59,12 +72,40 @@ npm run compile
 
 To use a custom binary path, set `"kozue.serverPath"` in your VSCode `settings.json`.
 
-### Scope (M6b)
+### Scope
 
 The LSP server currently provides:
 
-- **Diagnostics** — parse errors appear as squiggles in real time (M6a).
-- **Hover** — hovering over a node or participant id shows its label as Markdown (M6b). Works for all supported languages (kozue, Mermaid, PlantUML), since they share one IR.
-- **Formatting** — running "Format Document" on a `.kozue`/`.kzd` file reformats it with `kozue fmt` (M6b). Mermaid and PlantUML files are left untouched (no formatter exists for them yet).
+- **Diagnostics** — parse errors appear as squiggles in real time.
+- **Hover** — hovering over a node or participant id shows its label as Markdown. Works for all supported languages (kozue, Mermaid, PlantUML), since they share one IR.
+- **Formatting** — running "Format Document" on a `.kozue`/`.kzd` file reformats it with `kozue fmt`. Mermaid and PlantUML files are left untouched (no formatter exists for them yet).
 
 Go-to-definition and other features are planned for future milestones.
+
+## WebAssembly
+
+The [`kozue-wasm`](crates/kozue-wasm/) crate exposes the compiler to JavaScript via `wasm-bindgen`, with three functions: `render_svg` (parse → layout → SVG string), `render_png` (parse → layout → PNG bytes), and `check` (parse-only validation). Determinism carries over: the same input always produces identical output in the browser.
+
+The generated `pkg/` directory is **not** checked into the repository (it is git-ignored), so `demo.html` will not work on a fresh clone until you build the bindings yourself. If the buttons and the language selector appear dead, it usually means `pkg/` is missing: the ES-module import fails and none of the page's event handlers get registered (check the browser console for a module-load error).
+
+Prerequisites — the `wasm32-unknown-unknown` target and the `wasm-bindgen` CLI, whose version **must match** the `wasm-bindgen` dependency pinned in `Cargo.toml` exactly (a mismatch produces broken bindings):
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.92   # match Cargo.toml
+```
+
+Build the bindings from the workspace root:
+
+```sh
+cargo build -p kozue-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen target/wasm32-unknown-unknown/release/kozue_wasm.wasm \
+  --out-dir crates/kozue-wasm/pkg --target web
+```
+
+Then serve the crate directory over HTTP (ES modules and WASM require HTTP, not `file://`) and open the demo:
+
+```sh
+python3 -m http.server 8080 --directory crates/kozue-wasm/
+# open http://localhost:8080/demo.html
+```
