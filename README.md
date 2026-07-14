@@ -2,6 +2,8 @@
 
 kozue is a diagram compiler that takes a custom DSL (`.kzd`) as input and produces deterministic SVG output. It parses the DSL into a semantic IR, lays out the diagram with a naive layered algorithm, and renders it to SVG. The same input always produces byte-identical output.
 
+> **Note:** This project is in an early stage of active development. Expect frequent breaking changes.
+
 ## Usage
 
 ```sh
