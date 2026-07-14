@@ -29,6 +29,7 @@ enum Format {
     Png,
     Drawio,
     Dot,
+    Excalidraw,
 }
 
 #[derive(Subcommand)]
@@ -43,7 +44,7 @@ enum Command {
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
-        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), `drawio` (mxGraph XML), or `dot` (Graphviz DOT).
+        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), `drawio` (mxGraph XML), `dot` (Graphviz DOT), or `excalidraw` (Excalidraw JSON).
         #[arg(long, default_value = "svg")]
         format: Format,
     },
@@ -234,6 +235,20 @@ fn run_render(
             };
             let out_path = output.unwrap_or_else(|| input.with_extension("dot"));
             if let Err(e) = std::fs::write(&out_path, &dot) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        Format::Excalidraw => {
+            let excalidraw = match kozue_render_excalidraw::render(&layout_semantic) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: Excalidraw export failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out_path = output.unwrap_or_else(|| input.with_extension("excalidraw"));
+            if let Err(e) = std::fs::write(&out_path, &excalidraw) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
                 return ExitCode::FAILURE;
             }

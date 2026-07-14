@@ -547,10 +547,12 @@ dependencies = [
  "kozue-plantuml",
  "kozue-render-dot",
  "kozue-render-drawio",
+ "kozue-render-excalidraw",
  "kozue-render-png",
  "kozue-render-svg",
  "kozue-render-term",
  "kozue-text",
+ "serde_json",
 ]
 
 [[package]]
@@ -621,6 +623,16 @@ version = "0.1.0"
 dependencies = [
  "kozue-ir",
  "kozue-layout",
+]
+
+[[package]]
+name = "kozue-render-excalidraw"
+version = "0.1.0"
+dependencies = [
+ "kozue-ir",
+ "kozue-layout",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

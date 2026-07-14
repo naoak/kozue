@@ -20,6 +20,7 @@ kozue-plantuml.workspace = true
 kozue-render-png.workspace = true
 kozue-render-drawio.workspace = true
 kozue-render-dot.workspace = true
+kozue-render-excalidraw.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
@@ -28,3 +29,5 @@ kozue-plantuml.workspace = true
 kozue-render-png.workspace = true
 kozue-render-drawio.workspace = true
 kozue-render-dot.workspace = true
+kozue-render-excalidraw.workspace = true
+serde_json.workspace = true

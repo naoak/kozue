@@ -22,6 +22,7 @@ kozue check examples/hello.kzd
 | `png` | Deterministic raster PNG |
 | `drawio` | Editable draw.io / mxGraph XML |
 | `dot` | Graphviz DOT — for `graph` and `state` diagrams; Graphviz does its own layout |
+| `excalidraw` | Editable Excalidraw (`.excalidraw`) JSON scene |
 
 ```sh
 kozue render examples/hello.kzd --format dot -o hello.dot

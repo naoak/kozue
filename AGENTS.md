@@ -28,6 +28,7 @@ frontends → IR → layout → renderers
 | `kozue-render-png` | Deterministic PNG rasterizer (tiny-skia). |
 | `kozue-render-drawio` | draw.io / mxGraph XML exporter. Consumes the semantic layout, not the flat `Scene`. |
 | `kozue-render-dot` | Graphviz DOT exporter. Consumes the semantic `Diagram` directly (no layout) — Graphviz lays out the graph itself. Graph & state diagrams only. |
+| `kozue-render-excalidraw` | Excalidraw (`.excalidraw` JSON) exporter. Consumes the semantic layout, not the flat `Scene`. |
 | `kozue-cli` | The `kozue` binary. Wires frontends → layout → renderers. |
 | `kozue-lsp` | Language server (diagnostics, hover, formatting). |
 | `kozue-wasm` | WASM bindings for browser use. |
@@ -40,7 +41,7 @@ or renderer feature works for every input language automatically.
 
 ```sh
 kozue render examples/hello.kzd -o hello.svg     # default format is svg
-kozue render input.mmd --format term             # svg | term | png | drawio | dot
+kozue render input.mmd --format term             # svg | term | png | drawio | dot | excalidraw
 kozue check examples/hello.kzd                    # parse + semantic check, prints OK
 kozue fmt input.kzd --check                       # canonical form; --check for CI, --stdout to print
 ```
@@ -58,7 +59,7 @@ cargo test                   # all tests, including golden integration tests
 
 Golden tests live in `tests/golden/` (driven by
 `crates/kozue-cli/tests/integration.rs`): each `<name>.kzd` / `.mmd` / `.puml`
-input has committed `.svg`, `.txt`, `.png`, `.drawio` outputs. When a change
+input has committed `.svg`, `.txt`, `.png`, `.drawio`, `.excalidraw` outputs. When a change
 legitimately alters output, regenerate them with:
 
 ```sh

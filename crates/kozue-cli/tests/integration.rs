@@ -1434,3 +1434,166 @@ fn dot_cli_flag_produces_output() {
         "output must be a DOT digraph"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M10: Excalidraw golden tests
+// ---------------------------------------------------------------------------
+
+fn compile_excalidraw_kzd(src: &str) -> String {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    let layout_out = kozue_layout::layout_full(&diagram).expect("golden layout must succeed");
+    kozue_render_excalidraw::render(&layout_out.semantic)
+        .expect("golden Excalidraw render must succeed")
+}
+
+const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] =
+    &["seq_minimal", "seq_basic", "seq_self_dashed"];
+
+#[test]
+fn excalidraw_graph_goldens_match() {
+    for name in EXCALIDRAW_GRAPH_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_excalidraw_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&excalidraw_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                excalidraw_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "Excalidraw golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn excalidraw_state_goldens_match() {
+    for name in EXCALIDRAW_STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_excalidraw_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&excalidraw_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                excalidraw_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "Excalidraw golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn excalidraw_sequence_goldens_match() {
+    for name in EXCALIDRAW_SEQUENCE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_excalidraw_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&excalidraw_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                excalidraw_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "Excalidraw golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn excalidraw_render_is_deterministic() {
+    let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out1 = kozue_layout::layout_full(&diagram).unwrap();
+    let out2 = kozue_layout::layout_full(&diagram).unwrap();
+    let json1 = kozue_render_excalidraw::render(&out1.semantic).unwrap();
+    let json2 = kozue_render_excalidraw::render(&out2.semantic).unwrap();
+    assert_eq!(json1, json2, "Excalidraw render must be deterministic");
+}
+
+/// Every Excalidraw golden must be valid JSON that round-trips through
+/// `serde_json::Value` and declares the expected top-level envelope.
+#[test]
+fn excalidraw_goldens_are_well_formed_json() {
+    let cases = EXCALIDRAW_GRAPH_GOLDEN_CASES
+        .iter()
+        .chain(EXCALIDRAW_STATE_GOLDEN_CASES.iter())
+        .chain(EXCALIDRAW_SEQUENCE_GOLDEN_CASES.iter());
+    for name in cases {
+        let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
+        let content = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
+            panic!("read golden {}: {e}", excalidraw_path.display())
+        });
+        let value: serde_json::Value = serde_json::from_str(&content)
+            .unwrap_or_else(|e| panic!("{name}.excalidraw is not valid JSON: {e}"));
+        assert_eq!(
+            value["type"], "excalidraw",
+            "{name}.excalidraw must declare type=excalidraw"
+        );
+        assert_eq!(
+            value["version"], 2,
+            "{name}.excalidraw must declare version=2"
+        );
+        assert!(
+            value["elements"].as_array().is_some_and(|a| !a.is_empty()),
+            "{name}.excalidraw must have a non-empty elements array"
+        );
+    }
+}
+
+#[test]
+fn excalidraw_cli_flag_produces_output() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let kzd = golden_dir().join("chain.kzd");
+    let tmp_out = std::env::temp_dir().join("kozue_excalidraw_flag_test.excalidraw");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "excalidraw",
+            kzd.to_str().unwrap(),
+            "-o",
+            tmp_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let content = std::fs::read_to_string(&tmp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_out);
+    assert!(status.success(), "render --format excalidraw should succeed");
+    assert!(!content.is_empty(), "Excalidraw output should be non-empty");
+    let value: serde_json::Value =
+        serde_json::from_str(&content).expect("output must be valid JSON");
+    assert_eq!(value["type"], "excalidraw", "output must be an Excalidraw scene");
+}
