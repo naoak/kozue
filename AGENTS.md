@@ -69,6 +69,12 @@ UPDATE_GOLDEN=1 cargo test
 Then **inspect the diff** before committing — an unexpected golden change is
 usually a determinism bug, not a benign update.
 
+An optional, Node-based cross-check in `tests/excalidraw-render/` renders the
+`.excalidraw` goldens through Excalidraw's own engine and asserts they draw
+correctly (no dropped labels / broken bindings). It is **not** part of `cargo
+test`; run it separately with `npm install && npm test` in that directory. See
+its `README.md`.
+
 ## Text & Japanese glyphs
 
 Widths are measured against embedded **DejaVu Sans**, which has no CJK glyphs.

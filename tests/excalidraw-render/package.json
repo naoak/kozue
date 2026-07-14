@@ -1,0 +1,17 @@
+{
+  "name": "kozue-excalidraw-render-check",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional cross-ecosystem regression guard: render the committed .excalidraw goldens through Excalidraw's own engine and assert they draw correctly.",
+  "scripts": {
+    "build": "node build.mjs",
+    "pretest": "node build.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "esbuild": "0.28.1",
+    "jsdom": "29.1.1"
+  }
+}
