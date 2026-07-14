@@ -100,6 +100,10 @@ pub struct GraphLayout {
 pub struct ParticipantLayout {
     /// The participant's stable string ID.
     pub id: String,
+    /// The display label text drawn in the header box (the same string emitted as
+    /// the Scene Text item). This is the label, not the ID: for `participant a: "Alice"`
+    /// it is `"Alice"`.
+    pub label: String,
     /// The bounding box of the participant's header box.
     pub header_rect: Rect,
     /// The x-coordinate of the participant's lifeline (center of the column).
@@ -122,6 +126,11 @@ pub struct MessageLayout {
     pub to: String,
     /// Routing points of the message arrow in scene coordinates (source to tip).
     pub route: Vec<Point>,
+    /// Line style of the message (from [`Message::line`](kozue_ir::Message)). Exporters
+    /// use this to distinguish a solid call from a dashed reply.
+    pub line: kozue_ir::LineStyle,
+    /// Arrowhead style of the message (from [`Message::arrow`](kozue_ir::Message)).
+    pub arrow: kozue_ir::ArrowType,
     /// The message's label text, if any (from [`Message::label`](kozue_ir::Message)).
     pub label: Option<String>,
     /// Center of the message label, if any.

@@ -195,6 +195,7 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
 
         sem_participants.push(semantic::ParticipantLayout {
             id: (*id).clone(),
+            label: label.clone(),
             header_rect: Rect {
                 x: cx - hw / 2.0,
                 y: HEADER_TOP,
@@ -276,6 +277,8 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
                 from: msg.from.clone(),
                 to: msg.to.clone(),
                 route,
+                line: msg.line,
+                arrow: msg.arrow,
                 label: msg.label.clone(),
                 label_anchor,
             });
@@ -333,6 +336,8 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
                 from: msg.from.clone(),
                 to: msg.to.clone(),
                 route,
+                line: msg.line,
+                arrow: msg.arrow,
                 label: msg.label.clone(),
                 label_anchor,
             });

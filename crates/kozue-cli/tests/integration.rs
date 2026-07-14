@@ -1099,6 +1099,7 @@ fn compile_drawio_kzd(src: &str) -> String {
 
 const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 
 #[test]
 fn drawio_graph_goldens_match() {
@@ -1184,14 +1185,130 @@ fn drawio_graph_edge_emits_waypoints_for_multilayer_edge() {
 }
 
 #[test]
-fn drawio_sequence_returns_error() {
-    let src = std::fs::read_to_string(golden_dir().join("seq_basic.kzd")).unwrap();
+fn drawio_sequence_goldens_match() {
+    for name in DRAWIO_SEQUENCE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let drawio_path = golden_dir().join(format!("{name}.drawio"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_drawio_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&drawio_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&drawio_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                drawio_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "draw.io golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// Extract a fractional style value (e.g. `exitY`) from the style of the
+/// `<mxCell id="{cell_id}" ...>` element in rendered draw.io XML.
+fn drawio_style_frac(xml: &str, cell_id: &str, key: &str) -> f64 {
+    let open = format!("<mxCell id=\"{cell_id}\"");
+    let cell_start = xml
+        .find(&open)
+        .unwrap_or_else(|| panic!("no cell {cell_id}"));
+    let cell = &xml[cell_start..xml[cell_start..].find('>').unwrap() + cell_start];
+    let needle = format!("{key}=");
+    let val_start = cell
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no {key} in style of {cell_id}: {cell}"))
+        + needle.len();
+    let rest = &cell[val_start..];
+    let val = &rest[..rest.find(';').unwrap_or(rest.len())];
+    val.parse()
+        .unwrap_or_else(|e| panic!("bad {key} value {val:?} in {cell_id}: {e}"))
+}
+
+/// Contract test guarding the *rendered* exitY/entryY pins: for every message,
+/// the fraction emitted in the draw.io XML, applied to the lifeline vertex
+/// geometry as draw.io would (frac × vertex_height + vertex_top), must
+/// reconstruct the message's semantic y within 0.1 px. Unlike the goldens,
+/// this cannot be blessed away by UPDATE_GOLDEN: it catches a formatter
+/// regression (e.g. dropping to 2 decimals) or a wrong denominator (e.g. the
+/// lifeline span instead of the full vertex height) in the renderer itself.
+#[test]
+fn drawio_sequence_pins_preserve_message_y() {
+    use kozue_layout::semantic::SemanticLayout;
+    for name in DRAWIO_SEQUENCE_GOLDEN_CASES {
+        let src = std::fs::read_to_string(golden_dir().join(format!("{name}.kzd"))).unwrap();
+        let diagram = kozue_dsl::parse(&src).unwrap();
+        let out = kozue_layout::layout_full(&diagram).unwrap();
+        let SemanticLayout::Sequence(s) = &out.semantic else {
+            panic!("{name} must be a sequence layout");
+        };
+        let xml = kozue_render_drawio::render(&out.semantic).unwrap();
+        for (i, m) in s.messages.iter().enumerate() {
+            let src_p = s.participants.iter().find(|p| p.id == m.from).unwrap();
+            let tgt_p = s.participants.iter().find(|p| p.id == m.to).unwrap();
+            let cell_id = format!("e{i}");
+            for (key, p, y) in [
+                ("exitY", src_p, m.route.first().unwrap().y),
+                ("entryY", tgt_p, m.route.last().unwrap().y),
+            ] {
+                let frac = drawio_style_frac(&xml, &cell_id, key);
+                // Reconstruct the y as draw.io would, from the vertex geometry.
+                let h = p.lifeline_y1 - p.header_rect.y;
+                let reconstructed = frac * h + p.header_rect.y;
+                assert!(
+                    (reconstructed - y).abs() < 0.1,
+                    "{name}: rendered {key} of {cell_id} desyncs y: \
+                     got {reconstructed}, want {y}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn drawio_sequence_self_message_is_self_loop_with_waypoints() {
+    // seq_self_dashed has `a -> a` and `b -->> b`; each must be a self-loop
+    // (source == target) carrying fold waypoints.
+    use kozue_layout::semantic::SemanticLayout;
+    let src = std::fs::read_to_string(golden_dir().join("seq_self_dashed.kzd")).unwrap();
     let diagram = kozue_dsl::parse(&src).unwrap();
     let out = kozue_layout::layout_full(&diagram).unwrap();
-    let result = kozue_render_drawio::render(&out.semantic);
+    let SemanticLayout::Sequence(s) = &out.semantic else {
+        panic!("expected sequence");
+    };
+    let self_msgs = s.messages.iter().filter(|m| m.from == m.to).count();
+    assert_eq!(self_msgs, 2, "two self-messages expected");
+    let xml = kozue_render_drawio::render(&out.semantic).unwrap();
+    // A self-loop connects a lifeline to itself and carries a waypoint Array.
     assert!(
-        result.is_err(),
-        "sequence diagram must return an error for draw.io export"
+        xml.contains("source=\"n0\" target=\"n0\"") || xml.contains("source=\"n1\" target=\"n1\""),
+        "self-message must be a self-loop edge: {xml}"
+    );
+    assert!(
+        xml.contains("<Array as=\"points\">"),
+        "self-message must carry fold waypoints: {xml}"
+    );
+}
+
+/// Guard the Bクラス "follow" guarantee: a straight (non-self) message must NOT
+/// carry absolute waypoints. If a future layout change starts adding interior
+/// route points to straight messages, those absolute mxPoints would be left
+/// behind when a participant is dragged — silently breaking connection-follow.
+/// seq_minimal is a single straight message, so its edge must be waypoint-free.
+#[test]
+fn drawio_straight_message_has_no_absolute_waypoints() {
+    let src = std::fs::read_to_string(golden_dir().join("seq_minimal.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out = kozue_layout::layout_full(&diagram).unwrap();
+    let xml = kozue_render_drawio::render(&out.semantic).unwrap();
+    assert!(
+        !xml.contains("<Array as=\"points\">"),
+        "straight message must not emit absolute waypoints (would break follow-on-move): {xml}"
     );
 }
 

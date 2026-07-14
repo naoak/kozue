@@ -35,12 +35,21 @@
 //!   vertex; the initial pseudostate becomes a filled ellipse; the final
 //!   pseudostate becomes an outer stroked ring plus an inner filled dot (two
 //!   concentric ellipses). Transitions become connectors.
+//! - [`SemanticLayout::Sequence`] — each participant becomes a `umlLifeline`
+//!   vertex (header box + dashed lifeline in one shape). Each message becomes a
+//!   connector whose endpoints are pinned to a fractional height on the source
+//!   and target lifelines via `exitY` / `entryY`, so the vertical (time) order
+//!   survives while the horizontal connection follows when a participant is
+//!   moved (see the M8c design notes). Self-messages become self-loop
+//!   connectors with explicit fold waypoints.
 //!
-//! [`SemanticLayout::Sequence`] and any future variants return
-//! [`RenderError::UnsupportedDiagram`] rather than silently dropping data.
+//! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
+//! silently dropping data.
 
-use kozue_ir::ArrowType;
-use kozue_layout::semantic::{GraphLayout, SemanticLayout, StateEndpointId, StateLayout};
+use kozue_ir::{ArrowType, LineStyle};
+use kozue_layout::semantic::{
+    GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
+};
 
 const MARGIN: f64 = 20.0;
 
@@ -108,17 +117,17 @@ impl std::error::Error for RenderError {}
 ///
 /// # Errors
 ///
-/// Returns [`RenderError::UnsupportedDiagram`] for sequence diagrams and any
-/// future layout variants that have no mxGraph representation yet.
-/// Returns [`RenderError::DanglingEdge`] if a graph edge references an unknown
-/// node ID.
+/// Returns [`RenderError::UnsupportedDiagram`] for any future layout variants
+/// that have no mxGraph representation yet.
+/// Returns [`RenderError::DanglingEdge`] if a graph edge or sequence message
+/// references an unknown node/participant ID.
 /// Returns [`RenderError::UnknownEndpoint`] if a state transition endpoint
 /// cannot be resolved.
 pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
     match layout {
         SemanticLayout::Graph(g) => render_graph(g),
         SemanticLayout::State(s) => render_state(s),
-        SemanticLayout::Sequence(_) => Err(RenderError::UnsupportedDiagram { kind: "sequence" }),
+        SemanticLayout::Sequence(seq) => render_sequence(seq),
         _ => Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
     }
 }
@@ -130,6 +139,17 @@ pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
 /// Format a float to exactly 2 decimal places (e.g. `"20.00"`, `"123.45"`).
 fn f(v: f64) -> String {
     format!("{:.2}", v)
+}
+
+/// Format a connection-point fraction (0.0–1.0) to exactly 6 decimal places.
+///
+/// Sequence message endpoints are pinned to a fractional height along a lifeline
+/// via `exitY` / `entryY`. The coordinate formatter [`f`] (2 decimals) is far too
+/// coarse here: on a 2000 px-tall lifeline, 2 decimals quantises to 20 px, which
+/// would collapse adjacent messages onto the same row and destroy the time order.
+/// Six decimals keep the error below 0.1 px even for very tall diagrams.
+fn frac(v: f64) -> String {
+    format!("{:.6}", v)
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +453,111 @@ fn render_state(s: &StateLayout) -> Result<String, RenderError> {
             out.push_str(&format!(
                 "        <mxCell id=\"e{i}\" value=\"{label_value}\" style=\"{style}\" \
                  edge=\"1\"{src_attr}{tgt_attr} parent=\"1\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\"/>\n\
+                 \x20       </mxCell>\n",
+            ));
+        }
+    }
+
+    out.push_str(mxfile_footer());
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Sequence diagram renderer
+// ---------------------------------------------------------------------------
+
+fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
+    let mut out = mxfile_header();
+
+    // Participant lifelines — one umlLifeline vertex per participant (`n{i}`).
+    // The vertex spans the *whole* column: its top is the header top and its
+    // height reaches the bottom of the lifeline, so `exitY`/`entryY` fractions
+    // (computed below) address a point on the dashed line.
+    for (i, p) in s.participants.iter().enumerate() {
+        let r = &p.header_rect;
+        let height = p.lifeline_y1 - r.y;
+        out.push_str(&format!(
+            "        <mxCell id=\"n{i}\" value=\"{}\" \
+             style=\"shape=umlLifeline;perimeter=lifelinePerimeter;size={};container=0;\
+             collapsible=0;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\">\n\
+             \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+             \x20       </mxCell>\n",
+            xml_escape(&p.label),
+            f(r.height),
+            f(r.x + MARGIN),
+            f(r.y + MARGIN),
+            f(r.width),
+            f(height),
+        ));
+    }
+
+    // Participant id -> index lookup (Vec-based, deterministic). Returns
+    // DanglingEdge for an unknown participant instead of dropping the message.
+    let find_participant =
+        |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id == id) };
+
+    // Messages — one connector per message (`e{i}`), pinned to fractional
+    // heights on the source/target lifelines.
+    for (i, m) in s.messages.iter().enumerate() {
+        let src_idx = find_participant(&m.from).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: m.from.clone(),
+        })?;
+        let tgt_idx = find_participant(&m.to).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: m.to.clone(),
+        })?;
+        let src = &s.participants[src_idx];
+        let tgt = &s.participants[tgt_idx];
+
+        // Fraction of each vertex's full height. The denominator is the whole
+        // vertex height (`lifeline_y1 - header_rect.y`), NOT the lifeline span,
+        // because exitY/entryY are relative to the mxCell geometry, whose origin
+        // is the header top.
+        let y_from = m.route.first().map(|p| p.y).unwrap_or(src.lifeline_y0);
+        let y_to = m.route.last().map(|p| p.y).unwrap_or(tgt.lifeline_y0);
+        let exit_y = (y_from - src.header_rect.y) / (src.lifeline_y1 - src.header_rect.y);
+        let entry_y = (y_to - tgt.header_rect.y) / (tgt.lifeline_y1 - tgt.header_rect.y);
+
+        let dashed = if m.line == LineStyle::Dashed {
+            "dashed=1;"
+        } else {
+            ""
+        };
+        // Undirected message (no arrowhead); directed messages use draw.io's
+        // default arrowhead, matching the graph/state renderers.
+        let end_arrow = if m.arrow == ArrowType::None {
+            "endArrow=none;"
+        } else {
+            ""
+        };
+
+        let style = format!(
+            "edgeStyle=none;html=1;{dashed}exitX=0.5;exitY={};exitDx=0;exitDy=0;exitPerimeter=0;\
+             entryX=0.5;entryY={};entryDx=0;entryDy=0;entryPerimeter=0;{end_arrow}",
+            frac(exit_y),
+            frac(entry_y),
+        );
+
+        let label_value = xml_escape(m.label.as_deref().unwrap_or(""));
+        // A self-message routes right-down-left; its fold corners (route interior
+        // points) are emitted as absolute waypoints. mxGraph translates a
+        // self-loop's waypoints together with its vertex on move, so the loop
+        // follows the participant.
+        let wp = waypoints_xml(&m.route);
+        let has_children = !wp.is_empty();
+
+        if has_children {
+            out.push_str(&format!(
+                "        <mxCell id=\"e{i}\" value=\"{label_value}\" style=\"{style}\" \
+                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\">{wp}\n\
+                 \x20         </mxGeometry>\n\
+                 \x20       </mxCell>\n",
+            ));
+        } else {
+            out.push_str(&format!(
+                "        <mxCell id=\"e{i}\" value=\"{label_value}\" style=\"{style}\" \
+                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
                  \x20         <mxGeometry relative=\"1\" as=\"geometry\"/>\n\
                  \x20       </mxCell>\n",
             ));
@@ -808,20 +933,92 @@ mod tests {
         assert_eq!(xml1, xml2, "state render must be deterministic");
     }
 
-    // --- unsupported variants ---
+    // --- sequence rendering ---
 
     #[test]
-    fn sequence_diagram_returns_explicit_error() {
+    fn sequence_render_produces_umllifeline_vertices() {
         let layout = seq_layout();
-        let result = render(&layout);
+        let xml = render(&layout).expect("sequence render");
+        assert!(xml.starts_with("<mxfile>"));
+        assert!(xml.contains("id=\"n0\""), "first participant is n0");
+        assert!(xml.contains("id=\"n1\""), "second participant is n1");
         assert!(
-            matches!(
-                result,
-                Err(RenderError::UnsupportedDiagram { kind: "sequence" })
-            ),
-            "sequence must return UnsupportedDiagram, got: {result:?}"
+            xml.contains("shape=umlLifeline"),
+            "participants are umlLifeline vertices: {xml}"
+        );
+        // Values are display labels, not ids.
+        assert!(xml.contains("value=\"Alice\""), "participant label Alice");
+        assert!(xml.contains("value=\"Bob\""), "participant label Bob");
+        assert!(
+            !xml.contains("value=\"a\""),
+            "raw participant id must not leak as a value"
         );
     }
+
+    #[test]
+    fn sequence_render_message_is_pinned_and_connected() {
+        let layout = seq_layout();
+        let xml = render(&layout).expect("sequence render");
+        assert!(xml.contains("id=\"e0\""), "message is e0");
+        assert!(
+            xml.contains("source=\"n0\" target=\"n1\""),
+            "message connects source lifeline to target lifeline: {xml}"
+        );
+        assert!(
+            xml.contains("exitY=") && xml.contains("entryY="),
+            "message endpoints are pinned via exitY/entryY: {xml}"
+        );
+        assert!(
+            xml.contains("exitPerimeter=0") && xml.contains("entryPerimeter=0"),
+            "fixed connection points bypass perimeter routing: {xml}"
+        );
+        assert!(xml.contains("value=\"hi\""), "message label is emitted");
+    }
+
+    #[test]
+    fn sequence_render_exit_fraction_matches_message_y() {
+        // The exitY fraction actually *emitted in the XML* must reproduce the
+        // semantic message y: frac * vertex_height + vertex_y ≈ route[0].y.
+        // Parses the rendered style so a formatter or denominator regression
+        // in render_sequence() fails here, not only in the goldens.
+        let layout = seq_layout();
+        let SemanticLayout::Sequence(s) = &layout else {
+            panic!("expected sequence layout");
+        };
+        let xml = render(&layout).expect("sequence render");
+        let after = xml.split("exitY=").nth(1).expect("exitY in rendered style");
+        let frac: f64 = after
+            .split(';')
+            .next()
+            .unwrap()
+            .parse()
+            .expect("exitY parses as f64");
+        let m = &s.messages[0];
+        let src = s.participants.iter().find(|p| p.id == m.from).unwrap();
+        let height = src.lifeline_y1 - src.header_rect.y;
+        let reconstructed = frac * height + src.header_rect.y;
+        assert!(
+            (reconstructed - m.route[0].y).abs() < 0.1,
+            "rendered exitY must reconstruct message y within 0.1px: got {reconstructed}, want {}",
+            m.route[0].y
+        );
+    }
+
+    #[test]
+    fn sequence_render_is_deterministic() {
+        let layout = seq_layout();
+        let xml1 = render(&layout).expect("render 1");
+        let xml2 = render(&layout).expect("render 2");
+        assert_eq!(xml1, xml2, "sequence render must be deterministic");
+    }
+
+    #[test]
+    fn frac_formats_six_decimals() {
+        assert_eq!(frac(0.5), "0.500000");
+        assert_eq!(frac(80.0 / 248.0), "0.322581");
+    }
+
+    // --- error displays ---
 
     #[test]
     fn render_error_display() {

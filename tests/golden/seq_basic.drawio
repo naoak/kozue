@@ -1,0 +1,39 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="Webブラウザ" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="20.00" width="139.82" height="344.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="APIサーバ" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="253.70" y="20.00" width="113.31" height="344.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n2" value="DB" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="468.20" y="20.00" width="63.30" height="344.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="e0" value="POST /login" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.232558;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.232558;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" value="SELECT user" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.372093;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.372093;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n2" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2" value="row" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.511628;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.511628;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n2" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" value="200 OK" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.651163;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.651163;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" value="セッション生成" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.790698;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.860465;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="340.36" y="292.00"/>
+              <mxPoint x="340.36" y="316.00"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

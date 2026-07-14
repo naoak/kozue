@@ -1,0 +1,19 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="X" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="20.00" width="50.96" height="152.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="Y" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="150.96" y="20.00" width="49.77" height="152.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="e0" value="go" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.526316;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.526316;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

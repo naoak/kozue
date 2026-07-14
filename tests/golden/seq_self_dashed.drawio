@@ -1,0 +1,38 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="Alice" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="20.00" width="78.48" height="296.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="Bob" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="178.48" y="20.00" width="70.92" height="296.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="e0" value="hello" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.270270;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.270270;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" value="reply" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.432432;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.432432;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2" value="think" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.594595;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.675676;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="89.24" y="196.00"/>
+              <mxPoint x="89.24" y="220.00"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" value="log" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.756757;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.837838;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="243.94" y="244.00"/>
+              <mxPoint x="243.94" y="268.00"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
