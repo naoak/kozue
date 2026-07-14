@@ -539,26 +539,48 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
         );
 
         let label_value = xml_escape(m.label.as_deref().unwrap_or(""));
+        let is_self = m.from == m.to;
+
         // A self-message routes right-down-left; its fold corners (route interior
         // points) are emitted as absolute waypoints. mxGraph translates a
         // self-loop's waypoints together with its vertex on move, so the loop
         // follows the participant.
         let wp = waypoints_xml(&m.route);
-        let has_children = !wp.is_empty();
 
-        if has_children {
+        // Label placement. A straight message keeps its label inline in the edge
+        // `value`: draw.io centers it on the line and it follows on move. A
+        // self-loop's inline value lags behind when the participant is dragged, so
+        // its label is emitted as a child `edgeLabel` cell (the form draw.io itself
+        // writes on label drag), whose position is recomputed from the edge path
+        // and therefore follows the loop.
+        let edge_value = if is_self { "" } else { &label_value };
+
+        if wp.is_empty() {
             out.push_str(&format!(
-                "        <mxCell id=\"e{i}\" value=\"{label_value}\" style=\"{style}\" \
+                "        <mxCell id=\"e{i}\" value=\"{edge_value}\" style=\"{style}\" \
+                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\"/>\n\
+                 \x20       </mxCell>\n",
+            ));
+        } else {
+            out.push_str(&format!(
+                "        <mxCell id=\"e{i}\" value=\"{edge_value}\" style=\"{style}\" \
                  edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
                  \x20         <mxGeometry relative=\"1\" as=\"geometry\">{wp}\n\
                  \x20         </mxGeometry>\n\
                  \x20       </mxCell>\n",
             ));
-        } else {
+        }
+
+        // Self-loop label child cell (only when the message has a label).
+        if is_self && m.label.is_some() {
             out.push_str(&format!(
-                "        <mxCell id=\"e{i}\" value=\"{label_value}\" style=\"{style}\" \
-                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
-                 \x20         <mxGeometry relative=\"1\" as=\"geometry\"/>\n\
+                "        <mxCell id=\"e{i}_label\" value=\"{label_value}\" \
+                 style=\"edgeLabel;html=1;align=center;verticalAlign=middle;\" \
+                 vertex=\"1\" connectable=\"0\" parent=\"e{i}\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\">\n\
+                 \x20           <mxPoint as=\"offset\"/>\n\
+                 \x20         </mxGeometry>\n\
                  \x20       </mxCell>\n",
             ));
         }

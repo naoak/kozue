@@ -1293,6 +1293,16 @@ fn drawio_sequence_self_message_is_self_loop_with_waypoints() {
         xml.contains("<Array as=\"points\">"),
         "self-message must carry fold waypoints: {xml}"
     );
+    // The self-loop label lives in a child edgeLabel cell (so it follows the loop
+    // on drag), not inline in the edge value.
+    assert!(
+        xml.contains("style=\"edgeLabel;") && xml.contains("connectable=\"0\""),
+        "self-message label must be a child edgeLabel cell: {xml}"
+    );
+    assert!(
+        xml.contains("parent=\"e2\"") || xml.contains("parent=\"e3\""),
+        "label cell must be parented to its self-loop edge: {xml}"
+    );
 }
 
 /// Guard the Bクラス "follow" guarantee: a straight (non-self) message must NOT

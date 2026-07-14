@@ -16,7 +16,7 @@
         <mxCell id="e1" value="reply" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.432432;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.432432;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e2" value="think" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.594595;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.675676;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n0" parent="1">
+        <mxCell id="e2" value="" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.594595;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.675676;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n0" parent="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="89.24" y="196.00"/>
@@ -24,12 +24,22 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e3" value="log" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.756757;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.837838;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+        <mxCell id="e2_label" value="think" style="edgeLabel;html=1;align=center;verticalAlign=middle;" vertex="1" connectable="0" parent="e2">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" value="" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.756757;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.837838;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="243.94" y="244.00"/>
               <mxPoint x="243.94" y="268.00"/>
             </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3_label" value="log" style="edgeLabel;html=1;align=center;verticalAlign=middle;" vertex="1" connectable="0" parent="e3">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset"/>
           </mxGeometry>
         </mxCell>
       </root>

@@ -25,12 +25,17 @@
         <mxCell id="e3" value="200 OK" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.651163;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.651163;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e4" value="セッション生成" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.790698;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.860465;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+        <mxCell id="e4" value="" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.790698;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.860465;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="340.36" y="292.00"/>
               <mxPoint x="340.36" y="316.00"/>
             </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e4_label" value="セッション生成" style="edgeLabel;html=1;align=center;verticalAlign=middle;" vertex="1" connectable="0" parent="e4">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset"/>
           </mxGeometry>
         </mxCell>
       </root>
