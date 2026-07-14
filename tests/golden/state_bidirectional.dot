@@ -1,0 +1,12 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "__initial__" [shape=point width=0.2];
+  "__final__" [shape=doublecircle label="" width=0.2];
+  "a" [label="A"];
+  "b" [label="B"];
+  "__initial__" -> "a";
+  "a" -> "b" [label="go"];
+  "b" -> "a" [label="back"];
+  "b" -> "__final__";
+}

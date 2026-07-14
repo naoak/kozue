@@ -1344,3 +1344,93 @@ fn drawio_cli_flag_produces_output() {
     assert!(!content.is_empty(), "draw.io output should be non-empty");
     assert!(content.contains("<mxfile>"), "output must be mxfile XML");
 }
+
+// ---------------------------------------------------------------------------
+// Graphviz DOT golden tests
+// ---------------------------------------------------------------------------
+
+fn compile_dot_kzd(src: &str) -> String {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    kozue_render_dot::render(&diagram).expect("golden DOT render must succeed")
+}
+
+const DOT_GRAPH_GOLDEN_CASES: &[&str] =
+    &["chain", "branch", "right", "cycle", "skip", "wide_right"];
+const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+
+#[test]
+fn dot_goldens_match() {
+    let cases = DOT_GRAPH_GOLDEN_CASES
+        .iter()
+        .chain(DOT_STATE_GOLDEN_CASES.iter());
+    for name in cases {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let dot_path = golden_dir().join(format!("{name}.dot"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_dot_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&dot_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&dot_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                dot_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "DOT golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn dot_render_is_deterministic() {
+    let src = std::fs::read_to_string(golden_dir().join("branch.kzd")).unwrap();
+    let d1 = kozue_dsl::parse(&src).unwrap();
+    let d2 = kozue_dsl::parse(&src).unwrap();
+    assert_eq!(
+        kozue_render_dot::render(&d1).unwrap(),
+        kozue_render_dot::render(&d2).unwrap(),
+        "DOT rendering must be deterministic"
+    );
+}
+
+#[test]
+fn dot_sequence_is_unsupported() {
+    let src = std::fs::read_to_string(golden_dir().join("seq_basic.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    assert!(
+        kozue_render_dot::render(&diagram).is_err(),
+        "sequence diagrams have no DOT representation and must error"
+    );
+}
+
+#[test]
+fn dot_cli_flag_produces_output() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let kzd = golden_dir().join("chain.kzd");
+    let tmp_out = std::env::temp_dir().join("kozue_dot_flag_test.dot");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "dot",
+            kzd.to_str().unwrap(),
+            "-o",
+            tmp_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let content = std::fs::read_to_string(&tmp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_out);
+    assert!(status.success(), "render --format dot should succeed");
+    assert!(
+        content.starts_with("digraph {"),
+        "output must be a DOT digraph"
+    );
+}

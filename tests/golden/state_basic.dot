@@ -1,0 +1,14 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "__initial__" [shape=point width=0.2];
+  "__final__" [shape=doublecircle label="" width=0.2];
+  "idle" [label="Idle"];
+  "active" [label="Active"];
+  "done" [label="Done"];
+  "__initial__" -> "idle";
+  "idle" -> "active" [label="start"];
+  "active" -> "active" [label="tick"];
+  "active" -> "done" [label="finish"];
+  "done" -> "__final__";
+}

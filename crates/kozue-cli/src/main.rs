@@ -28,6 +28,7 @@ enum Format {
     Term,
     Png,
     Drawio,
+    Dot,
 }
 
 #[derive(Subcommand)]
@@ -42,7 +43,7 @@ enum Command {
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
-        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), or `drawio` (mxGraph XML).
+        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), `drawio` (mxGraph XML), or `dot` (Graphviz DOT).
         #[arg(long, default_value = "svg")]
         format: Format,
     },
@@ -217,6 +218,22 @@ fn run_render(
             };
             let out_path = output.unwrap_or_else(|| input.with_extension("drawio"));
             if let Err(e) = std::fs::write(&out_path, &drawio) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        Format::Dot => {
+            // DOT is a graph *description*; Graphviz lays it out itself, so the
+            // exporter reads the semantic diagram directly and ignores `scene`.
+            let dot = match kozue_render_dot::render(&diagram) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: DOT export failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out_path = output.unwrap_or_else(|| input.with_extension("dot"));
+            if let Err(e) = std::fs::write(&out_path, &dot) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
                 return ExitCode::FAILURE;
             }

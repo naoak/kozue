@@ -27,6 +27,7 @@ frontends → IR → layout → renderers
 | `kozue-render-term` | Plain-text terminal backend. |
 | `kozue-render-png` | Deterministic PNG rasterizer (tiny-skia). |
 | `kozue-render-drawio` | draw.io / mxGraph XML exporter. Consumes the semantic layout, not the flat `Scene`. |
+| `kozue-render-dot` | Graphviz DOT exporter. Consumes the semantic `Diagram` directly (no layout) — Graphviz lays out the graph itself. Graph & state diagrams only. |
 | `kozue-cli` | The `kozue` binary. Wires frontends → layout → renderers. |
 | `kozue-lsp` | Language server (diagnostics, hover, formatting). |
 | `kozue-wasm` | WASM bindings for browser use. |
@@ -39,7 +40,7 @@ or renderer feature works for every input language automatically.
 
 ```sh
 kozue render examples/hello.kzd -o hello.svg     # default format is svg
-kozue render input.mmd --format term             # svg | term | png | drawio
+kozue render input.mmd --format term             # svg | term | png | drawio | dot
 kozue check examples/hello.kzd                    # parse + semantic check, prints OK
 kozue fmt input.kzd --check                       # canonical form; --check for CI, --stdout to print
 ```

@@ -545,6 +545,7 @@ dependencies = [
  "kozue-layout",
  "kozue-mermaid",
  "kozue-plantuml",
+ "kozue-render-dot",
  "kozue-render-drawio",
  "kozue-render-png",
  "kozue-render-svg",
@@ -604,6 +605,13 @@ name = "kozue-plantuml"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "kozue-ir",
+]
+
+[[package]]
+name = "kozue-render-dot"
+version = "0.1.0"
+dependencies = [
  "kozue-ir",
 ]
 

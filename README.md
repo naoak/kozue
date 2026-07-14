@@ -11,6 +11,25 @@ kozue check examples/hello.kzd
 
 `render` compiles a diagram to SVG (defaults to `<input>.svg` if `-o` is omitted). `check` parses and semantically validates the input, printing `OK` on success. Parse and semantic errors are printed to stderr with a non-zero exit code.
 
+### Output formats
+
+`render --format <fmt>` selects the backend:
+
+| Format | Output |
+| --- | --- |
+| `svg` (default) | Laid-out SVG |
+| `term` | Plain-text terminal rendering |
+| `png` | Deterministic raster PNG |
+| `drawio` | Editable draw.io / mxGraph XML |
+| `dot` | Graphviz DOT — for `graph` and `state` diagrams; Graphviz does its own layout |
+
+```sh
+kozue render examples/hello.kzd --format dot -o hello.dot
+dot -Tsvg hello.dot -o hello.svg   # then lay it out with Graphviz
+```
+
+DOT export reads the semantic diagram directly, so it does not use kozue's layout engine. Sequence diagrams have no faithful DOT representation and produce an error.
+
 ## Note on Japanese glyphs
 
 Text width is measured with the embedded **DejaVu Sans** font. DejaVu Sans does not contain Japanese glyphs, so for any character missing from the font (such as kanji, hiragana, and katakana) a fallback advance width of `font_size` (1 em per character) is used. Labels still render as text in the SVG with `font-family="DejaVu Sans"`; the actual glyph shown depends on the viewer's font fallback, but layout box sizes remain deterministic.

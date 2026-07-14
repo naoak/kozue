@@ -1,0 +1,9 @@
+digraph {
+  rankdir=LR;
+  node [shape=box style=rounded];
+  "src" [label="ソース"];
+  "mid" [label="処理"];
+  "dst" [label="出力先"];
+  "src" -> "mid";
+  "mid" -> "dst" [label="送信"];
+}

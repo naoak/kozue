@@ -12,6 +12,7 @@ members = [
     "crates/kozue-cli",
     "crates/kozue-render-png",
     "crates/kozue-render-drawio",
+    "crates/kozue-render-dot",
     "crates/kozue-wasm",
     "crates/kozue-lsp",
 ]
@@ -32,6 +33,7 @@ kozue-mermaid = { path = "crates/kozue-mermaid" }
 kozue-plantuml = { path = "crates/kozue-plantuml" }
 kozue-render-png = { path = "crates/kozue-render-png" }
 kozue-render-drawio = { path = "crates/kozue-render-drawio" }
+kozue-render-dot = { path = "crates/kozue-render-dot" }
 tiny-skia = "0.11"
 
 chumsky = "0.9"

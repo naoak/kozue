@@ -1,0 +1,12 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "a" [label="受付"];
+  "b" [label="審査"];
+  "c" [label="承認"];
+  "d" [label="完了"];
+  "a" -> "b";
+  "b" -> "c";
+  "c" -> "d";
+  "a" -> "d" [label="即時完了"];
+}

@@ -1,0 +1,9 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "a" [label="入力"];
+  "b" [label="変換"];
+  "c" [label="出力"];
+  "a" -> "b" [label="read"];
+  "b" -> "c" [label="write"];
+}

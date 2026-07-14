@@ -1,0 +1,15 @@
+digraph {
+  rankdir=LR;
+  node [shape=box style=rounded];
+  "s" [label="入力"];
+  "a" [label="解析A"];
+  "b" [label="解析B"];
+  "c" [label="解析C"];
+  "t" [label="統合"];
+  "s" -> "a";
+  "s" -> "b";
+  "s" -> "c";
+  "a" -> "t";
+  "b" -> "t";
+  "c" -> "t" [label="集約"];
+}

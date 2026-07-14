@@ -1,0 +1,10 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "a" [label="開始"];
+  "b" [label="処理"];
+  "c" [label="確認"];
+  "a" -> "b";
+  "b" -> "c";
+  "c" -> "a" [label="やり直し"];
+}

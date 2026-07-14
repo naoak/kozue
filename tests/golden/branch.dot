@@ -1,0 +1,12 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "start" [label="開始"];
+  "yes" [label="はい"];
+  "no" [label="いいえ"];
+  "end" [label="終了"];
+  "start" -> "yes" [label="OK"];
+  "start" -> "no" [label="NG"];
+  "yes" -> "end";
+  "no" -> "end";
+}

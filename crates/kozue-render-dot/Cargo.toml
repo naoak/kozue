@@ -1,0 +1,8 @@
+[package]
+name = "kozue-render-dot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kozue-ir.workspace = true
