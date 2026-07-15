@@ -1284,10 +1284,8 @@ fn parse_crowfoot_token(tok: &str) -> Option<(EndMarker, EndMarker, LineStyle)> 
     }
     let (mid, dashed) = if let Some(idx) = tok.find("--") {
         (idx, false)
-    } else if let Some(idx) = tok.find("..") {
-        (idx, true)
     } else {
-        return None;
+        (tok.find("..")?, true)
     };
     if mid != 2 || tok.len() != mid + 4 {
         return None;
