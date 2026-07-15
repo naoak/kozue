@@ -52,8 +52,9 @@ use std::ops::Range;
 
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
-    ArrowType, Diagram, Endpoint, LineStyle, Message, Participant, SequenceDiagram, SequenceItem,
-    State, StateDiagram, Transition,
+    ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
+    ErAttribute, ErDiagram, ErEntity, ErRelation, LineStyle, Message, Participant, SequenceDiagram,
+    SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -161,16 +162,51 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
     let body = &lines[1..body_end];
 
     // PlantUML uses `@startuml` for every diagram type; the kind is inferred from
-    // the body syntax. A `[*]` pseudostate or a `state` declaration unambiguously
-    // signals a state diagram; otherwise we treat the body as a sequence diagram
-    // (the M4 behaviour). A body with neither signal that happens to be a state
-    // machine written only as `A --> B` transitions is genuinely ambiguous with a
-    // dashed-message sequence, so we keep the sequence reading — documented in
-    // features.rs — rather than silently guessing.
-    if body_is_state(body) {
+    // the body syntax via a set of mutually exclusive markers. Zero matches
+    // defaults to sequence (the historical M4 behaviour); exactly one match
+    // selects that kind; two or more is a genuine ambiguity that must be
+    // reported rather than silently guessed.
+    let is_state = body_is_state(body);
+    let is_class = body_is_class(body);
+    let is_er = body_is_er(body);
+    let matched: Vec<&str> = [
+        (is_state, "state"),
+        (is_class, "class"),
+        (is_er, "entity/ER"),
+    ]
+    .into_iter()
+    .filter_map(|(m, name)| m.then_some(name))
+    .collect();
+
+    if matched.len() >= 2 {
+        errors.push(Diagnostic::new(
+            format!(
+                "ambiguous @startuml body: contains markers for both {} diagrams; kozue cannot infer the diagram kind",
+                matched.join(" and ")
+            ),
+            header_offset..header_offset + header_line.len(),
+        ));
+        return Err(errors);
+    }
+
+    if is_state {
         parse_state_body(body, source, &mut errors);
         if errors.is_empty() {
             Ok(parse_state_clean(body))
+        } else {
+            Err(errors)
+        }
+    } else if is_class {
+        parse_class_body(body, source, &mut errors);
+        if errors.is_empty() {
+            Ok(parse_class_clean(body))
+        } else {
+            Err(errors)
+        }
+    } else if is_er {
+        parse_er_body(body, source, &mut errors);
+        if errors.is_empty() {
+            Ok(parse_er_clean(body))
         } else {
             Err(errors)
         }
@@ -199,6 +235,69 @@ fn body_is_state(lines: &[(usize, String)]) -> bool {
             || split_keyword(trimmed)
                 .map(|(kw, _)| kw.eq_ignore_ascii_case("state"))
                 .unwrap_or(false)
+    })
+}
+
+/// Does this body use class-diagram syntax? True when a line begins with the
+/// `class`/`interface`/`abstract`/`enum` keyword, or contains a UML-specific
+/// relation symbol (`<|`, `|>`, `*--`, `--*`, `o--`, `--o`). A bare `-->` is
+/// NOT treated as a class-diagram signal (it is equally valid sequence/state
+/// syntax), so it never triggers this detector on its own.
+fn body_is_class(lines: &[(usize, String)]) -> bool {
+    lines.iter().any(|(_, line)| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if let Some((kw, _)) = split_keyword(trimmed) {
+            if matches!(
+                kw.to_ascii_lowercase().as_str(),
+                "class" | "interface" | "abstract" | "enum"
+            ) {
+                return true;
+            }
+        }
+        // Check token-by-token (not the whole line) so a crow's-foot ER token
+        // like `||--o{` — which contains the substring `--o` — is not
+        // mistaken for the class-diagram aggregation marker `--o`.
+        trimmed.split_whitespace().any(|tok| {
+            parse_crowfoot_token(tok).is_none()
+                && (tok.contains("<|")
+                    || tok.contains("|>")
+                    || tok.contains("*--")
+                    || tok.contains("--*")
+                    || tok.contains("o--")
+                    || tok.contains("--o"))
+        })
+    })
+}
+
+/// Does this body use ER-diagram syntax? True when a line opens an `entity`
+/// block — either multi-line `entity NAME {` or single-line
+/// `entity NAME { ... }` (an `entity` participant declaration with *no* `{` at
+/// all stays a sequence participant — this is what disambiguates the two) — or
+/// contains a crow's-foot relation token with an actual crow's-foot glyph.
+///
+/// Detection deliberately ignores the bare `--`/`..` connectors: although
+/// [`parse_crowfoot_token`] accepts them **inside** an already-identified ER
+/// body, they are far too generic to signal the diagram *kind* — a plain
+/// `A -- B` is equally valid class/sequence syntax, so treating it as an ER
+/// signal would spuriously flag class bodies (e.g. `class A ... A -- B`) as
+/// ambiguous.
+fn body_is_er(lines: &[(usize, String)]) -> bool {
+    lines.iter().any(|(_, line)| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if let Some((kw, rest)) = split_keyword(trimmed) {
+            if kw.eq_ignore_ascii_case("entity") && rest.contains('{') {
+                return true;
+            }
+        }
+        trimmed
+            .split_whitespace()
+            .any(|tok| tok != "--" && tok != ".." && parse_crowfoot_token(tok).is_some())
     })
 }
 
@@ -745,6 +844,738 @@ fn parse_state_endpoint_puml(part: &str, is_source: bool) -> Result<Endpoint, St
 }
 
 // ---------------------------------------------------------------------------
+// Class diagram parser
+// ---------------------------------------------------------------------------
+
+/// PlantUML class-diagram relation connectors, both spelling directions:
+/// `(token, from_marker, to_marker, dashed)`.
+const CLASS_CONNECTORS: &[(&str, EndMarker, EndMarker, bool)] = &[
+    ("<|--", EndMarker::HollowTriangle, EndMarker::None, false),
+    ("<|..", EndMarker::HollowTriangle, EndMarker::None, true),
+    ("--|>", EndMarker::None, EndMarker::HollowTriangle, false),
+    ("..|>", EndMarker::None, EndMarker::HollowTriangle, true),
+    ("*--", EndMarker::FilledDiamond, EndMarker::None, false),
+    ("--*", EndMarker::None, EndMarker::FilledDiamond, false),
+    ("o--", EndMarker::HollowDiamond, EndMarker::None, false),
+    ("--o", EndMarker::None, EndMarker::HollowDiamond, false),
+    ("-->", EndMarker::None, EndMarker::OpenArrow, false),
+    ("<--", EndMarker::OpenArrow, EndMarker::None, false),
+    ("..>", EndMarker::None, EndMarker::OpenArrow, true),
+    ("<..", EndMarker::OpenArrow, EndMarker::None, true),
+    ("--", EndMarker::None, EndMarker::None, false),
+    ("..", EndMarker::None, EndMarker::None, true),
+];
+
+/// Try to decode the text after a class/interface/abstract/enum keyword into
+/// (optional stereotype, name-and-rest). `abstract class Foo` and bare
+/// `abstract Foo` both map to the `"abstract"` stereotype.
+fn plantuml_class_decl(trimmed: &str) -> Option<(Option<&'static str>, String)> {
+    let (kw, rest) = split_keyword(trimmed)?;
+    match kw.to_ascii_lowercase().as_str() {
+        "class" => Some((None, rest.to_string())),
+        "interface" => Some((Some("interface"), rest.to_string())),
+        "enum" => Some((Some("enumeration"), rest.to_string())),
+        "abstract" => {
+            if let Some((kw2, rest2)) = split_keyword(rest) {
+                if kw2.eq_ignore_ascii_case("class") {
+                    return Some((Some("abstract"), rest2.to_string()));
+                }
+            }
+            Some((Some("abstract"), rest.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The body shape of a `class`/`entity` declaration, derived from the text
+/// after the name.
+enum ClassBlock<'a> {
+    /// `Foo` — no body.
+    None,
+    /// `Foo { +a; +b }` — single line, `;`-separated members.
+    Inline(&'a str),
+    /// `Foo {` — a multi-line block, closed by a standalone `}` line.
+    Multiline,
+}
+
+/// Split the text after a `class`/`entity` keyword into its name and body
+/// shape. Accepts `Foo`, `Foo {` (multi-line), and `Foo { ... }` (inline).
+fn class_decl_body(rest: &str) -> (&str, ClassBlock<'_>) {
+    if let Some(open) = rest.find('{') {
+        if let Some(inner) = rest[open + 1..].strip_suffix('}') {
+            (rest[..open].trim(), ClassBlock::Inline(inner.trim()))
+        } else {
+            (rest[..open].trim(), ClassBlock::Multiline)
+        }
+    } else {
+        (rest, ClassBlock::None)
+    }
+}
+
+/// Parse a class member line (visibility marker + attribute/method) into its
+/// pre-formatted display string, matching kozue-mermaid's class member format.
+fn parse_class_member(trimmed: &str, attributes: &mut Vec<String>, methods: &mut Vec<String>) {
+    let vis = trimmed.chars().next().filter(|c| "+-#~".contains(*c));
+    let rest = if let Some(v) = vis {
+        trimmed[v.len_utf8()..].trim_start()
+    } else {
+        trimmed
+    };
+    let vis_str = vis.map(|c| c.to_string()).unwrap_or_default();
+
+    if let Some(paren_idx) = rest.find('(') {
+        let name = rest[..paren_idx].trim();
+        let close = rest[paren_idx..]
+            .find(')')
+            .map(|o| paren_idx + o)
+            .unwrap_or(rest.len());
+        let args = rest.get(paren_idx + 1..close).unwrap_or("");
+        let after = rest.get(close + 1..).unwrap_or("").trim();
+        let ret = after.trim_start_matches(':').trim();
+        let formatted = if ret.is_empty() {
+            format!("{vis_str}{name}({args})")
+        } else {
+            format!("{vis_str}{name}({args}): {ret}")
+        };
+        methods.push(formatted);
+    } else if let Some(ci) = rest.find(':') {
+        let name = rest[..ci].trim();
+        let ty = rest[ci + 1..].trim();
+        attributes.push(format!("{vis_str}{name}: {ty}"));
+    } else {
+        attributes.push(format!("{vis_str}{}", rest.trim()));
+    }
+}
+
+struct ParsedClassRelation {
+    from: String,
+    to: String,
+    from_marker: EndMarker,
+    to_marker: EndMarker,
+    dashed: bool,
+    label: Option<String>,
+    from_mult: Option<String>,
+    to_mult: Option<String>,
+}
+
+/// Split a string into whitespace-separated tokens, treating a `"..."` run as
+/// a single token so quoted multiplicities that contain spaces stay intact.
+fn tokenize_ws_quoted(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            cur.push(c);
+        } else if c.is_whitespace() && !in_quotes {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+/// Split one side of a relation (the tokens before/after the connector) into
+/// its identifier and optional multiplicity (a `"..."` token). The order is
+/// free: PlantUML writes the multiplicity next to the class it annotates
+/// (`A "1"` on the left, `"*" B` on the right).
+fn split_id_and_mult(tokens: &[String]) -> Result<(String, Option<String>), String> {
+    let mut id: Option<String> = None;
+    let mut mult: Option<String> = None;
+    for t in tokens {
+        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+            if mult.is_some() {
+                return Err("multiple multiplicities on one side of a relation".to_string());
+            }
+            mult = Some(t[1..t.len() - 1].to_string());
+        } else {
+            if id.is_some() {
+                return Err("multiple identifiers on one side of a relation".to_string());
+            }
+            id = Some(t.clone());
+        }
+    }
+    let id = id.ok_or_else(|| "missing identifier in relation".to_string())?;
+    Ok((id, mult))
+}
+
+/// Try to parse a class relation line: `A <|-- B`, `A --|> B : label`, or with
+/// multiplicities `A "1" -- "*" B`. Returns `None` if the line has no
+/// recognised connector token.
+fn try_parse_class_relation(trimmed: &str) -> Option<Result<ParsedClassRelation, String>> {
+    let (rel_part, label) = match trimmed.find(':') {
+        Some(idx) => (trimmed[..idx].trim(), {
+            let l = trimmed[idx + 1..].trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l.to_string())
+            }
+        }),
+        None => (trimmed, None),
+    };
+    let tokens = tokenize_ws_quoted(rel_part);
+    let conn_idx = tokens
+        .iter()
+        .position(|t| CLASS_CONNECTORS.iter().any(|(tok, ..)| tok == t))?;
+    let &(_, from_marker, to_marker, dashed) = CLASS_CONNECTORS
+        .iter()
+        .find(|(tok, ..)| *tok == tokens[conn_idx])
+        .unwrap();
+    let from_tokens = &tokens[..conn_idx];
+    let to_tokens = &tokens[conn_idx + 1..];
+    let (from, from_mult) = match split_id_and_mult(from_tokens) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    let (to, to_mult) = match split_id_and_mult(to_tokens) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    Some(Ok(ParsedClassRelation {
+        from,
+        to,
+        from_marker,
+        to_marker,
+        dashed,
+        label,
+        from_mult,
+        to_mult,
+    }))
+}
+
+/// Error-collecting pass over a PlantUML class-diagram body.
+fn parse_class_body(lines: &[(usize, String)], _source: &str, errors: &mut Vec<Diagnostic>) {
+    let mut declared_ids: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    'outer: while i < lines.len() {
+        let (offset, line) = &lines[i];
+        let trimmed = line.trim();
+        let span = *offset..offset + line.len();
+
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if trimmed.starts_with('!') {
+            errors.push(Diagnostic::new(
+                "unsupported: PlantUML preprocessor directives (`!...`) are not supported; kozue targets a preprocessor-free subset",
+                span,
+            ));
+            i += 1;
+            continue;
+        }
+
+        if trimmed.contains('~') {
+            errors.push(Diagnostic::new(
+                "unsupported: generic type parameters (`~T~`); kozue does not support this yet",
+                span,
+            ));
+            i += 1;
+            continue;
+        }
+
+        for kw in ["namespace", "note", "hnote", "rnote", "package"] {
+            if split_keyword(trimmed)
+                .map(|(k, _)| k.eq_ignore_ascii_case(kw))
+                .unwrap_or(false)
+            {
+                errors.push(Diagnostic::new(
+                    format!("unsupported: {kw} (kozue does not support this yet)"),
+                    span.clone(),
+                ));
+                i += 1;
+                if trimmed.ends_with('{') {
+                    while i < lines.len() && lines[i].1.trim() != "}" {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                continue 'outer;
+            }
+        }
+
+        if let Some((_, rest)) = plantuml_class_decl(trimmed) {
+            let (name, block) = class_decl_body(rest.trim());
+            if !is_single_token(name) {
+                errors.push(Diagnostic::new(
+                    format!(
+                        "syntax error: expected a class identifier, got `{}`",
+                        name.chars().take(40).collect::<String>()
+                    ),
+                    span.clone(),
+                ));
+                i += 1;
+                continue;
+            }
+            if declared_ids.iter().any(|d| d == name) {
+                errors.push(Diagnostic::new(
+                    format!("duplicate class declaration `{name}`"),
+                    span.clone(),
+                ));
+            } else {
+                declared_ids.push(name.to_string());
+            }
+            i += 1;
+            if matches!(block, ClassBlock::Multiline) {
+                loop {
+                    if i >= lines.len() {
+                        errors.push(Diagnostic::new(
+                            format!("unterminated `{name} {{ ... }}` block (missing `}}`)"),
+                            span.clone(),
+                        ));
+                        break;
+                    }
+                    let (moff, mline) = &lines[i];
+                    let mtrim = mline.trim();
+                    if mtrim == "}" {
+                        i += 1;
+                        break;
+                    }
+                    if mtrim.contains('~') {
+                        errors.push(Diagnostic::new(
+                            "unsupported: generic type parameters (`~T~`); kozue does not support this yet",
+                            *moff..moff + mline.len(),
+                        ));
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        if let Some(result) = try_parse_class_relation(trimmed) {
+            if let Err(msg) = result {
+                errors.push(Diagnostic::new(msg, span));
+            }
+            i += 1;
+            continue;
+        }
+
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+        i += 1;
+    }
+}
+
+/// Clean pass — only called when [`parse_class_body`] found no errors.
+fn parse_class_clean(lines: &[(usize, String)]) -> Diagram {
+    let mut diagram = ClassDiagram::new(Direction::Down);
+    let ensure_class = |diagram: &mut ClassDiagram, id: &str| {
+        if !diagram.classes.contains_key(id) {
+            diagram.classes.insert(
+                id.to_string(),
+                ClassNode::new(id.to_string(), id.to_string()),
+            );
+        }
+    };
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let (_offset, line) = &lines[i];
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if let Some((stereotype, rest)) = plantuml_class_decl(trimmed) {
+            let (name, block) = class_decl_body(rest.trim());
+            ensure_class(&mut diagram, name);
+            if let Some(st) = stereotype {
+                diagram.classes[name].stereotype = Some(st.to_string());
+            }
+            match block {
+                ClassBlock::None => {
+                    i += 1;
+                }
+                ClassBlock::Inline(inner) => {
+                    for member in inner.split(';') {
+                        let member = member.trim();
+                        if member.is_empty() {
+                            continue;
+                        }
+                        let node = &mut diagram.classes[name];
+                        let mut attrs = std::mem::take(&mut node.attributes);
+                        let mut methods = std::mem::take(&mut node.methods);
+                        parse_class_member(member, &mut attrs, &mut methods);
+                        let node = &mut diagram.classes[name];
+                        node.attributes = attrs;
+                        node.methods = methods;
+                    }
+                    i += 1;
+                }
+                ClassBlock::Multiline => {
+                    i += 1;
+                    loop {
+                        if i >= lines.len() {
+                            break;
+                        }
+                        let (_moff, mline) = &lines[i];
+                        let mtrim = mline.trim();
+                        if mtrim == "}" {
+                            i += 1;
+                            break;
+                        }
+                        let node = &mut diagram.classes[name];
+                        let mut attrs = std::mem::take(&mut node.attributes);
+                        let mut methods = std::mem::take(&mut node.methods);
+                        parse_class_member(mtrim, &mut attrs, &mut methods);
+                        let node = &mut diagram.classes[name];
+                        node.attributes = attrs;
+                        node.methods = methods;
+                        i += 1;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(Ok(rel)) = try_parse_class_relation(trimmed) {
+            ensure_class(&mut diagram, &rel.from);
+            ensure_class(&mut diagram, &rel.to);
+            diagram.relations.push(ClassRelation::new(
+                rel.from,
+                rel.to,
+                rel.from_marker,
+                rel.to_marker,
+                if rel.dashed {
+                    LineStyle::Dashed
+                } else {
+                    LineStyle::Solid
+                },
+                rel.label,
+                rel.from_mult,
+                rel.to_mult,
+            ));
+        }
+        i += 1;
+    }
+
+    Diagram::Class(diagram)
+}
+
+// ---------------------------------------------------------------------------
+// ER diagram parser
+// ---------------------------------------------------------------------------
+
+/// Decode an ER relation connector token. Unlike Mermaid, a bare `--`/`..`
+/// with no crow's-foot glyphs is accepted (PlantUML's ER subset is smaller —
+/// EndMarker is only set `if crow's-foot glyphs are present`, per spec).
+fn parse_crowfoot_token(tok: &str) -> Option<(EndMarker, EndMarker, LineStyle)> {
+    if tok == "--" {
+        return Some((EndMarker::None, EndMarker::None, LineStyle::Solid));
+    }
+    if tok == ".." {
+        return Some((EndMarker::None, EndMarker::None, LineStyle::Dashed));
+    }
+    let (mid, dashed) = if let Some(idx) = tok.find("--") {
+        (idx, false)
+    } else if let Some(idx) = tok.find("..") {
+        (idx, true)
+    } else {
+        return None;
+    };
+    if mid != 2 || tok.len() != mid + 4 {
+        return None;
+    }
+    let left = &tok[..mid];
+    let right = &tok[mid + 2..];
+    let from_marker = match left {
+        "||" => EndMarker::ErOne,
+        "o|" => EndMarker::ErZeroOrOne,
+        "}o" => EndMarker::ErZeroOrMany,
+        "}|" => EndMarker::ErOneOrMany,
+        _ => return None,
+    };
+    let to_marker = match right {
+        "||" => EndMarker::ErOne,
+        "|o" => EndMarker::ErZeroOrOne,
+        "o{" => EndMarker::ErZeroOrMany,
+        "|{" => EndMarker::ErOneOrMany,
+        _ => return None,
+    };
+    Some((
+        from_marker,
+        to_marker,
+        if dashed {
+            LineStyle::Dashed
+        } else {
+            LineStyle::Solid
+        },
+    ))
+}
+
+struct ParsedErRelation {
+    from: String,
+    to: String,
+    from_marker: EndMarker,
+    to_marker: EndMarker,
+    line: LineStyle,
+    label: Option<String>,
+}
+
+fn try_parse_er_relation(trimmed: &str) -> Option<Result<ParsedErRelation, String>> {
+    let (rel_part, label) = match trimmed.find(':') {
+        Some(idx) => (trimmed[..idx].trim(), {
+            let l = trimmed[idx + 1..].trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l.to_string())
+            }
+        }),
+        None => (trimmed, None),
+    };
+    let tokens: Vec<&str> = rel_part.split_whitespace().collect();
+    if tokens.len() != 3 {
+        return None;
+    }
+    let (from_marker, to_marker, line) = parse_crowfoot_token(tokens[1])?;
+    Some(Ok(ParsedErRelation {
+        from: tokens[0].to_string(),
+        to: tokens[2].to_string(),
+        from_marker,
+        to_marker,
+        line,
+        label,
+    }))
+}
+
+/// Parse a PlantUML ER entity attribute line: `[*] name : type`.
+/// A leading `*` marks the attribute as a primary key; other leading
+/// visibility markers (`+`/`-`/`#`) are accepted and simply stripped.
+fn parse_er_attr_line(trimmed: &str) -> Result<ErAttribute, String> {
+    let (is_pk, rest) = match trimmed.strip_prefix('*') {
+        Some(r) => (true, r.trim_start()),
+        None => (
+            false,
+            trimmed
+                .strip_prefix(['+', '-', '#'])
+                .map(|r| r.trim_start())
+                .unwrap_or(trimmed),
+        ),
+    };
+    let Some(ci) = rest.find(':') else {
+        return Err(format!(
+            "syntax error: expected `name : type` in entity attribute, got `{}`",
+            trimmed.chars().take(40).collect::<String>()
+        ));
+    };
+    let name = rest[..ci].trim();
+    let type_name = rest[ci + 1..].trim();
+    if name.is_empty() {
+        return Err("expected an attribute name before `:`".to_string());
+    }
+    let keys = if is_pk {
+        vec!["PK".to_string()]
+    } else {
+        vec![]
+    };
+    Ok(ErAttribute::new(type_name, name, keys, None))
+}
+
+/// Error-collecting pass over a PlantUML ER-diagram body.
+fn parse_er_body(lines: &[(usize, String)], _source: &str, errors: &mut Vec<Diagnostic>) {
+    let mut i = 0usize;
+    while i < lines.len() {
+        let (offset, line) = &lines[i];
+        let trimmed = line.trim();
+        let span = *offset..offset + line.len();
+
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if let Some((kw, rest)) = split_keyword(trimmed) {
+            if kw.eq_ignore_ascii_case("entity") {
+                let (name, block) = class_decl_body(rest.trim());
+                if !is_single_token(name) {
+                    errors.push(Diagnostic::new(
+                        format!(
+                            "syntax error: expected an entity identifier, got `{}`",
+                            name.chars().take(40).collect::<String>()
+                        ),
+                        span,
+                    ));
+                    i += 1;
+                    continue;
+                }
+                match block {
+                    ClassBlock::None => {
+                        errors.push(Diagnostic::new(
+                            "unsupported: `entity` declaration without a `{ ... }` block in an ER-diagram body",
+                            span,
+                        ));
+                        i += 1;
+                        continue;
+                    }
+                    ClassBlock::Inline(inner) => {
+                        for attr in inner.split(';') {
+                            let attr = attr.trim();
+                            if attr.is_empty() || attr == "--" {
+                                continue;
+                            }
+                            if let Err(msg) = parse_er_attr_line(attr) {
+                                errors.push(Diagnostic::new(msg, span.clone()));
+                            }
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    ClassBlock::Multiline => {
+                        i += 1;
+                        loop {
+                            if i >= lines.len() {
+                                errors.push(Diagnostic::new(
+                                    format!(
+                                        "unterminated `{name} {{ ... }}` entity block (missing `}}`)"
+                                    ),
+                                    span.clone(),
+                                ));
+                                break;
+                            }
+                            let (moff, mline) = &lines[i];
+                            let mtrim = mline.trim();
+                            if mtrim == "}" {
+                                i += 1;
+                                break;
+                            }
+                            if mtrim == "--" {
+                                // PlantUML separates the PK section with a bare `--`.
+                                i += 1;
+                                continue;
+                            }
+                            if let Err(msg) = parse_er_attr_line(mtrim) {
+                                errors.push(Diagnostic::new(msg, *moff..moff + mline.len()));
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if let Some(result) = try_parse_er_relation(trimmed) {
+            if let Err(msg) = result {
+                errors.push(Diagnostic::new(msg, span));
+            }
+            i += 1;
+            continue;
+        }
+
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+        i += 1;
+    }
+}
+
+/// Clean pass — only called when [`parse_er_body`] found no errors.
+fn parse_er_clean(lines: &[(usize, String)]) -> Diagram {
+    let mut diagram = ErDiagram::new();
+    let ensure_entity = |diagram: &mut ErDiagram, id: &str| {
+        if !diagram.entities.contains_key(id) {
+            diagram.entities.insert(
+                id.to_string(),
+                ErEntity::new(id.to_string(), id.to_string()),
+            );
+        }
+    };
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let (_offset, line) = &lines[i];
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        if let Some((kw, rest)) = split_keyword(trimmed) {
+            if kw.eq_ignore_ascii_case("entity") {
+                let (name, block) = class_decl_body(rest.trim());
+                let name = name.to_string();
+                match block {
+                    ClassBlock::None => {}
+                    ClassBlock::Inline(inner) => {
+                        ensure_entity(&mut diagram, &name);
+                        for attr in inner.split(';') {
+                            let attr = attr.trim();
+                            if attr.is_empty() || attr == "--" {
+                                continue;
+                            }
+                            if let Ok(a) = parse_er_attr_line(attr) {
+                                diagram.entities[&name].attributes.push(a);
+                            }
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    ClassBlock::Multiline => {
+                        ensure_entity(&mut diagram, &name);
+                        i += 1;
+                        loop {
+                            if i >= lines.len() {
+                                break;
+                            }
+                            let (_moff, mline) = &lines[i];
+                            let mtrim = mline.trim();
+                            if mtrim == "}" {
+                                i += 1;
+                                break;
+                            }
+                            if mtrim != "--" {
+                                if let Ok(attr) = parse_er_attr_line(mtrim) {
+                                    diagram.entities[&name].attributes.push(attr);
+                                }
+                            }
+                            i += 1;
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        if let Some(Ok(rel)) = try_parse_er_relation(trimmed) {
+            ensure_entity(&mut diagram, &rel.from);
+            ensure_entity(&mut diagram, &rel.to);
+            diagram.relations.push(ErRelation::new(
+                rel.from,
+                rel.to,
+                rel.from_marker,
+                rel.to_marker,
+                rel.label,
+                rel.line,
+            ));
+        }
+        i += 1;
+    }
+
+    Diagram::Er(diagram)
+}
+
+// ---------------------------------------------------------------------------
 // Comment masking (block `/' '/` and line `'`)
 // ---------------------------------------------------------------------------
 
@@ -1097,7 +1928,7 @@ fn is_valid_participant_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{ArrowType, LineStyle, SequenceItem};
+    use kozue_ir::{ArrowType, EndMarker, LineStyle, SequenceItem};
 
     fn parse_ok(src: &str) -> SequenceDiagram {
         match parse(src).expect("should parse without errors") {
@@ -1721,5 +2552,240 @@ mod tests {
             }
             other => panic!("expected Sequence, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Class diagram tests
+    // -----------------------------------------------------------------------
+
+    fn class_diagram(d: &Diagram) -> &kozue_ir::ClassDiagram {
+        match d {
+            Diagram::Class(c) => c,
+            other => panic!("expected class diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn class_basic_block_and_relation() {
+        let src = "@startuml\nclass Animal {\n  +String name\n  +makeSound() void\n}\nclass Dog {\n  +bark() void\n}\nDog --|> Animal\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes.len(), 2);
+        assert!(c.classes["Animal"].attributes[0].contains("name"));
+        assert_eq!(c.classes["Animal"].methods[0], "+makeSound(): void");
+        assert_eq!(c.relations.len(), 1);
+        assert_eq!(c.relations[0].from, "Dog");
+        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from_marker, EndMarker::None);
+        assert_eq!(c.relations[0].to_marker, EndMarker::HollowTriangle);
+    }
+
+    #[test]
+    fn class_native_inheritance_direction() {
+        let src = "@startuml\nDog <|-- Animal\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.relations[0].from_marker, EndMarker::HollowTriangle);
+        assert_eq!(c.relations[0].to_marker, EndMarker::None);
+    }
+
+    /// Helper: parse a single-relation class body and return the relation.
+    ///
+    /// A `class` declaration is included so the body is unambiguously a class
+    /// diagram even for marker-less connectors (`-->`, `--`, `..`), which on
+    /// their own are intentionally read as a sequence (see the anti-ambiguity
+    /// rule documented in `features.rs`). Class context is what makes every
+    /// connector direction resolve as a class relation.
+    fn class_one_relation(rel_line: &str) -> kozue_ir::ClassRelation {
+        let src = format!("@startuml\nclass A\nclass B\n{rel_line}\n@enduml\n");
+        let d = parse(&src).unwrap_or_else(|e| panic!("`{rel_line}` should parse: {e:?}"));
+        let c = class_diagram(&d);
+        assert_eq!(c.relations.len(), 1, "`{rel_line}` produced != 1 relation");
+        c.relations[0].clone()
+    }
+
+    #[test]
+    fn class_all_connector_directions_are_accepted() {
+        use kozue_ir::EndMarker::*;
+        let cases: &[(&str, kozue_ir::EndMarker, kozue_ir::EndMarker, LineStyle)] = &[
+            ("A <|-- B", HollowTriangle, None, LineStyle::Solid),
+            ("A --|> B", None, HollowTriangle, LineStyle::Solid),
+            ("A <|.. B", HollowTriangle, None, LineStyle::Dashed),
+            ("A ..|> B", None, HollowTriangle, LineStyle::Dashed),
+            ("A *-- B", FilledDiamond, None, LineStyle::Solid),
+            ("A --* B", None, FilledDiamond, LineStyle::Solid),
+            ("A o-- B", HollowDiamond, None, LineStyle::Solid),
+            ("A --o B", None, HollowDiamond, LineStyle::Solid),
+            ("A --> B", None, OpenArrow, LineStyle::Solid),
+            ("A <-- B", OpenArrow, None, LineStyle::Solid),
+            ("A ..> B", None, OpenArrow, LineStyle::Dashed),
+            ("A <.. B", OpenArrow, None, LineStyle::Dashed),
+            ("A -- B", None, None, LineStyle::Solid),
+            ("A .. B", None, None, LineStyle::Dashed),
+        ];
+        for &(line, from_m, to_m, ls) in cases {
+            let r = class_one_relation(line);
+            assert_eq!(r.from, "A", "`{line}` from");
+            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
+            assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
+            assert_eq!(r.line, ls, "`{line}` line");
+        }
+    }
+
+    #[test]
+    fn class_forward_and_reverse_tokens_are_mirror_images() {
+        for (fwd, rev) in [
+            ("A <|-- B", "B --|> A"),
+            ("A *-- B", "B --* A"),
+            ("A o-- B", "B --o A"),
+            ("A --> B", "B <-- A"),
+            ("A ..|> B", "B <|.. A"),
+            ("A ..> B", "B <.. A"),
+        ] {
+            let f = class_one_relation(fwd);
+            let r = class_one_relation(rev);
+            assert_eq!(f.from, r.to, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(f.to, r.from, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(
+                f.from_marker, r.to_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(
+                f.to_marker, r.from_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(f.line, r.line, "{fwd} / {rev}: line style must match");
+        }
+    }
+
+    #[test]
+    fn class_interface_and_abstract_keywords() {
+        let src = "@startuml\ninterface Shape\nabstract class Base\nShape <|.. Base\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Shape"].stereotype.as_deref(), Some("interface"));
+        assert_eq!(c.classes["Base"].stereotype.as_deref(), Some("abstract"));
+        assert_eq!(c.relations[0].line, LineStyle::Dashed);
+    }
+
+    #[test]
+    fn class_generics_are_unsupported() {
+        let src = "@startuml\nclass Box~T~\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("generic")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn class_relation_multiplicity() {
+        // F4: `A "1" -- "*" B` — multiplicity next to each class.
+        let src = "@startuml\nclass A\nclass B\nA \"1\" -- \"*\" B : owns\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        let r = &c.relations[0];
+        assert_eq!(r.from, "A");
+        assert_eq!(r.to, "B");
+        assert_eq!(r.from_mult.as_deref(), Some("1"));
+        assert_eq!(r.to_mult.as_deref(), Some("*"));
+        assert_eq!(r.label.as_deref(), Some("owns"));
+    }
+
+    #[test]
+    fn class_single_line_inline_block() {
+        // F3: `{` and `}` on the same line, members split by `;`.
+        let src = "@startuml\nclass Point { +x : int; +y : int; +dist() : float }\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Point"].attributes, vec!["+x: int", "+y: int"]);
+        assert_eq!(c.classes["Point"].methods, vec!["+dist(): float"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // ER diagram tests
+    // -----------------------------------------------------------------------
+
+    fn er_diagram(d: &Diagram) -> &kozue_ir::ErDiagram {
+        match d {
+            Diagram::Er(e) => e,
+            other => panic!("expected er diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn er_entity_block_and_relation() {
+        let src = "@startuml\nentity Customer {\n  * id : int\n  name : string\n}\nCustomer ||--o{ Order : places\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        let entity = &e.entities["Customer"];
+        assert_eq!(entity.attributes[0].name, "id");
+        assert_eq!(entity.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(entity.attributes[1].name, "name");
+        assert!(entity.attributes[1].keys.is_empty());
+        assert_eq!(e.relations[0].from_marker, EndMarker::ErOne);
+        assert_eq!(e.relations[0].to_marker, EndMarker::ErZeroOrMany);
+    }
+
+    #[test]
+    fn er_plain_dash_relation_has_no_markers() {
+        let src = "@startuml\nentity A {\n  * id : int\n}\nentity B {\n  * id : int\n}\nA -- B : rel\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        assert_eq!(e.relations[0].from_marker, EndMarker::None);
+        assert_eq!(e.relations[0].to_marker, EndMarker::None);
+    }
+
+    #[test]
+    fn er_single_line_inline_entity_block() {
+        // F3: inline `entity Foo { a; b }` with `;`-separated attributes.
+        let src = "@startuml\nentity Order { * id : int; customer_id : int }\nOrder ||--|| Customer\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        let order = &e.entities["Order"];
+        assert_eq!(order.attributes.len(), 2);
+        assert_eq!(order.attributes[0].name, "id");
+        assert_eq!(order.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(order.attributes[1].name, "customer_id");
+    }
+
+    #[test]
+    fn entity_without_braces_stays_a_sequence_participant() {
+        // Regression: `entity DB` (no `{`) must not be misdetected as ER.
+        let src = "@startuml\nentity DB\nA -> DB : query\n@enduml\n";
+        let d = parse(src).expect("should parse");
+        match d {
+            Diagram::Sequence(_) => {}
+            other => panic!("expected Sequence, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // never-silently-misparse: ambiguous body detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ambiguous_class_and_state_body_is_explicit_error() {
+        // `class Foo` (class signal) combined with `[*] --> Foo` (state signal)
+        // in the same body must NOT be silently guessed as one or the other.
+        let src = "@startuml\nclass Foo\n[*] --> Foo\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("ambiguous") && e.message.contains("class")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_class_and_er_body_is_explicit_error() {
+        let src = "@startuml\nclass Foo\nentity Bar {\n  * id : int\n}\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter().any(|e| e.message.contains("ambiguous")),
+            "got: {errs:?}"
+        );
     }
 }

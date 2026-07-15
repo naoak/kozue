@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 409.62 323.68" width="409.62" height="323.68">
+  <rect x="-20.00" y="-20.00" width="409.62" height="323.68" fill="#ffffff"/>
+  <rect x="107.27" y="163.52" width="180.34" height="120.16" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="197.44" y="186.88" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Animal</text>
+  <polyline points="107.27,198.72 287.61,198.72" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="127.27" y="217.78" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">+name: String</text>
+  <text x="127.27" y="246.10" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">+age: int</text>
+  <polyline points="107.27,255.36 287.61,255.36" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="127.27" y="274.42" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">+makeSound(): void</text>
+  <rect x="0.00" y="0.00" width="130.13" height="63.52" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="65.06" y="23.36" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Dog</text>
+  <polyline points="0.00,35.20 130.13,35.20" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="20.00" y="54.26" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">+bark(): void</text>
+  <rect x="170.13" y="0.00" width="67.25" height="35.20" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="203.75" y="23.36" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Cat</text>
+  <rect x="277.38" y="0.00" width="92.24" height="35.20" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="323.50" y="23.36" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Owner</text>
+  <polyline points="155.98,163.52 142.27,155.97 153.79,148.02 155.98,163.52" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="86.98,63.52 148.03,152.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="199.28,163.52 192.71,149.31 206.70,149.74 199.28,163.52" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="203.21,35.20 199.71,149.53" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="312.73,35.20 313.67,45.16 304.38,48.85 303.43,38.89 312.73,35.20" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="304.38,48.85 234.20,163.52" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="273.47" y="95.36" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">owns</text>
+  <text x="308.07" y="58.14" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">1</text>
+  <text x="230.51" y="154.23" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">*</text>
+</svg>

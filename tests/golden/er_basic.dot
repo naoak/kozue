@@ -1,0 +1,7 @@
+digraph {
+  rankdir=TB;
+  node [shape=plaintext];
+  "Customer" [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4"><TR><TD COLSPAN="4" BGCOLOR="LIGHTGREY"><B>Customer</B></TD></TR><TR><TD>PK</TD><TD ALIGN="LEFT">Int</TD><TD ALIGN="LEFT">id</TD><TD ALIGN="LEFT"></TD></TR><TR><TD></TD><TD ALIGN="LEFT">String</TD><TD ALIGN="LEFT">name</TD><TD ALIGN="LEFT"></TD></TR><TR><TD>UK</TD><TD ALIGN="LEFT">String</TD><TD ALIGN="LEFT">email</TD><TD ALIGN="LEFT"></TD></TR></TABLE>>];
+  "Order" [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4"><TR><TD COLSPAN="4" BGCOLOR="LIGHTGREY"><B>Order</B></TD></TR><TR><TD>PK</TD><TD ALIGN="LEFT">Int</TD><TD ALIGN="LEFT">id</TD><TD ALIGN="LEFT"></TD></TR><TR><TD>FK</TD><TD ALIGN="LEFT">Int</TD><TD ALIGN="LEFT">customer_id</TD><TD ALIGN="LEFT"></TD></TR></TABLE>>];
+  "Customer" -> "Order" [dir=both arrowtail=tee arrowhead=odotcrow label="places"];
+}

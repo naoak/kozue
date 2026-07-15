@@ -1,5 +1,5 @@
 // Bidirectional transitions: A <-> B (a -> b and b -> a)
-diagram state_bidirectional {
+state state_bidirectional {
   state a: "A"
   state b: "B"
 

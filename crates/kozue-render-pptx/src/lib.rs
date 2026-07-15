@@ -46,6 +46,14 @@
 //! - [`SemanticLayout::Sequence`] — participants become a header rectangle
 //!   plus a dashed vertical lifeline connector; messages become connectors
 //!   (dashed for `LineStyle::Dashed`).
+//! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
+//!   [`CompartmentBox`] becomes a rectangular shape whose text body has one
+//!   paragraph per title/stereotype/attribute/method row, plus a thin
+//!   connector line at each compartment boundary. Each [`RelationLayout`]
+//!   becomes a connector whose `headEnd`/`tailEnd` approximate the UML/ER end
+//!   markers (OOXML's `ST_LineEndType` has only five shapes, far fewer than
+//!   kozue's ten [`EndMarker`] variants — see [`pptx_line_end`] for the
+//!   documented, lossy mapping).
 //!
 //! ## Connector routing and labels
 //!
@@ -67,9 +75,10 @@
 mod templates;
 mod zip;
 
-use kozue_ir::{ArrowType, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle};
 use kozue_layout::semantic::{
-    GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
+    ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
+    StateEndpointId, StateLayout,
 };
 
 /// Fixed scene margin (px), matching the SVG/PNG/draw.io/Excalidraw renderers.
@@ -156,6 +165,8 @@ pub fn render(layout: &SemanticLayout) -> Result<Vec<u8>, RenderError> {
         SemanticLayout::Graph(g) => render_graph(g)?,
         SemanticLayout::State(s) => render_state(s)?,
         SemanticLayout::Sequence(seq) => render_sequence(seq)?,
+        SemanticLayout::Class(c) => render_class(c)?,
+        SemanticLayout::Er(e) => render_er(e)?,
         _ => return Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
     };
     Ok(build_pptx(&slide_xml))
@@ -282,6 +293,29 @@ fn ellipse_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64, filled: bo
 /// `dashed` selects `prstDash="dash"` (sequence dashed messages / lifelines);
 /// `arrow` selects a triangle tail arrowhead when not [`ArrowType::None`].
 fn connector_shape(id: u32, name: &str, route: &[Point], dashed: bool, arrow: bool) -> String {
+    connector_shape_ends(
+        id,
+        name,
+        route,
+        dashed,
+        "none",
+        if arrow { "triangle" } else { "none" },
+    )
+}
+
+/// Like [`connector_shape`], but with independently configurable head
+/// (route-first-point) and tail (route-last-point) arrowhead types — used by
+/// class/ER relations, whose end markers can differ at each end. `head`/
+/// `tail` are `ST_LineEndType` values (`"none"`, `"triangle"`, `"stealth"`,
+/// `"diamond"`, `"oval"`, `"arrow"`).
+fn connector_shape_ends(
+    id: u32,
+    name: &str,
+    route: &[Point],
+    dashed: bool,
+    head: &str,
+    tail: &str,
+) -> String {
     let name = xml_escape(name);
     // Callers validate the route is non-empty before this point; guard anyway
     // so a stray empty route degrades to an (invisible) zero-size connector
@@ -309,13 +343,21 @@ fn connector_shape(id: u32, name: &str, route: &[Point], dashed: bool, arrow: bo
     } else {
         ""
     };
-    let arrow_xml = if arrow {
-        "<a:tailEnd type=\"triangle\"/>"
+    // `headEnd` decorates the route's first point, `tailEnd` its last point
+    // (matches this module's existing single-ended `arrow` convention, where
+    // the arrowhead lands on the route's last/"tail" point).
+    let head_xml = if head == "none" {
+        String::new()
     } else {
-        ""
+        format!("<a:headEnd type=\"{head}\"/>")
+    };
+    let tail_xml = if tail == "none" {
+        String::new()
+    } else {
+        format!("<a:tailEnd type=\"{tail}\"/>")
     };
     let ln = format!(
-        "<a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill>{dash_xml}{arrow_xml}</a:ln>"
+        "<a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill>{dash_xml}{head_xml}{tail_xml}</a:ln>"
     );
 
     // A freeform polyline is only meaningful when there are interior bend
@@ -681,6 +723,266 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
 }
 
 // ---------------------------------------------------------------------------
+// Class / ER diagram renderer
+// ---------------------------------------------------------------------------
+
+/// Map an [`EndMarker`] to an OOXML `ST_LineEndType` value.
+///
+/// `ST_LineEndType` only has five shapes (`none` / `triangle` / `stealth` /
+/// `diamond` / `oval` / `arrow`) — far fewer than kozue's ten [`EndMarker`]
+/// variants — so this mapping is lossy by necessity: `HollowTriangle` and
+/// `HollowDiamond` share their filled counterparts' shape (OOXML line ends
+/// have no independent fill flag), and the ER crow's-foot markers collapse
+/// onto `oval` (bar-like cardinalities) or `arrow` (crow-like cardinalities),
+/// each losing the paired bar/circle it would carry in a full crow's-foot
+/// rendering.
+///
+/// | `EndMarker`      | `ST_LineEndType` | notes                        |
+/// |-------------------|-------------------|-------------------------------|
+/// | `None`            | `none`            |                               |
+/// | `HollowTriangle`  | `triangle`        | loses "hollow" (no fill flag) |
+/// | `OpenArrow`       | `arrow`           |                               |
+/// | `FilledDiamond`   | `diamond`         |                               |
+/// | `HollowDiamond`   | `diamond`         | loses "hollow" (no fill flag) |
+/// | `ErOne`           | `oval`            | approximates the bar          |
+/// | `ErMany`          | `arrow`           | approximates the crow's foot  |
+/// | `ErZeroOrOne`      | `oval`            | loses the paired bar          |
+/// | `ErOneOrMany`      | `arrow`           | loses the paired bar          |
+/// | `ErZeroOrMany`     | `arrow`           | loses the paired circle       |
+fn pptx_line_end(marker: EndMarker) -> &'static str {
+    match marker {
+        EndMarker::None => "none",
+        EndMarker::HollowTriangle => "triangle",
+        EndMarker::OpenArrow => "arrow",
+        EndMarker::FilledDiamond => "diamond",
+        EndMarker::HollowDiamond => "diamond",
+        EndMarker::ErOne => "oval",
+        EndMarker::ErMany => "arrow",
+        EndMarker::ErZeroOrOne => "oval",
+        EndMarker::ErOneOrMany => "arrow",
+        EndMarker::ErZeroOrMany => "arrow",
+        _ => "none",
+    }
+}
+
+/// A rectangular shape for a [`CompartmentBox`]: one centered paragraph for
+/// the stereotype (if any) and title, followed by one left-aligned paragraph
+/// per compartment row.
+/// Horizontal text inset (px) inside a compartment text box, matching the
+/// left padding the layout engine reserves for compartment rows.
+const COMPARTMENT_PAD_X: f64 = 6.0;
+
+/// A border-only rounded/rect box outline (white fill, black stroke, no text).
+/// The title and compartment text are emitted as *separate* overlaid text
+/// boxes at their own semantic y-ranges (see [`region_text_shape`]) so that
+/// each block of text starts exactly at its compartment divider instead of
+/// being reflowed from the box top by PowerPoint's own line layout.
+fn box_outline_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64) -> String {
+    let name = xml_escape(name);
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>\
+         <p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm>\
+         <a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>\
+         <a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill>\
+         <a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill></a:ln></p:spPr>\
+         <p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>",
+    )
+}
+
+/// A transparent, borderless text box occupying a fixed scene-space rectangle,
+/// used to place one compartment's (or the title's) text exactly within its
+/// semantic y-range. Paragraph alignment is baked into `paragraphs`; `anchor`
+/// is the vertical anchor (`"ctr"` / `"t"`). Insets are zeroed so the text's
+/// top edge coincides with the box's top edge (= the compartment divider).
+/// Mirrors [`label_box_shape`]'s zero-inset construction.
+#[allow(clippy::too_many_arguments)]
+fn region_text_shape(
+    id: u32,
+    name: &str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    paragraphs: &str,
+    anchor: &str,
+) -> String {
+    let name = xml_escape(name);
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>\
+         <p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm>\
+         <a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>\
+         <a:noFill/><a:ln><a:noFill/></a:ln></p:spPr>\
+         <p:txBody><a:bodyPr wrap=\"square\" lIns=\"0\" tIns=\"0\" rIns=\"0\" bIns=\"0\" anchor=\"{anchor}\"/>\
+         <a:lstStyle/>{paragraphs}</p:txBody></p:sp>",
+    )
+}
+
+/// Emit all shapes for one class/ER [`CompartmentBox`]: a border-only outline,
+/// a centered title text box spanning `[rect.y, first_compartment_top_y]`, and
+/// one left/top-aligned text box per compartment spanning
+/// `[c.top_y, next_top_y]`. Each text box's top edge equals a divider y, so
+/// the text stays aligned with the divider connectors drawn in `render_class`.
+fn compartment_box_shapes(ids: &mut IdAlloc, b: &CompartmentBox) -> String {
+    let r = &b.rect;
+    let mut out = String::new();
+
+    // Outer outline (border + white fill, no text).
+    out.push_str(&box_outline_shape(
+        ids.next(),
+        &format!("Box {}", b.id),
+        emu_pos(r.x),
+        emu_pos(r.y),
+        emu_len(r.width),
+        emu_len(r.height),
+    ));
+
+    // Title region: from the box top down to the first compartment divider (or
+    // the whole box height when there are no compartments).
+    let title_bottom = b
+        .compartments
+        .first()
+        .map(|c| c.top_y)
+        .unwrap_or(r.y + r.height);
+    let title_h = (title_bottom - r.y).max(1.0);
+    let mut title_p = String::new();
+    if let Some(st) = &b.stereotype {
+        title_p.push_str(&format!(
+            "<a:p><a:pPr algn=\"ctr\"/><a:r><a:rPr sz=\"1000\" i=\"1\"/><a:t>{}</a:t></a:r></a:p>",
+            xml_escape(&format!("\u{ab}{st}\u{bb}"))
+        ));
+    }
+    title_p.push_str(&format!(
+        "<a:p><a:pPr algn=\"ctr\"/><a:r><a:rPr sz=\"1200\" b=\"1\"/><a:t>{}</a:t></a:r></a:p>",
+        xml_escape(&b.title)
+    ));
+    out.push_str(&region_text_shape(
+        ids.next(),
+        &format!("Box {} title", b.id),
+        emu_pos(r.x),
+        emu_pos(r.y),
+        emu_len(r.width),
+        emu_len(title_h),
+        &title_p,
+        "ctr",
+    ));
+
+    // One text box per compartment, spanning [top_y, next top_y]. Left/top
+    // aligned, with a small horizontal inset matching the layout's padding.
+    for (ci, c) in b.compartments.iter().enumerate() {
+        let bottom = b
+            .compartments
+            .get(ci + 1)
+            .map(|c2| c2.top_y)
+            .unwrap_or(r.y + r.height);
+        let sect_h = (bottom - c.top_y).max(1.0);
+        let mut sect_p = String::new();
+        for row in &c.rows {
+            sect_p.push_str(&format!(
+                "<a:p><a:pPr algn=\"l\"/><a:r><a:rPr sz=\"1100\"/><a:t>{}</a:t></a:r></a:p>",
+                xml_escape(row)
+            ));
+        }
+        out.push_str(&region_text_shape(
+            ids.next(),
+            &format!("Box {} section {ci}", b.id),
+            emu_pos(r.x + COMPARTMENT_PAD_X),
+            emu_pos(c.top_y),
+            emu_len((r.width - 2.0 * COMPARTMENT_PAD_X).max(1.0)),
+            emu_len(sect_h),
+            &sect_p,
+            "t",
+        ));
+    }
+
+    out
+}
+
+fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
+    let mut ids = IdAlloc::new();
+    let mut shapes = String::new();
+
+    for b in &layout.boxes {
+        let r = &b.rect;
+        shapes.push_str(&compartment_box_shapes(&mut ids, b));
+        // A thin divider connector at each compartment's top boundary,
+        // spanning the box width.
+        for c in &b.compartments {
+            let divider = [Point::new(r.x, c.top_y), Point::new(r.x + r.width, c.top_y)];
+            shapes.push_str(&connector_shape_ends(
+                ids.next(),
+                &format!("Box {} divider", b.id),
+                &divider,
+                false,
+                "none",
+                "none",
+            ));
+        }
+    }
+
+    let find_box = |id: &str| -> bool { layout.boxes.iter().any(|b| b.id == id) };
+
+    for (i, rel) in layout.relations.iter().enumerate() {
+        if !find_box(&rel.from) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.from.clone(),
+            });
+        }
+        if !find_box(&rel.to) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.to.clone(),
+            });
+        }
+        let route: Vec<Point> = rel.points.iter().map(|&(x, y)| Point::new(x, y)).collect();
+        if route.is_empty() {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.from.clone(),
+            });
+        }
+        shapes.push_str(&connector_shape_ends(
+            ids.next(),
+            &format!("Relation {i}"),
+            &route,
+            rel.line == LineStyle::Dashed,
+            pptx_line_end(rel.from_marker),
+            pptx_line_end(rel.to_marker),
+        ));
+        if let Some(label) = &rel.label {
+            let mid = &route[route.len() / 2];
+            shapes.push_str(&label_box_shape(
+                ids.next(),
+                &format!("Relation {i} label"),
+                mid,
+                label,
+            ));
+        }
+        if let Some(m) = &rel.from_mult {
+            shapes.push_str(&label_box_shape(
+                ids.next(),
+                &format!("Relation {i} from multiplicity"),
+                &route[0],
+                m,
+            ));
+        }
+        if let Some(m) = &rel.to_mult {
+            shapes.push_str(&label_box_shape(
+                ids.next(),
+                &format!("Relation {i} to multiplicity"),
+                &route[route.len() - 1],
+                m,
+            ));
+        }
+    }
+
+    Ok(slide_xml(&shapes))
+}
+
+fn render_er(layout: &ClassLayout) -> Result<String, RenderError> {
+    // ER layouts are structurally identical ClassLayouts (see
+    // `kozue_layout::semantic::ErLayout`); reuse the same renderer.
+    render_class(layout)
+}
+
+// ---------------------------------------------------------------------------
 // Package assembly
 // ---------------------------------------------------------------------------
 
@@ -786,6 +1088,169 @@ mod tests {
         )));
         let out = kozue_layout::layout_full(&Diagram::Sequence(seq)).expect("layout");
         out.semantic
+    }
+
+    // Helper: class diagram layout with inheritance + composition relations.
+    fn class_layout() -> SemanticLayout {
+        use kozue_ir::{ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker};
+        let mut cd = ClassDiagram::new(Direction::Down);
+
+        let mut animal = ClassNode::new("Animal", "Animal");
+        animal.stereotype = Some("abstract".to_string());
+        animal.attributes.push("+name: String".to_string());
+        animal.methods.push("+speak(): void".to_string());
+        cd.classes.insert("Animal".into(), animal);
+
+        let mut dog = ClassNode::new("Dog", "Dog");
+        dog.methods.push("+bark(): void".to_string());
+        cd.classes.insert("Dog".into(), dog);
+
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::FilledDiamond,
+            EndMarker::None,
+            LineStyle::Dashed,
+            Some("has".to_string()),
+            Some("1".to_string()),
+            Some("*".to_string()),
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Class(cd)).expect("layout");
+        out.semantic
+    }
+
+    // Helper: ER diagram layout with a crow's-foot relation.
+    fn er_layout() -> SemanticLayout {
+        use kozue_ir::{Diagram, EndMarker, ErAttribute, ErDiagram, ErEntity, ErRelation};
+        let mut ed = ErDiagram::new();
+
+        let mut customer = ErEntity::new("Customer", "CUSTOMER");
+        customer
+            .attributes
+            .push(ErAttribute::new("int", "id", vec!["PK".to_string()], None));
+        ed.entities.insert("Customer".into(), customer);
+
+        let mut order = ErEntity::new("Order", "ORDER");
+        order.attributes.push(ErAttribute::new(
+            "int",
+            "customer_id",
+            vec!["FK".to_string()],
+            None,
+        ));
+        ed.entities.insert("Order".into(), order);
+
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("places".to_string()),
+            LineStyle::Solid,
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Er(ed)).expect("layout");
+        out.semantic
+    }
+
+    // --- class / er rendering ---
+
+    #[test]
+    fn render_class_produces_valid_zip() {
+        let layout = class_layout();
+        let bytes = render(&layout).expect("class render");
+        assert_valid_zip_shape(&bytes);
+    }
+
+    #[test]
+    fn render_er_produces_valid_zip() {
+        let layout = er_layout();
+        let bytes = render(&layout).expect("er render");
+        assert_valid_zip_shape(&bytes);
+    }
+
+    #[test]
+    fn class_slide_contains_boxes_and_markers() {
+        let layout = class_layout();
+        let bytes = render(&layout).expect("render");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("<p:sp>"), "compartment boxes are p:sp shapes");
+        assert!(text.contains("Animal"), "class name must appear");
+        assert!(text.contains("+speak(): void"), "method row must appear");
+        assert!(
+            text.contains("<a:headEnd type=\"diamond\"/>")
+                || text.contains("<a:tailEnd type=\"diamond\"/>"),
+            "composition maps to a diamond line end: {text}"
+        );
+        assert!(
+            text.contains("<a:headEnd type=\"triangle\"/>")
+                || text.contains("<a:tailEnd type=\"triangle\"/>"),
+            "inheritance maps to a triangle line end: {text}"
+        );
+        assert!(text.contains("has"), "relation label must appear");
+        assert!(text.contains(">1<"), "from multiplicity must appear");
+        assert!(text.contains(">*<"), "to multiplicity must appear");
+    }
+
+    #[test]
+    fn er_slide_contains_entity_rows_and_crowsfoot_approximation() {
+        let layout = er_layout();
+        let bytes = render(&layout).expect("render");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("customer_id"), "attribute row must appear");
+        assert!(
+            text.contains("<a:headEnd type=\"oval\"/>")
+                || text.contains("<a:tailEnd type=\"oval\"/>"),
+            "ErOne maps to an oval line end: {text}"
+        );
+        assert!(
+            text.contains("<a:headEnd type=\"arrow\"/>")
+                || text.contains("<a:tailEnd type=\"arrow\"/>"),
+            "ErZeroOrMany maps to an arrow line end: {text}"
+        );
+        assert!(text.contains("places"), "relation label must appear");
+    }
+
+    #[test]
+    fn render_class_is_deterministic() {
+        let layout = class_layout();
+        let b1 = render(&layout).expect("render 1");
+        let b2 = render(&layout).expect("render 2");
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn render_er_is_deterministic() {
+        let layout = er_layout();
+        let b1 = render(&layout).expect("render 1");
+        let b2 = render(&layout).expect("render 2");
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn class_render_dangling_relation_is_error() {
+        let layout = class_layout();
+        let SemanticLayout::Class(mut cl) = layout else {
+            panic!("expected class layout");
+        };
+        cl.relations[0].to = "does-not-exist".to_string();
+        let err = render(&SemanticLayout::Class(cl)).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::DanglingEdge {
+                node_id: "does-not-exist".to_string()
+            }
+        );
     }
 
     // --- xml_escape ---

@@ -35,8 +35,20 @@
 //!   DOT has no notion of lifelines or time ordering, so exporting a sequence
 //!   diagram would silently discard its meaning. Returns
 //!   [`RenderError::UnsupportedDiagram`] instead.
+//! - [`Diagram::Class`](kozue_ir::Diagram::Class) — each class/interface
+//!   becomes a Graphviz `record`-shaped node (`name` / `attributes` /
+//!   `methods` fields); each relation becomes a `dir=both` edge whose
+//!   `arrowtail`/`arrowhead` encode the UML end markers (see
+//!   [`arrow_shape`]).
+//! - [`Diagram::Er`](kozue_ir::Diagram::Er) — each entity becomes an
+//!   HTML-like table node (`shape=plaintext`) with one row per attribute;
+//!   each relation becomes a `dir=both` edge whose ends encode ER
+//!   crow's-foot markers.
 
-use kozue_ir::{ArrowType, Diagram, Direction, Endpoint, GraphDiagram, StateDiagram, Transition};
+use kozue_ir::{
+    ArrowType, ClassDiagram, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErDiagram,
+    ErRelation, GraphDiagram, LineStyle, StateDiagram, Transition,
+};
 
 // ---------------------------------------------------------------------------
 // Public error type
@@ -95,6 +107,8 @@ pub fn render(diagram: &Diagram) -> Result<String, RenderError> {
         Diagram::Graph(g) => render_graph(g),
         Diagram::State(s) => render_state(s),
         Diagram::Sequence(_) => Err(RenderError::UnsupportedDiagram { kind: "sequence" }),
+        Diagram::Class(c) => render_class(c),
+        Diagram::Er(e) => render_er(e),
         // `Diagram` is `#[non_exhaustive]`; refuse unknown variants rather than
         // emitting an empty graph.
         _ => Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
@@ -261,6 +275,287 @@ fn endpoint_id(s: &StateDiagram, ep: &Endpoint) -> Result<String, RenderError> {
 }
 
 // ---------------------------------------------------------------------------
+// Class diagram
+// ---------------------------------------------------------------------------
+
+fn render_class(c: &ClassDiagram) -> Result<String, RenderError> {
+    let mut out = String::new();
+    out.push_str("digraph {\n");
+    let rankdir = match c.direction {
+        Direction::Right => "LR",
+        _ => "TB",
+    };
+    out.push_str(&format!("  rankdir={rankdir};\n"));
+    out.push_str("  node [shape=record];\n");
+
+    for node in c.classes.values() {
+        out.push_str(&format!(
+            "  {} [label=\"{}\"];\n",
+            quote(&node.id),
+            class_record_label(node)
+        ));
+    }
+
+    for rel in &c.relations {
+        if !c.classes.contains_key(&rel.from) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.from.clone(),
+            });
+        }
+        if !c.classes.contains_key(&rel.to) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.to.clone(),
+            });
+        }
+        out.push_str(&class_relation_stmt(rel));
+    }
+
+    out.push_str("}\n");
+    Ok(out)
+}
+
+/// Build the (unquoted, un-outer-wrapped) Graphviz record-label content for a
+/// class node: `{<<stereotype>>\nName|attr1\lattr2\l|method1()\lmethod2()\l}`.
+/// Empty attribute/method sections are omitted as record fields entirely.
+fn class_record_label(node: &kozue_ir::ClassNode) -> String {
+    let title = match &node.stereotype {
+        Some(st) => format!(
+            "\u{ab}{}\u{bb}\\n{}",
+            record_escape(st),
+            record_escape(&node.name)
+        ),
+        None => record_escape(&node.name),
+    };
+    let mut fields = vec![title];
+    if !node.attributes.is_empty() {
+        fields.push(record_rows(&node.attributes));
+    }
+    if !node.methods.is_empty() {
+        fields.push(record_rows(&node.methods));
+    }
+    format!("{{{}}}", fields.join("|"))
+}
+
+/// Join display rows into one left-justified Graphviz record field
+/// (`row1\lrow2\l`, trailing `\l` included after the last row too).
+fn record_rows(rows: &[String]) -> String {
+    let mut s = String::new();
+    for row in rows {
+        s.push_str(&record_escape(row));
+        s.push_str("\\l");
+    }
+    s
+}
+
+/// Escape characters that are structurally significant inside a Graphviz
+/// record label (`{ } | < >`), backslash, and double quote, so
+/// user-controlled text (class/attribute/method names) can never break out
+/// of the record field it appears in or the surrounding quoted DOT string.
+/// Unlike [`quote`] (used for plain labels), this does **not** double
+/// backslashes: Graphviz's own lexer only special-cases `\"` inside a quoted
+/// string and otherwise passes `\` through unchanged, so a single backslash
+/// here is what the record parser needs to see.
+fn record_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '|' => out.push_str("\\|"),
+            '<' => out.push_str("\\<"),
+            '>' => out.push_str("\\>"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// ER diagram
+// ---------------------------------------------------------------------------
+
+fn render_er(e: &ErDiagram) -> Result<String, RenderError> {
+    let mut out = String::new();
+    out.push_str("digraph {\n");
+    out.push_str("  rankdir=TB;\n");
+    out.push_str("  node [shape=plaintext];\n");
+
+    for entity in e.entities.values() {
+        out.push_str(&format!(
+            "  {} [label=<{}>];\n",
+            quote(&entity.id),
+            er_table_label(entity)
+        ));
+    }
+
+    for rel in &e.relations {
+        if !e.entities.contains_key(&rel.from) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.from.clone(),
+            });
+        }
+        if !e.entities.contains_key(&rel.to) {
+            return Err(RenderError::DanglingEdge {
+                node_id: rel.to.clone(),
+            });
+        }
+        out.push_str(&er_relation_stmt(rel));
+    }
+
+    out.push_str("}\n");
+    Ok(out)
+}
+
+/// Build a Graphviz HTML-like `<TABLE>` label for an ER entity: a header row
+/// with the entity name, followed by one row per attribute (keys / type /
+/// name / comment).
+fn er_table_label(entity: &kozue_ir::ErEntity) -> String {
+    let mut s =
+        String::from("<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\" CELLPADDING=\"4\">");
+    s.push_str(&format!(
+        "<TR><TD COLSPAN=\"4\" BGCOLOR=\"LIGHTGREY\"><B>{}</B></TD></TR>",
+        html_escape(&entity.name)
+    ));
+    for attr in &entity.attributes {
+        let keys = attr.keys.join(",");
+        let comment = attr.comment.as_deref().unwrap_or("");
+        s.push_str(&format!(
+            "<TR><TD>{}</TD><TD ALIGN=\"LEFT\">{}</TD><TD ALIGN=\"LEFT\">{}</TD><TD ALIGN=\"LEFT\">{}</TD></TR>",
+            html_escape(&keys),
+            html_escape(&attr.type_name),
+            html_escape(&attr.name),
+            html_escape(comment),
+        ));
+    }
+    s.push_str("</TABLE>");
+    s
+}
+
+/// Escape `& < > "` for use inside a Graphviz HTML-like label (delimited by
+/// bare `<` `>`, not a quoted DOT string — a different escaping context than
+/// [`quote`]/[`record_escape`]).
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn er_relation_stmt(rel: &ErRelation) -> String {
+    relation_stmt(
+        &rel.from,
+        &rel.to,
+        rel.from_marker,
+        rel.to_marker,
+        rel.line,
+        rel.label.as_deref(),
+        None,
+        None,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Shared relation/marker rendering (class + ER)
+// ---------------------------------------------------------------------------
+
+fn class_relation_stmt(rel: &ClassRelation) -> String {
+    relation_stmt(
+        &rel.from,
+        &rel.to,
+        rel.from_marker,
+        rel.to_marker,
+        rel.line,
+        rel.label.as_deref(),
+        rel.from_mult.as_deref(),
+        rel.to_mult.as_deref(),
+    )
+}
+
+/// Format a `from -> to [dir=both arrowtail=... arrowhead=... ...];`
+/// statement shared by class relations and ER relations. `from_marker`
+/// draws at the `from` end (`arrowtail`), `to_marker` at the `to` end
+/// (`arrowhead`); `dir=both` is required for `arrowtail` to have any
+/// effect in Graphviz.
+#[allow(clippy::too_many_arguments)]
+fn relation_stmt(
+    from: &str,
+    to: &str,
+    from_marker: EndMarker,
+    to_marker: EndMarker,
+    line: LineStyle,
+    label: Option<&str>,
+    from_mult: Option<&str>,
+    to_mult: Option<&str>,
+) -> String {
+    let mut attrs = vec![
+        "dir=both".to_string(),
+        format!("arrowtail={}", arrow_shape(from_marker)),
+        format!("arrowhead={}", arrow_shape(to_marker)),
+    ];
+    if line == LineStyle::Dashed {
+        attrs.push("style=dashed".to_string());
+    }
+    if let Some(l) = label {
+        attrs.push(format!("label={}", quote(l)));
+    }
+    if let Some(m) = from_mult {
+        attrs.push(format!("taillabel={}", quote(m)));
+    }
+    if let Some(m) = to_mult {
+        attrs.push(format!("headlabel={}", quote(m)));
+    }
+    format!(
+        "  {} -> {} [{}];\n",
+        quote(from),
+        quote(to),
+        attrs.join(" ")
+    )
+}
+
+/// Map an [`EndMarker`] to a Graphviz arrow-shape name.
+///
+/// | `EndMarker`       | Graphviz shape |
+/// |--------------------|----------------|
+/// | `None`             | `none`         |
+/// | `HollowTriangle`    | `empty`        |
+/// | `OpenArrow`         | `vee`          |
+/// | `FilledDiamond`     | `diamond`      |
+/// | `HollowDiamond`     | `odiamond`     |
+/// | `ErOne`             | `tee`          |
+/// | `ErMany`            | `crow`         |
+/// | `ErZeroOrOne`       | `odottee`      |
+/// | `ErOneOrMany`       | `teecrow`      |
+/// | `ErZeroOrMany`      | `odotcrow`     |
+///
+/// Any future `#[non_exhaustive]` variant falls back to `none` rather than
+/// producing invalid DOT.
+fn arrow_shape(marker: EndMarker) -> &'static str {
+    match marker {
+        EndMarker::None => "none",
+        EndMarker::HollowTriangle => "empty",
+        EndMarker::OpenArrow => "vee",
+        EndMarker::FilledDiamond => "diamond",
+        EndMarker::HollowDiamond => "odiamond",
+        EndMarker::ErOne => "tee",
+        EndMarker::ErMany => "crow",
+        EndMarker::ErZeroOrOne => "odottee",
+        EndMarker::ErOneOrMany => "teecrow",
+        EndMarker::ErZeroOrMany => "odotcrow",
+        _ => "none",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Escaping
 // ---------------------------------------------------------------------------
 
@@ -288,7 +583,190 @@ fn quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{Edge, Node, State, Transition};
+    use kozue_ir::{ClassNode, Edge, ErAttribute, ErEntity, Node, State, Transition};
+
+    fn sample_class_diagram() -> ClassDiagram {
+        let mut cd = ClassDiagram::new(Direction::Down);
+
+        let mut animal = ClassNode::new("Animal", "Animal");
+        animal.stereotype = Some("abstract".to_string());
+        animal.attributes.push("+name: String".to_string());
+        animal.methods.push("+speak(): void".to_string());
+        cd.classes.insert("Animal".into(), animal);
+
+        let mut dog = ClassNode::new("Dog", "Dog");
+        dog.methods.push("+bark(): void".to_string());
+        cd.classes.insert("Dog".into(), dog);
+
+        let mut kennel = ClassNode::new("Kennel", "Kennel");
+        kennel.attributes.push("+capacity: Int".to_string());
+        cd.classes.insert("Kennel".into(), kennel);
+
+        // Dog --|> Animal (inheritance: hollow triangle at the `to` end).
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        // Kennel *-- Dog (composition: filled diamond at the `from` end).
+        cd.relations.push(ClassRelation::new(
+            "Kennel",
+            "Dog",
+            EndMarker::FilledDiamond,
+            EndMarker::None,
+            LineStyle::Dashed,
+            Some("houses".to_string()),
+            Some("1".to_string()),
+            Some("*".to_string()),
+        ));
+        cd
+    }
+
+    fn sample_er_diagram() -> ErDiagram {
+        let mut ed = ErDiagram::new();
+
+        let mut customer = ErEntity::new("Customer", "CUSTOMER");
+        customer
+            .attributes
+            .push(ErAttribute::new("int", "id", vec!["PK".to_string()], None));
+        ed.entities.insert("Customer".into(), customer);
+
+        let mut order = ErEntity::new("Order", "ORDER");
+        order.attributes.push(ErAttribute::new(
+            "int",
+            "customer_id",
+            vec!["FK".to_string()],
+            Some("references Customer".to_string()),
+        ));
+        ed.entities.insert("Order".into(), order);
+
+        // CUSTOMER ||--o{ ORDER : places
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("places".to_string()),
+            LineStyle::Solid,
+        ));
+        ed
+    }
+
+    #[test]
+    fn class_render_uses_record_shape_and_markers() {
+        let dot = render(&Diagram::Class(sample_class_diagram())).expect("class render");
+        assert!(
+            dot.contains("shape=record"),
+            "class nodes are records: {dot}"
+        );
+        assert!(dot.contains("Animal"), "class name must appear: {dot}");
+        assert!(
+            dot.contains("+speak(): void"),
+            "method row must appear: {dot}"
+        );
+        assert!(
+            dot.contains("arrowhead=empty"),
+            "inheritance uses a hollow triangle head: {dot}"
+        );
+        assert!(
+            dot.contains("arrowtail=diamond"),
+            "composition uses a filled diamond tail: {dot}"
+        );
+        assert!(dot.contains("style=dashed"), "dashed relation: {dot}");
+        assert!(
+            dot.contains("taillabel=\"1\"") && dot.contains("headlabel=\"*\""),
+            "multiplicities must appear: {dot}"
+        );
+        assert!(dot.contains("dir=both"), "both ends must be styled: {dot}");
+    }
+
+    #[test]
+    fn class_render_does_not_fall_back_to_unsupported() {
+        let err = render(&Diagram::Class(sample_class_diagram()));
+        assert!(err.is_ok());
+    }
+
+    #[test]
+    fn class_render_dangling_relation_is_error() {
+        let mut cd = sample_class_diagram();
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Ghost",
+            EndMarker::None,
+            EndMarker::None,
+            LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        let err = render(&Diagram::Class(cd)).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::DanglingEdge {
+                node_id: "Ghost".into()
+            }
+        );
+    }
+
+    #[test]
+    fn class_render_is_deterministic() {
+        let d = Diagram::Class(sample_class_diagram());
+        assert_eq!(render(&d).unwrap(), render(&d).unwrap());
+    }
+
+    #[test]
+    fn er_render_uses_html_table_and_crowsfoot_markers() {
+        let dot = render(&Diagram::Er(sample_er_diagram())).expect("er render");
+        assert!(dot.contains("shape=plaintext"), "er nodes: {dot}");
+        assert!(dot.contains("<TABLE"), "html table label: {dot}");
+        assert!(dot.contains("CUSTOMER"), "entity name must appear: {dot}");
+        assert!(
+            dot.contains("customer_id"),
+            "attribute row must appear: {dot}"
+        );
+        assert!(dot.contains("arrowtail=tee"), "ErOne maps to tee: {dot}");
+        assert!(
+            dot.contains("arrowhead=odotcrow"),
+            "ErZeroOrMany maps to odotcrow: {dot}"
+        );
+        assert!(dot.contains("label=\"places\""), "relation label: {dot}");
+    }
+
+    #[test]
+    fn er_render_dangling_relation_is_error() {
+        let mut ed = sample_er_diagram();
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Ghost",
+            EndMarker::None,
+            EndMarker::None,
+            None,
+            LineStyle::Solid,
+        ));
+        let err = render(&Diagram::Er(ed)).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::DanglingEdge {
+                node_id: "Ghost".into()
+            }
+        );
+    }
+
+    #[test]
+    fn er_render_is_deterministic() {
+        let d = Diagram::Er(sample_er_diagram());
+        assert_eq!(render(&d).unwrap(), render(&d).unwrap());
+    }
+
+    #[test]
+    fn record_escape_escapes_structural_chars() {
+        assert_eq!(record_escape("a{b}c|d<e>f"), "a\\{b\\}c\\|d\\<e\\>f");
+    }
 
     fn graph(direction: Direction) -> GraphDiagram {
         GraphDiagram::new(direction)

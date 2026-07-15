@@ -1,5 +1,5 @@
 // Chain diagram: three nodes in sequence
-diagram chain {
+graph chain {
   direction down  // top-to-bottom layout
 
   // nodes

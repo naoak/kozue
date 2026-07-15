@@ -1,0 +1,12 @@
+@startuml
+entity Customer {
+  * id : int
+  name : string
+  email : string
+}
+entity Order {
+  * id : int
+  customer_id : int
+}
+Customer ||--o{ Order : places
+@enduml

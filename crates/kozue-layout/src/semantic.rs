@@ -236,6 +236,79 @@ pub struct StateLayout {
 }
 
 // ---------------------------------------------------------------------------
+// Class / ER layout
+// ---------------------------------------------------------------------------
+
+/// One horizontally-divided section of a [`CompartmentBox`] (e.g. the
+/// attribute or method compartment of a class, or the column list of an ER
+/// entity).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Compartment {
+    /// Y-coordinate (scene space) of the section's top divider line.
+    pub top_y: f64,
+    /// Pre-formatted display rows, top to bottom.
+    pub rows: Vec<String>,
+}
+
+/// Layout information for a single class/interface (or ER entity) box.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompartmentBox {
+    /// The stable string ID (from [`ClassDiagram::classes`](kozue_ir::ClassDiagram)
+    /// or [`ErDiagram::entities`](kozue_ir::ErDiagram)).
+    pub id: String,
+    /// The bounding rectangle of the whole box (title + all compartments).
+    pub rect: Rect,
+    pub title: String,
+    pub stereotype: Option<String>,
+    /// Compartments in top-to-bottom order. Empty sections are omitted.
+    pub compartments: Vec<Compartment>,
+}
+
+/// Layout information for a single relation line between two boxes.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelationLayout {
+    /// Index into the diagram's relation list (0-based, declaration order).
+    pub index: usize,
+    /// Source box ID.
+    pub from: String,
+    /// Target box ID.
+    pub to: String,
+    /// Routing points of the connecting line (from -> to order), in scene
+    /// coordinates. Endpoints are clipped to the box borders but **not**
+    /// shortened for the end markers: `points[0]` / `points[last]` sit exactly
+    /// on the border where the marker tip attaches. A consumer that draws its
+    /// own markers should retract the line by the marker's depth itself.
+    pub points: Vec<(f64, f64)>,
+    pub from_marker: kozue_ir::EndMarker,
+    pub to_marker: kozue_ir::EndMarker,
+    pub line: kozue_ir::LineStyle,
+    pub label: Option<String>,
+    pub from_mult: Option<String>,
+    pub to_mult: Option<String>,
+}
+
+/// Semantic layout for a class diagram (boxes + relation lines).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassLayout {
+    pub width: f64,
+    pub height: f64,
+    /// Boxes in declaration order.
+    pub boxes: Vec<CompartmentBox>,
+    /// Relations in declaration order.
+    pub relations: Vec<RelationLayout>,
+}
+
+/// Semantic layout for an ER diagram. Structurally identical to
+/// [`ClassLayout`] (entities become [`CompartmentBox`]es with a single
+/// "columns" compartment); kept as a distinct name so `SemanticLayout::Er`
+/// reads clearly at call sites.
+pub type ErLayout = ClassLayout;
+
+// ---------------------------------------------------------------------------
 // Top-level enum
 // ---------------------------------------------------------------------------
 
@@ -250,4 +323,6 @@ pub enum SemanticLayout {
     Graph(GraphLayout),
     Sequence(SequenceLayout),
     State(StateLayout),
+    Class(ClassLayout),
+    Er(ErLayout),
 }

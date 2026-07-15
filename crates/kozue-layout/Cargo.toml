@@ -8,3 +8,6 @@ license.workspace = true
 kozue-ir.workspace = true
 kozue-text.workspace = true
 indexmap.workspace = true
+
+[dev-dependencies]
+kozue-render-svg.workspace = true

@@ -1,4 +1,4 @@
-diagram seq {
+sequence seq {
   participant web: "Webブラウザ"
   participant api: "APIサーバ"
   participant db: "DB"

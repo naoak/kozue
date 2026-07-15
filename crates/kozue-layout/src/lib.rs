@@ -15,9 +15,13 @@
 //! including text, edge labels and arrowheads.
 
 mod bounds;
+mod boxes;
+mod class;
 mod coords;
 mod cycle;
+mod er;
 mod layering;
+mod markers;
 mod ordering;
 pub mod semantic;
 mod sequence;
@@ -90,6 +94,8 @@ pub fn layout_full(diagram: &Diagram) -> Result<LayoutOutput, LayoutError> {
         Diagram::Graph(g) => layout_graph_full(g),
         Diagram::Sequence(s) => Ok(sequence::layout_sequence_full(s)),
         Diagram::State(s) => state::layout_state_full(s),
+        Diagram::Class(c) => class::layout_class_full(c),
+        Diagram::Er(e) => er::layout_er_full(e),
         _ => Err(LayoutError {
             message: "unsupported diagram variant".to_string(),
         }),
@@ -571,6 +577,30 @@ pub(crate) fn polyline_midpoint(pts: &[(f64, f64)]) -> (f64, f64) {
         remaining -= seg;
     }
     *pts.last().unwrap()
+}
+
+const CIRCLE_POINTS: usize = 20;
+
+/// A regular polygon approximating a circle, as a [`Path`]. Shared by state
+/// pseudostates ([`state`]) and ER "zero" crow's-foot markers ([`markers`]).
+pub(crate) fn circle_path(cx: f64, cy: f64, r: f64, filled: bool) -> Path {
+    let mut points: Vec<(f64, f64)> = (0..CIRCLE_POINTS)
+        .map(|i| {
+            let angle = i as f64 * 2.0 * std::f64::consts::PI / CIRCLE_POINTS as f64;
+            (cx + r * angle.cos(), cy + r * angle.sin())
+        })
+        .collect();
+    // Close the ring: an unfilled circle renders as an open polyline, so repeat
+    // the first point to join the last segment back to the start (otherwise the
+    // stroked outer circle has a visible gap at angle 0).
+    if let Some(&first) = points.first() {
+        points.push(first);
+    }
+    Path {
+        points,
+        filled,
+        dashed: false,
+    }
 }
 
 /// Return the point on the rectangle border of `p` along the ray from the
@@ -1369,5 +1399,229 @@ mod tests {
             sem.messages[1].route.len() >= 3,
             "self-message route is a multi-segment polyline"
         );
+    }
+
+    // --- Class / ER diagram layout smoke tests (Phase A) ---
+
+    fn sample_class_diagram() -> kozue_ir::ClassDiagram {
+        use kozue_ir::{ClassNode, ClassRelation, EndMarker};
+
+        let mut cd = kozue_ir::ClassDiagram::new(Direction::Down);
+
+        let mut animal = ClassNode::new("Animal", "Animal");
+        animal.stereotype = Some("abstract".to_string());
+        animal.attributes.push("+name: String".to_string());
+        animal.methods.push("+speak(): void".to_string());
+        cd.classes.insert("Animal".into(), animal);
+
+        let mut dog = ClassNode::new("Dog", "Dog");
+        dog.methods.push("+bark(): void".to_string());
+        cd.classes.insert("Dog".into(), dog);
+
+        let mut kennel = ClassNode::new("Kennel", "Kennel");
+        kennel.attributes.push("+capacity: Int".to_string());
+        cd.classes.insert("Kennel".into(), kennel);
+
+        // Dog --|> Animal (inheritance: hollow triangle at the `to` end).
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            kozue_ir::LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        // Kennel *-- Dog (composition: filled diamond at the `from` end),
+        // with multiplicities and a label to exercise that code path too.
+        cd.relations.push(ClassRelation::new(
+            "Kennel",
+            "Dog",
+            EndMarker::FilledDiamond,
+            EndMarker::None,
+            kozue_ir::LineStyle::Dashed,
+            Some("houses".to_string()),
+            Some("1".to_string()),
+            Some("*".to_string()),
+        ));
+
+        cd
+    }
+
+    fn sample_er_diagram() -> kozue_ir::ErDiagram {
+        use kozue_ir::{EndMarker, ErAttribute, ErEntity, ErRelation};
+
+        let mut ed = kozue_ir::ErDiagram::new();
+
+        let mut customer = ErEntity::new("Customer", "CUSTOMER");
+        customer
+            .attributes
+            .push(ErAttribute::new("int", "id", vec!["PK".to_string()], None));
+        customer
+            .attributes
+            .push(ErAttribute::new("string", "name", vec![], None));
+        ed.entities.insert("Customer".into(), customer);
+
+        let mut order = ErEntity::new("Order", "ORDER");
+        order.attributes.push(ErAttribute::new(
+            "int",
+            "customer_id",
+            vec!["FK".to_string()],
+            Some("references Customer".to_string()),
+        ));
+        ed.entities.insert("Order".into(), order);
+
+        // CUSTOMER ||--o{ ORDER : places
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("places".to_string()),
+            kozue_ir::LineStyle::Solid,
+        ));
+
+        ed
+    }
+
+    #[test]
+    fn class_layout_does_not_panic_and_renders_svg() {
+        let diagram = Diagram::Class(sample_class_diagram());
+        let out = layout_full(&diagram).expect("class layout must succeed");
+        assert!(out.scene.width > 0.0 && out.scene.height > 0.0);
+
+        // Three class boxes -> three outer Rects.
+        assert_eq!(rects(&out.scene).len(), 3);
+
+        // Section-divider lines: Animal has 2 non-empty sections -> 1 divider
+        // (title|attrs) + 1 (attrs|methods) = 2. Dog has 1 section -> 1
+        // divider. Kennel has 1 section -> 1 divider. Total 4 two-point
+        // dividers among the open paths.
+        let dividers = open_paths(&out.scene)
+            .into_iter()
+            .filter(|p| p.points.len() == 2)
+            .count();
+        // At least the 4 compartment dividers must be present (relation
+        // lines and the diamond marker's back edge may also be 2-point
+        // paths, so this is a lower bound, not an exact count).
+        assert!(dividers >= 4, "expected >=4 divider lines, got {dividers}");
+
+        // Hollow triangle marker: a closed (repeated endpoint), unfilled
+        // 4-point path.
+        let triangle = open_paths(&out.scene)
+            .into_iter()
+            .find(|p| p.points.len() == 4 && p.points[0] == p.points[3]);
+        assert!(
+            triangle.is_some(),
+            "expected a closed hollow-triangle marker path"
+        );
+
+        // Filled diamond marker: a closed (repeated endpoint), filled
+        // 5-point path.
+        let diamond = filled_paths(&out.scene)
+            .into_iter()
+            .find(|p| p.points.len() == 5 && p.points[0] == p.points[4]);
+        assert!(
+            diamond.is_some(),
+            "expected a closed filled-diamond marker path"
+        );
+
+        let SemanticLayout::Class(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Class");
+        };
+        assert_eq!(sem.boxes.len(), 3);
+        assert_eq!(sem.relations.len(), 2);
+        let ids: Vec<&str> = sem.boxes.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["Animal", "Dog", "Kennel"]);
+        let animal = &sem.boxes[0];
+        assert_eq!(animal.compartments.len(), 2, "attrs + methods");
+
+        let svg = kozue_render_svg::render(&out.scene);
+        assert!(svg.starts_with("<svg"));
+        assert!(!svg.is_empty());
+    }
+
+    #[test]
+    fn er_layout_does_not_panic_and_renders_svg() {
+        let diagram = Diagram::Er(sample_er_diagram());
+        let out = layout_full(&diagram).expect("er layout must succeed");
+        assert!(out.scene.width > 0.0 && out.scene.height > 0.0);
+
+        // Two entities -> two outer Rects.
+        assert_eq!(rects(&out.scene).len(), 2);
+
+        // Crow's foot ("many" marker on the Order end): two 2-point open
+        // paths fanning out from the tip, plus the ER "one" bar tick on the
+        // Customer end (another 2-point open path).
+        let two_point_paths = open_paths(&out.scene)
+            .into_iter()
+            .filter(|p| p.points.len() == 2)
+            .count();
+        assert!(
+            two_point_paths >= 3,
+            "expected >=3 two-point paths (crow's foot x2 + bar), got {two_point_paths}"
+        );
+        // The zero-or-many marker also draws a hollow circle (closed ring:
+        // first point repeated at the end, >2 points).
+        let circle = open_paths(&out.scene)
+            .into_iter()
+            .find(|p| p.points.len() > 2 && p.points.first() == p.points.last());
+        assert!(circle.is_some(), "expected a hollow circle marker path");
+
+        let SemanticLayout::Er(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Er");
+        };
+        assert_eq!(sem.boxes.len(), 2);
+        assert_eq!(sem.relations.len(), 1);
+        assert_eq!(sem.relations[0].from, "Customer");
+        assert_eq!(sem.relations[0].to, "Order");
+        assert_eq!(sem.boxes[0].compartments.len(), 1, "single column section");
+
+        let svg = kozue_render_svg::render(&out.scene);
+        assert!(svg.starts_with("<svg"));
+        assert!(!svg.is_empty());
+    }
+
+    #[test]
+    fn class_and_er_layout_are_deterministic() {
+        let class_diagram = Diagram::Class(sample_class_diagram());
+        let out1 = layout_full(&class_diagram).unwrap();
+        let out2 = layout_full(&class_diagram).unwrap();
+        assert_eq!(out1.scene, out2.scene, "class scene must be deterministic");
+        assert_eq!(
+            kozue_render_svg::render(&out1.scene),
+            kozue_render_svg::render(&out2.scene),
+            "class SVG must be byte-identical across runs"
+        );
+
+        let er_diagram = Diagram::Er(sample_er_diagram());
+        let out1 = layout_full(&er_diagram).unwrap();
+        let out2 = layout_full(&er_diagram).unwrap();
+        assert_eq!(out1.scene, out2.scene, "er scene must be deterministic");
+        assert_eq!(
+            kozue_render_svg::render(&out1.scene),
+            kozue_render_svg::render(&out2.scene),
+            "er SVG must be byte-identical across runs"
+        );
+    }
+
+    #[test]
+    fn class_self_relation_is_error() {
+        use kozue_ir::{ClassNode, ClassRelation, EndMarker};
+        let mut cd = kozue_ir::ClassDiagram::new(Direction::Down);
+        cd.classes.insert("A".into(), ClassNode::new("A", "A"));
+        cd.relations.push(ClassRelation::new(
+            "A",
+            "A",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            kozue_ir::LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        let result = layout_full(&Diagram::Class(cd));
+        assert!(result.is_err(), "self relations must be rejected");
     }
 }

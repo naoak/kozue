@@ -1,0 +1,13 @@
+er shop {
+  entity Customer {
+    id: Int PK
+    name: String
+    email: String UK
+  }
+  entity Order {
+    id: Int PK
+    customer_id: Int FK
+  }
+
+  Customer ||--o{ Order : "places"
+}

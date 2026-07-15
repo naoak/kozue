@@ -1,4 +1,4 @@
-diagram cycle {
+graph cycle {
   a: "開始"
   b: "処理"
   c: "確認"

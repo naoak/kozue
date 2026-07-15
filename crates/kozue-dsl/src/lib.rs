@@ -1,20 +1,51 @@
 //! DSL parser for kozue using chumsky 0.9, with ariadne diagnostics.
 //!
-//! Grammar (M0 + M2a):
+//! The diagram kind is an explicit keyword at the start of the header:
+//! `<kind> <name> { ... }` where kind is one of `graph`, `sequence`, `state`,
+//! `class`, or `er`. There is no signal-based inference — the kind keyword
+//! is the single source of truth, so grammar and diagnostics for each kind
+//! are precise from the very first token.
+//!
+//! Grammar:
 //! ```text
-//! diagram <name> {
+//! graph <name> {
 //!   // line comments are allowed anywhere
 //!   direction down|right
 //!   <id>: "label"
 //!   <a> -> <b> : "label"
 //! }
 //!
-//! diagram <name> {
+//! sequence <name> {
 //!   participant <id>: "label"
 //!   <a> -> <b> : "label"
 //!   <a> --> <b> : "label"
 //! }
+//!
+//! state <name> {
+//!   state <id>: "label"
+//!   [*] -> <id>
+//!   <a> -> <b> : "label"
+//! }
+//!
+//! class <name> {
+//!   class Order {
+//!     +id: Int
+//!     +submit(): void
+//!   }
+//!   Customer "1" o-- "*" Order : "places"
+//! }
+//!
+//! er <name> {
+//!   entity Customer {
+//!     id: Int PK
+//!     name: String
+//!   }
+//!   Customer ||--o{ Order : "places"
+//! }
 //! ```
+
+mod class_dsl;
+mod er_dsl;
 
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
@@ -87,8 +118,19 @@ struct StateTransStmt {
     arrow_span: std::ops::Range<usize>,
 }
 
+/// The diagram kind, determined by the required header keyword. `class` and
+/// `er` are parsed entirely separately (see [`class_dsl`] / [`er_dsl`]) and
+/// never produce an [`Ast`] of this shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagramKind {
+    Graph,
+    Sequence,
+    State,
+}
+
 #[derive(Debug, Clone)]
 struct Ast {
+    kind: DiagramKind,
     name: String,
     name_span: std::ops::Range<usize>,
     stmts: Vec<Stmt>,
@@ -386,9 +428,17 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .or(node);
     let body = stmt.repeated().padded_by(kzd_ws());
 
-    text::keyword("diagram")
-        .padded_by(kzd_ws())
-        .ignore_then(
+    // The header keyword selects the diagram kind; there is no signal-based
+    // inference. `class`/`er` are handled entirely outside this grammar (see
+    // `class_dsl`/`er_dsl`), so they are not alternatives here.
+    let header_kind = text::keyword("graph")
+        .to(DiagramKind::Graph)
+        .or(text::keyword("sequence").to(DiagramKind::Sequence))
+        .or(text::keyword("state").to(DiagramKind::State))
+        .padded_by(kzd_ws());
+
+    header_kind
+        .then(
             text::ident()
                 .padded_by(kzd_ws())
                 .map_with_span(|s, span| (s, span)),
@@ -397,111 +447,91 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .then(body)
         .then_ignore(just('}').padded_by(kzd_ws()))
         .then_ignore(end())
-        .map(|((name, name_span), stmts)| Ast {
+        .map(|((kind, (name, name_span)), stmts)| Ast {
+            kind,
             name,
             name_span,
             stmts,
         })
 }
 
-/// Parse source text into a semantic [`Diagram`], collecting errors.
-pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
-    let ast = parser().parse(src).map_err(|errs| {
-        errs.into_iter()
-            .map(|e| CompileError {
-                message: format!("{}", e),
-                span: e.span(),
-                secondary: None,
-            })
-            .collect::<Vec<_>>()
-    })?;
-
-    build_diagram(ast, src)
+/// Scan past leading whitespace and `//` comments and return the first
+/// identifier-like token (the header keyword) along with its byte span.
+/// Returns `None` if the source has no such token (e.g. empty input).
+pub(crate) fn peek_header_keyword(src: &str) -> Option<(&str, std::ops::Range<usize>)> {
+    let mut idx = 0usize;
+    loop {
+        let rest = &src[idx..];
+        let ws_len = rest.len() - rest.trim_start().len();
+        idx += ws_len;
+        if src[idx..].starts_with("//") {
+            let nl = src[idx..].find('\n').map(|o| idx + o).unwrap_or(src.len());
+            idx = nl;
+            continue;
+        }
+        break;
+    }
+    let start = idx;
+    let end = src[idx..]
+        .char_indices()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map(|(o, _)| idx + o)
+        .unwrap_or(src.len());
+    if end == start {
+        return None;
+    }
+    Some((&src[start..end], start..end))
 }
 
-/// Semantic pass: detect diagram kind and dispatch to the appropriate builder.
-fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
-    let has_participant = ast
-        .stmts
-        .iter()
-        .any(|s| matches!(s, Stmt::Participant { .. }));
-    let has_node = ast.stmts.iter().any(|s| matches!(s, Stmt::Node { .. }));
-    let has_state = ast
-        .stmts
-        .iter()
-        .any(|s| matches!(s, Stmt::StateDecl { .. } | Stmt::StateTransition(_)));
-
-    // A representative span for the state-diagram signal — a `state` declaration
-    // or a pseudostate/`[*]` transition. Points the mix diagnostic at the actual
-    // offending syntax rather than the whole source. (chumsky char offsets; never
-    // `src.len()` in bytes, which diverges on non-ASCII input.)
-    let state_signal_span = || {
-        ast.stmts.iter().find_map(|s| match s {
-            Stmt::StateDecl { id_span, .. } => Some(id_span.clone()),
-            Stmt::StateTransition(t) => Some(t.from_span.clone()),
-            _ => None,
-        })
+/// Parse source text into a semantic [`Diagram`], collecting errors.
+///
+/// The header keyword (`graph`/`sequence`/`state`/`class`/`er`) determines
+/// the diagram kind with no signal-based inference: `class`/`er` dispatch to
+/// their own dedicated parsers ([`class_dsl`]/[`er_dsl`]), while
+/// `graph`/`sequence`/`state` share the chumsky grammar below.
+pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
+    let Some((kw, kw_span)) = peek_header_keyword(src) else {
+        return Err(vec![CompileError {
+            message: "expected diagram kind keyword (graph|sequence|state|class|er)".to_string(),
+            span: 0..src.len().max(1),
+            secondary: None,
+        }]);
     };
 
-    if has_state && has_participant {
-        return Err(vec![CompileError {
-            message: "cannot mix state-diagram syntax with `participant` declarations".to_string(),
-            span: state_signal_span().unwrap_or(0..0),
-            secondary: None,
-        }]);
-    }
-
-    if has_state && has_node {
-        return Err(vec![CompileError {
-            message: "cannot mix state-diagram syntax with plain node declarations".to_string(),
-            span: state_signal_span().unwrap_or(0..0),
-            secondary: None,
-        }]);
-    }
-
-    if has_participant && has_node {
-        let span = ast
-            .stmts
-            .iter()
-            .find_map(|s| {
-                if let Stmt::Node { id_span, .. } = s {
-                    Some(id_span.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(0..src.len());
-        return Err(vec![CompileError {
-            message: "cannot mix `participant` declarations with plain node declarations in the same diagram".to_string(),
-            span,
-            secondary: None,
-        }]);
-    }
-
-    if has_state {
-        build_state_diagram(ast, src)
-    } else if has_participant {
-        build_sequence_diagram(ast, src)
-    } else {
-        let dashed_err: Vec<CompileError> = ast
-            .stmts
-            .iter()
-            .filter_map(|s| {
-                if let Stmt::DashedEdge(e) = s {
-                    Some(CompileError {
-                        message: "`-->` (dashed edge) is only valid in sequence diagrams; use `->` for graph diagrams".to_string(),
-                        span: e.from_span.start..e.to_span.end,
+    match kw {
+        "graph" | "sequence" | "state" => {
+            let ast = parser().parse(src).map_err(|errs| {
+                errs.into_iter()
+                    .map(|e| CompileError {
+                        message: format!("{}", e),
+                        span: e.span(),
                         secondary: None,
                     })
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if !dashed_err.is_empty() {
-            return Err(dashed_err);
+                    .collect::<Vec<_>>()
+            })?;
+            build_diagram(ast, src)
         }
-        build_graph_diagram(ast, src)
+        "class" => class_dsl::parse(src),
+        "er" => er_dsl::parse(src),
+        other => Err(vec![CompileError {
+            message: format!(
+                "expected diagram kind keyword (graph|sequence|state|class|er), got `{other}`"
+            ),
+            span: kw_span,
+            secondary: None,
+        }]),
+    }
+}
+
+/// Dispatch to the appropriate builder for the AST's (already-determined)
+/// kind. No signal-based inference: the header keyword alone selects the
+/// builder, and each builder explicitly rejects statement kinds that don't
+/// belong to it.
+fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
+    match ast.kind {
+        DiagramKind::Graph => build_graph_diagram(ast, src),
+        DiagramKind::Sequence => build_sequence_diagram(ast, src),
+        DiagramKind::State => build_state_diagram(ast, src),
     }
 }
 
@@ -557,11 +587,36 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     .nodes
                     .insert(id.clone(), Node::new(id.clone(), label_str));
             }
-            Stmt::Edge(_)
-            | Stmt::DashedEdge(_)
-            | Stmt::Participant { .. }
-            | Stmt::StateDecl { .. }
-            | Stmt::StateTransition(_) => {}
+            Stmt::DashedEdge(e) => {
+                errors.push(CompileError {
+                    message: "`-->` (dashed edge) is only valid in sequence diagrams; use `->` for graph diagrams".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+            }
+            Stmt::Participant { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`participant` declarations are not valid in graph diagrams; use plain `<id>` node declarations".to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::StateDecl { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`state` declarations are not valid in graph diagrams; use plain `<id>` node declarations".to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::StateTransition(t) => {
+                errors.push(CompileError {
+                    message: "`[*]` pseudostate transitions are only valid in state diagrams"
+                        .to_string(),
+                    span: t.from_span.start..t.to_span.end,
+                    secondary: None,
+                });
+            }
+            Stmt::Edge(_) => {}
         }
     }
     graph.direction = direction;
@@ -680,7 +735,24 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     .states
                     .insert(id.clone(), State::new(id.clone(), label_str));
             }
-            _ => {}
+            Stmt::Node { id_span, .. } => {
+                errors.push(CompileError {
+                    message:
+                        "plain node declarations are not valid in state diagrams; use `state <id>`"
+                            .to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::Participant { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`participant` declarations are not valid in state diagrams"
+                        .to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::Edge(_) | Stmt::StateTransition(_) => {}
         }
     }
 
@@ -809,6 +881,31 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 errors.push(CompileError {
                     message: "expected `down` or `right` after `direction`".to_string(),
                     span: span.clone(),
+                    secondary: None,
+                });
+                continue;
+            }
+            Stmt::Node { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "plain node declarations are not valid in sequence diagrams; use `participant <id>`".to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+                continue;
+            }
+            Stmt::StateDecl { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`state` declarations are not valid in sequence diagrams".to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+                continue;
+            }
+            Stmt::StateTransition(t) => {
+                errors.push(CompileError {
+                    message: "`[*]` pseudostate transitions are only valid in state diagrams"
+                        .to_string(),
+                    span: t.from_span.start..t.to_span.end,
                     secondary: None,
                 });
                 continue;
@@ -1123,6 +1220,20 @@ impl FormattedLine {
 ///
 /// Returns the formatted string, or errors if the source fails to parse.
 pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
+    // The canonical formatter currently covers graph/sequence/state only.
+    // class/er use a separate scanner (see `class_dsl`/`er_dsl`) and have no
+    // formatter yet, so surface a clear, actionable error rather than a
+    // confusing chumsky parse failure on their header keyword.
+    if let Some((kw, kw_span)) = peek_header_keyword(src) {
+        if kw == "class" || kw == "er" {
+            return Err(vec![CompileError {
+                message: format!("`kozue fmt` does not yet support `{kw}` diagrams"),
+                span: kw_span,
+                secondary: None,
+            }]);
+        }
+    }
+
     // Parse to get the AST with spans.
     let ast = parser().parse(src).map_err(|errs| {
         errs.into_iter()
@@ -1271,8 +1382,13 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         out.push('\n');
     }
 
-    // `diagram <name> {`
-    out.push_str(&format!("diagram {} {{", ast.name));
+    // `<kind> <name> {`
+    let kind_kw = match ast.kind {
+        DiagramKind::Graph => "graph",
+        DiagramKind::Sequence => "sequence",
+        DiagramKind::State => "state",
+    };
+    out.push_str(&format!("{kind_kw} {} {{", ast.name));
     out.push('\n');
 
     // Direction statement (and its leading standalone comments).
@@ -1475,7 +1591,7 @@ mod tests {
 
     #[test]
     fn parses_basic_diagram() {
-        let src = r#"diagram flow {
+        let src = r#"graph flow {
   direction down
   start: "開始"
   proc: "処理する"
@@ -1494,7 +1610,7 @@ mod tests {
 
     #[test]
     fn node_without_label_uses_id() {
-        let src = "diagram d { a\n a -> b\n b }";
+        let src = "graph d { a\n a -> b\n b }";
         let d = parse(src).expect("should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes["a"].label, "a");
@@ -1502,14 +1618,14 @@ mod tests {
 
     #[test]
     fn undeclared_node_is_error() {
-        let src = "diagram d {\n a: \"A\"\n a -> missing\n}";
+        let src = "graph d {\n a: \"A\"\n a -> missing\n}";
         let err = parse(src).expect_err("should fail");
         assert!(err.iter().any(|e| e.message.contains("unknown node")));
     }
 
     #[test]
     fn undeclared_node_suggests_similar_name() {
-        let src = "diagram d {\n proc: \"P\"\n start: \"S\"\n start -> prok\n}";
+        let src = "graph d {\n proc: \"P\"\n start: \"S\"\n start -> prok\n}";
         let err = parse(src).expect_err("should fail");
         assert!(err.iter().any(|e| e.message.contains("unknown node `prok`")
             && e.message.contains("did you mean `proc`?")));
@@ -1525,7 +1641,7 @@ mod tests {
 
     #[test]
     fn direction_right() {
-        let src = "diagram d { direction right\n a\n b\n a -> b }";
+        let src = "graph d { direction right\n a\n b\n a -> b }";
         let d = parse(src).expect("should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.direction, Direction::Right);
@@ -1533,7 +1649,7 @@ mod tests {
 
     #[test]
     fn direction_invalid_value_is_error() {
-        let src = "diagram d { direction dwn\n a\n b }";
+        let src = "graph d { direction dwn\n a\n b }";
         let err = parse(src).expect_err("should fail on invalid direction value");
         assert!(
             err.iter()
@@ -1544,7 +1660,7 @@ mod tests {
 
     #[test]
     fn direction_missing_value_is_error() {
-        let src = "diagram d { direction }";
+        let src = "graph d { direction }";
         let result = parse(src);
         assert!(
             result.is_err(),
@@ -1554,7 +1670,7 @@ mod tests {
 
     #[test]
     fn self_loop_is_error() {
-        let src = "diagram d { a\n a -> a }";
+        let src = "graph d { a\n a -> a }";
         let err = parse(src).expect_err("self-loop should be an error");
         assert!(
             err.iter()
@@ -1565,7 +1681,7 @@ mod tests {
 
     #[test]
     fn duplicate_node_is_error() {
-        let src = "diagram d { a: \"First\"\n a: \"Second\" }";
+        let src = "graph d { a: \"First\"\n a: \"Second\" }";
         let err = parse(src).expect_err("duplicate node should be an error");
         assert!(
             err.iter()
@@ -1576,7 +1692,7 @@ mod tests {
 
     #[test]
     fn string_escape_backslash_and_quote() {
-        let src = r#"diagram d { a: "say \"hello\" and \\" }"#;
+        let src = r#"graph d { a: "say \"hello\" and \\" }"#;
         let d = parse(src).expect("should parse escaped strings");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes["a"].label, r#"say "hello" and \"#);
@@ -1584,7 +1700,7 @@ mod tests {
 
     #[test]
     fn invalid_escape_sequence_is_error() {
-        let src = r#"diagram d { a: "bad \n escape" }"#;
+        let src = r#"graph d { a: "bad \n escape" }"#;
         let err = parse(src).expect_err("invalid escape should be an error");
         assert!(
             err.iter()
@@ -1597,7 +1713,7 @@ mod tests {
 
     #[test]
     fn parses_sequence_diagram() {
-        let src = r#"diagram seq {
+        let src = r#"sequence seq {
   participant web: "Webブラウザ"
   participant api: "APIサーバ"
   web -> api : "POST /login"
@@ -1621,7 +1737,7 @@ mod tests {
 
     #[test]
     fn sequence_self_message_is_valid() {
-        let src = r#"diagram seq {
+        let src = r#"sequence seq {
   participant a: "Alice"
   a -> a : "think"
 }"#;
@@ -1634,7 +1750,7 @@ mod tests {
 
     #[test]
     fn direction_in_sequence_diagram_is_error() {
-        let src = r#"diagram seq {
+        let src = r#"sequence seq {
   participant a: "A"
   direction down
   a -> a
@@ -1650,7 +1766,7 @@ mod tests {
 
     #[test]
     fn direction_bogus_in_sequence_diagram_is_error() {
-        let src = r#"diagram seq {
+        let src = r#"sequence seq {
   participant a: "A"
   direction bogus
   a -> a
@@ -1667,7 +1783,7 @@ mod tests {
 
     #[test]
     fn invalid_escape_reported_once_per_label_not_multiplied() {
-        let src = "diagram seq {\n  participant a: \"ok\"\n  participant b: \"bad \\n escape\"\n}";
+        let src = "sequence seq {\n  participant a: \"ok\"\n  participant b: \"bad \\n escape\"\n}";
         let err = parse(src).expect_err("invalid escape should be an error");
         let escape_errors: Vec<_> = err
             .iter()
@@ -1683,7 +1799,7 @@ mod tests {
 
     #[test]
     fn multiple_labels_with_independent_escapes() {
-        let src = "diagram d { a: \"bad \\n\" b: \"also \\t bad\" a -> b }";
+        let src = "graph d { a: \"bad \\n\" b: \"also \\t bad\" a -> b }";
         let err = parse(src).expect_err("invalid escapes should be errors");
         let escape_errors: Vec<_> = err
             .iter()
@@ -1703,14 +1819,14 @@ mod tests {
     fn duplicate_node_span_points_to_second_occurrence() {
         // `a` appears at offsets 13 and 26 (approximately).
         // The error span should point to the second `a`, not the first.
-        let src = "diagram d { a: \"First\"\n a: \"Second\" }";
+        let src = "graph d { a: \"First\"\n a: \"Second\" }";
         let err = parse(src).expect_err("duplicate node should be an error");
         let dup_err = err
             .iter()
             .find(|e| e.message.contains("duplicate node declaration"))
             .expect("should have duplicate error");
         // The second `a` starts after the newline at position 23.
-        // In the source "diagram d { a: \"First\"\n a: \"Second\" }"
+        // In the source "graph d { a: \"First\"\n a: \"Second\" }"
         //                0123456789012345678901234567890
         // Position of first `a`: 12
         // Position of second `a`: 24 (after \n and space)
@@ -1738,7 +1854,7 @@ mod tests {
 
     #[test]
     fn duplicate_participant_span_points_to_second_occurrence() {
-        let src = "diagram seq {\n  participant a: \"A\"\n  participant a: \"B\"\n}";
+        let src = "sequence seq {\n  participant a: \"A\"\n  participant a: \"B\"\n}";
         let err = parse(src).expect_err("duplicate participant should be an error");
         let dup_err = err
             .iter()
@@ -1770,7 +1886,7 @@ mod tests {
     #[test]
     fn unknown_node_span_exact() {
         // `ghost` appears only once; the error span must cover it precisely.
-        let src = "diagram d {\n a: \"A\"\n a -> ghost\n}";
+        let src = "graph d {\n a: \"A\"\n a -> ghost\n}";
         let err = parse(src).expect_err("should fail");
         let unk_err = err
             .iter()
@@ -1788,7 +1904,7 @@ mod tests {
         // Both `a` and `b` labels contain identically-named chars but only
         // the second has an invalid escape. The error span must point into
         // the second literal, not the first.
-        let src = "diagram d { a: \"ok\" b: \"bad \\n escape\" a -> b }";
+        let src = "graph d { a: \"ok\" b: \"bad \\n escape\" a -> b }";
         let err = parse(src).expect_err("invalid escape should be an error");
         let esc_err = err
             .iter()
@@ -1814,7 +1930,7 @@ mod tests {
 
     #[test]
     fn line_comment_at_top_level() {
-        let src = "// a comment\ndiagram d { a\n b\n a -> b }";
+        let src = "// a comment\ngraph d { a\n b\n a -> b }";
         let d = parse(src).expect("comment before diagram should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes.len(), 2);
@@ -1822,7 +1938,7 @@ mod tests {
 
     #[test]
     fn line_comment_inside_body() {
-        let src = "diagram d {\n  // standalone comment\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d {\n  // standalone comment\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
         let d = parse(src).expect("comment inside body should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes.len(), 2);
@@ -1830,7 +1946,7 @@ mod tests {
 
     #[test]
     fn trailing_comment_after_statement() {
-        let src = "diagram d {\n  a: \"A\"  // node A\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d {\n  a: \"A\"  // node A\n  b: \"B\"\n  a -> b\n}";
         let d = parse(src).expect("trailing comment should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes["a"].label, "A");
@@ -1839,7 +1955,7 @@ mod tests {
     #[test]
     fn double_slash_inside_string_is_not_comment() {
         // `//` inside a string literal should not start a comment.
-        let src = r#"diagram d { a: "http://example.com" b: "B" a -> b }"#;
+        let src = r#"graph d { a: "http://example.com" b: "B" a -> b }"#;
         let d = parse(src).expect("// inside string should not be a comment");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes["a"].label, "http://example.com");
@@ -1849,8 +1965,8 @@ mod tests {
     fn comment_does_not_affect_golden_parse() {
         // Source identical to chain.kzd but with added comments should produce
         // the same IR as the original.
-        let src_no_comment = "diagram chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
-        let src_with_comment = "// Chain diagram\ndiagram chain {\n  direction down  // layout direction\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
+        let src_no_comment = "graph chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
+        let src_with_comment = "// Chain diagram\ngraph chain {\n  direction down  // layout direction\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
         let d1 = parse(src_no_comment).expect("no-comment should parse");
         let d2 = parse(src_with_comment).expect("with-comment should parse");
         assert_eq!(d1, d2, "comments should not affect the parsed IR");
@@ -1860,7 +1976,7 @@ mod tests {
 
     #[test]
     fn fmt_simple_graph_is_canonical() {
-        let src = "diagram d{a:\"A\"\nb:\"B\"\na->b}";
+        let src = "graph d{a:\"A\"\nb:\"B\"\na->b}";
         let formatted = format_kzd(src).expect("should format");
         // Must be parseable.
         parse(&formatted).expect("formatted output should parse");
@@ -1871,7 +1987,7 @@ mod tests {
 
     #[test]
     fn fmt_idempotent_on_golden_chain() {
-        let src = "diagram chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
+        let src = "graph chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
         let formatted = format_kzd(src).expect("should format");
         let formatted2 = format_kzd(&formatted).expect("second format should succeed");
         assert_eq!(formatted, formatted2, "fmt must be idempotent");
@@ -1879,7 +1995,7 @@ mod tests {
 
     #[test]
     fn fmt_semantic_preservation() {
-        let src = "diagram chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
+        let src = "graph chain {\n  direction down\n\n  a: \"入力\"\n  b: \"変換\"\n  c: \"出力\"\n\n  a -> b : \"read\"\n  b -> c : \"write\"\n}\n";
         let formatted = format_kzd(src).expect("should format");
         let d1 = parse(src).expect("original should parse");
         let d2 = parse(&formatted).expect("formatted should parse");
@@ -1888,14 +2004,14 @@ mod tests {
 
     #[test]
     fn fmt_syntax_error_returns_error() {
-        let src = "diagram d { bad syntax !!! }";
+        let src = "graph d { bad syntax !!! }";
         let result = format_kzd(src);
         assert!(result.is_err(), "fmt on invalid source should return error");
     }
 
     #[test]
     fn fmt_preserves_trailing_comment() {
-        let src = "diagram d {\n  a: \"A\"  // node a\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d {\n  a: \"A\"  // node a\n  b: \"B\"\n  a -> b\n}";
         let formatted = format_kzd(src).expect("should format");
         assert!(
             formatted.contains("// node a"),
@@ -1911,7 +2027,7 @@ mod tests {
 
     #[test]
     fn fmt_preserves_standalone_comment() {
-        let src = "diagram d {\n  // declarations\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d {\n  // declarations\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
         let formatted = format_kzd(src).expect("should format");
         assert!(
             formatted.contains("// declarations"),
@@ -1926,7 +2042,7 @@ mod tests {
 
     #[test]
     fn fmt_sequence_diagram() {
-        let src = "diagram seq {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  a -> b : \"hello\"\n  b --> a : \"reply\"\n}\n";
+        let src = "sequence seq {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  a -> b : \"hello\"\n  b --> a : \"reply\"\n}\n";
         let formatted = format_kzd(src).expect("should format");
         let d1 = parse(src).expect("original should parse");
         let d2 = parse(&formatted).expect("formatted should parse");
@@ -1937,7 +2053,7 @@ mod tests {
 
     #[test]
     fn fmt_direction_right() {
-        let src = "diagram p {\n  direction right\n  src: \"S\"\n  dst: \"D\"\n  src -> dst\n}\n";
+        let src = "graph p {\n  direction right\n  src: \"S\"\n  dst: \"D\"\n  src -> dst\n}\n";
         let formatted = format_kzd(src).expect("should format");
         assert!(
             formatted.contains("direction right"),
@@ -1950,7 +2066,7 @@ mod tests {
     #[test]
     fn fmt_comment_before_edge_section() {
         // Standalone comment before the first edge must appear before that edge.
-        let src = "diagram d {\n  // nodes section\n  a: \"A\"\n  b: \"B\"\n  // edges section\n  a -> b\n}";
+        let src = "graph d {\n  // nodes section\n  a: \"A\"\n  b: \"B\"\n  // edges section\n  a -> b\n}";
         let formatted = format_kzd(src).expect("should format");
         // `// edges section` must appear before `a -> b`.
         let edges_pos = formatted
@@ -2008,6 +2124,22 @@ mod tests {
             let src = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
 
+            // The canonical formatter covers graph/sequence/state only; class/er
+            // diagrams parse but have no formatter yet (they use a separate
+            // scanner), so they are excluded from the fmt-idempotency sweep.
+            if matches!(
+                peek_header_keyword(&src).map(|(kw, _)| kw),
+                Some("class" | "er")
+            ) {
+                assert!(
+                    format_kzd(&src).is_err(),
+                    "{name}: class/er fmt should report an explicit unsupported error"
+                );
+                // Still verify the parser round-trips these inputs.
+                parse(&src).unwrap_or_else(|e| panic!("{name}: parse: {e:?}"));
+                continue;
+            }
+
             let formatted =
                 format_kzd(&src).unwrap_or_else(|e| panic!("{name}: fmt failed: {e:?}"));
             let formatted2 = format_kzd(&formatted)
@@ -2027,7 +2159,7 @@ mod tests {
 
     #[test]
     fn fmt_preserves_trailing_comment_on_diagram_line() {
-        let src = "diagram d { // opening comment\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d { // opening comment\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
         let formatted = format_kzd(src).expect("should format");
         assert!(
             formatted.contains("// opening comment"),
@@ -2049,7 +2181,7 @@ mod tests {
 
     #[test]
     fn parses_state_diagram_basic() {
-        let src = r#"diagram traffic {
+        let src = r#"state traffic {
   state idle: "Idle"
   state active: "Active"
   [*] -> idle
@@ -2068,7 +2200,7 @@ mod tests {
 
     #[test]
     fn state_auto_declaration() {
-        let src = r#"diagram d {
+        let src = r#"state d {
   [*] -> foo
   foo -> bar
   bar -> [*]
@@ -2081,7 +2213,7 @@ mod tests {
 
     #[test]
     fn state_self_transition() {
-        let src = r#"diagram d {
+        let src = r#"state d {
   state s: "S"
   [*] -> s
   s -> s : "loop"
@@ -2098,7 +2230,7 @@ mod tests {
 
     #[test]
     fn state_with_explicit_label() {
-        let src = r#"diagram d {
+        let src = r#"state d {
   state waiting: "Waiting for input"
   [*] -> waiting
 }"#;
@@ -2109,7 +2241,7 @@ mod tests {
 
     #[test]
     fn state_direction_is_error() {
-        let src = r#"diagram d {
+        let src = r#"state d {
   state s: "S"
   direction down
   [*] -> s
@@ -2125,7 +2257,7 @@ mod tests {
 
     #[test]
     fn state_dashed_edge_is_error() {
-        let src = r#"diagram d {
+        let src = r#"state d {
   state a: "A"
   state b: "B"
   [*] -> a
@@ -2142,7 +2274,7 @@ mod tests {
     fn state_dashed_pseudo_transition_is_explicit_error() {
         // Regression: `[*] --> s` / `s --> [*]` must yield the explicit
         // "dashed edges" diagnostic, not a generic syntax error.
-        for src in ["diagram d {\n  [*] --> s\n}", "diagram d {\n  s --> [*]\n}"] {
+        for src in ["state d {\n  [*] --> s\n}", "state d {\n  s --> [*]\n}"] {
             let err = parse(src).expect_err("dashed pseudo transition should error");
             assert!(
                 err.iter().any(|e| e.message.contains("dashed edges")),
@@ -2152,15 +2284,21 @@ mod tests {
     }
 
     #[test]
-    fn state_mix_error_points_at_transition_not_whole_source() {
-        // Regression: when the state signal is only a `[*]` transition (no
-        // `state` decl), the mix diagnostic must point at the transition, not
-        // span the whole source, and must use char (not byte) offsets.
-        let src = "diagram d {\n  participant p\n  [*] -> s\n}";
-        let err = parse(src).expect_err("mixing participant with state should error");
+    fn pseudostate_transition_in_sequence_diagram_points_at_transition_not_whole_source() {
+        // Regression: with keyword-based dispatch, a `[*]` pseudostate
+        // transition inside a `sequence` diagram is rejected explicitly (no
+        // signal-based inference), and the diagnostic must point at the
+        // transition, not span the whole source.
+        let src = "sequence d {\n  participant p\n  [*] -> s\n}";
+        let err = parse(src).expect_err("[*] transition in a sequence diagram should error");
         let e = &err[0];
-        assert!(e.message.contains("state-diagram syntax"), "got: {err:?}");
-        // The span must be a small slice (the `[*]`), not the entire document.
+        assert!(
+            e.message
+                .contains("pseudostate transitions are only valid in state diagrams"),
+            "got: {err:?}"
+        );
+        // The span must be a small slice (the `[*] -> s` transition), not the
+        // entire document.
         assert!(
             e.span.end - e.span.start < src.chars().count(),
             "span should be narrow, got {:?}",
@@ -2170,7 +2308,7 @@ mod tests {
 
     #[test]
     fn fmt_state_diagram_idempotent() {
-        let src = r#"diagram traffic {
+        let src = r#"state traffic {
   state idle: "Idle"
   state active: "Active"
 
@@ -2185,7 +2323,7 @@ mod tests {
 
     #[test]
     fn fmt_state_semantic_preservation() {
-        let src = r#"diagram traffic {
+        let src = r#"state traffic {
   state idle: "Idle"
   state active: "Active"
 
@@ -2197,5 +2335,306 @@ mod tests {
         let d1 = parse(src).expect("original should parse");
         let d2 = parse(&formatted).expect("formatted should parse");
         assert_eq!(d1, d2, "fmt must preserve state diagram semantics");
+    }
+
+    // -----------------------------------------------------------------------
+    // Header keyword migration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn old_diagram_keyword_is_rejected() {
+        let src = "diagram d { a\n b\n a -> b }";
+        let err = parse(src).expect_err("`diagram` keyword should be rejected");
+        assert!(
+            err.iter().any(|e| e
+                .message
+                .contains("expected diagram kind keyword (graph|sequence|state|class|er)")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_kind_keyword_is_rejected() {
+        let src = "flowchart d { a\n b\n a -> b }";
+        let err = parse(src).expect_err("unknown kind keyword should be rejected");
+        assert!(
+            err.iter().any(|e| e
+                .message
+                .contains("expected diagram kind keyword (graph|sequence|state|class|er)")),
+            "got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Class diagram tests
+    // -----------------------------------------------------------------------
+
+    fn class_diagram(d: &Diagram) -> &kozue_ir::ClassDiagram {
+        match d {
+            Diagram::Class(c) => c,
+            other => panic!("expected class diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn class_basic_members_and_relations() {
+        let src = r#"class orders {
+  class Order {
+    +id: Int
+    +total: Money
+    +submit(): void
+  }
+  interface Payable {
+    +pay(): void
+  }
+
+  Customer "1" o-- "*" Order : "places"
+  Dog --|> Animal
+  Order ..|> Payable
+}"#;
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Order"].attributes[0], "+id: Int");
+        assert_eq!(c.classes["Order"].methods[0], "+submit(): void");
+        assert_eq!(
+            c.classes["Payable"].stereotype.as_deref(),
+            Some("interface")
+        );
+        assert_eq!(c.relations.len(), 3);
+        let places = &c.relations[0];
+        assert_eq!(places.from, "Customer");
+        assert_eq!(places.to, "Order");
+        assert_eq!(places.from_mult.as_deref(), Some("1"));
+        assert_eq!(places.to_mult.as_deref(), Some("*"));
+        assert_eq!(places.from_marker, kozue_ir::EndMarker::HollowDiamond);
+        assert_eq!(places.label.as_deref(), Some("places"));
+        let inherit = &c.relations[1];
+        assert_eq!(inherit.to_marker, kozue_ir::EndMarker::HollowTriangle);
+        assert_eq!(inherit.line, LineStyle::Solid);
+        let realize = &c.relations[2];
+        assert_eq!(realize.to_marker, kozue_ir::EndMarker::HollowTriangle);
+        assert_eq!(realize.line, LineStyle::Dashed);
+    }
+
+    #[test]
+    fn class_abstract_and_enum_stereotypes() {
+        let src = "class d {\n  abstract class Shape\n  enum Color\n}";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Shape"].stereotype.as_deref(), Some("abstract"));
+        assert_eq!(
+            c.classes["Color"].stereotype.as_deref(),
+            Some("enumeration")
+        );
+    }
+
+    /// Helper: parse a single-relation class DSL body and return the relation.
+    fn dsl_class_one_relation(rel_line: &str) -> kozue_ir::ClassRelation {
+        let src = format!("class d {{\n  {rel_line}\n}}");
+        let d = parse(&src).unwrap_or_else(|e| panic!("`{rel_line}` should parse: {e:?}"));
+        let Diagram::Class(c) = d else {
+            panic!("expected class diagram")
+        };
+        assert_eq!(c.relations.len(), 1, "`{rel_line}` produced != 1 relation");
+        c.relations[0].clone()
+    }
+
+    #[test]
+    fn class_all_connector_directions_are_accepted() {
+        use kozue_ir::EndMarker::*;
+        // Both spelling directions of every relation kind must parse, with the
+        // marker on the end the glyph points at.
+        let cases: &[(&str, kozue_ir::EndMarker, kozue_ir::EndMarker, LineStyle)] = &[
+            ("A <|-- B", HollowTriangle, None, LineStyle::Solid),
+            ("A --|> B", None, HollowTriangle, LineStyle::Solid),
+            ("A <|.. B", HollowTriangle, None, LineStyle::Dashed),
+            ("A ..|> B", None, HollowTriangle, LineStyle::Dashed),
+            ("A *-- B", FilledDiamond, None, LineStyle::Solid),
+            ("A --* B", None, FilledDiamond, LineStyle::Solid),
+            ("A o-- B", HollowDiamond, None, LineStyle::Solid),
+            ("A --o B", None, HollowDiamond, LineStyle::Solid),
+            ("A --> B", None, OpenArrow, LineStyle::Solid),
+            ("A <-- B", OpenArrow, None, LineStyle::Solid),
+            ("A ..> B", None, OpenArrow, LineStyle::Dashed),
+            ("A <.. B", OpenArrow, None, LineStyle::Dashed),
+            ("A -- B", None, None, LineStyle::Solid),
+            ("A .. B", None, None, LineStyle::Dashed),
+        ];
+        for &(line, from_m, to_m, ls) in cases {
+            let r = dsl_class_one_relation(line);
+            assert_eq!(r.from, "A", "`{line}` from");
+            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
+            assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
+            assert_eq!(r.line, ls, "`{line}` line");
+        }
+    }
+
+    #[test]
+    fn class_forward_and_reverse_tokens_are_mirror_images() {
+        // The previously-rejected `<|--` and other reverse tokens must now be
+        // accepted, and `A <op> B` must mirror `B <reverse-op> A`.
+        for (fwd, rev) in [
+            ("A <|-- B", "B --|> A"),
+            ("A *-- B", "B --* A"),
+            ("A o-- B", "B --o A"),
+            ("A --> B", "B <-- A"),
+            ("A ..|> B", "B <|.. A"),
+            ("A ..> B", "B <.. A"),
+        ] {
+            let f = dsl_class_one_relation(fwd);
+            let r = dsl_class_one_relation(rev);
+            assert_eq!(f.from, r.to, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(f.to, r.from, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(
+                f.from_marker, r.to_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(
+                f.to_marker, r.from_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(f.line, r.line, "{fwd} / {rev}: line style must match");
+        }
+    }
+
+    #[test]
+    fn class_self_relation_is_error() {
+        let src = "class d {\n  A --> A\n}";
+        let err = parse(src).expect_err("self relation should be an error");
+        assert!(
+            err.iter().any(|e| e.message.contains("self relations")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn class_error_span_is_char_offset_not_byte_offset() {
+        // class_dsl/er_dsl scan in byte offsets internally but must convert
+        // to character offsets before returning, matching the rest of
+        // kozue-dsl (chumsky) — wasm/lsp consumers treat all kozue_dsl spans
+        // uniformly as character indices. Precede the erroring line with a
+        // multi-byte comment so a leaked byte offset would misalign the span
+        // against a `chars()`-indexed slice.
+        let src = "class d {\n  // 日本語のコメント\n  this is not valid\n}";
+        let err = parse(src).expect_err("should error");
+        let span = err[0].span.clone();
+        let chars: Vec<char> = src.chars().collect();
+        assert!(span.end <= chars.len(), "span {span:?} out of char range");
+        let text: String = chars[span].iter().collect();
+        assert_eq!(
+            text, "this is not valid",
+            "char-indexed span must land exactly on the unrecognised text"
+        );
+    }
+
+    #[test]
+    fn class_unrecognised_statement_is_error() {
+        let src = "class d {\n  this is not valid\n}";
+        let err = parse(src).expect_err("should error");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn class_unterminated_block_is_error() {
+        let src = "class d {\n  class Order {\n    +id: Int\n}";
+        let err = parse(src).expect_err("unterminated block should error");
+        assert!(
+            err.iter().any(|e| e.message.contains("unterminated")),
+            "got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ER diagram tests
+    // -----------------------------------------------------------------------
+
+    fn er_diagram(d: &Diagram) -> &kozue_ir::ErDiagram {
+        match d {
+            Diagram::Er(e) => e,
+            other => panic!("expected er diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn er_basic_entities_and_relation() {
+        let src = r#"er shop {
+  entity Customer {
+    id: Int PK
+    name: String
+    email: String UK
+  }
+  entity Order {
+    id: Int PK
+  }
+
+  Customer ||--o{ Order : "places"
+}"#;
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        assert_eq!(e.entities.len(), 2);
+        let customer = &e.entities["Customer"];
+        assert_eq!(customer.attributes.len(), 3);
+        assert_eq!(customer.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(customer.attributes[2].keys, vec!["UK".to_string()]);
+        let rel = &e.relations[0];
+        assert_eq!(rel.from, "Customer");
+        assert_eq!(rel.to, "Order");
+        assert_eq!(rel.from_marker, kozue_ir::EndMarker::ErOne);
+        assert_eq!(rel.to_marker, kozue_ir::EndMarker::ErZeroOrMany);
+        assert_eq!(rel.label.as_deref(), Some("places"));
+    }
+
+    #[test]
+    fn er_self_relation_is_error() {
+        let src = "er d {\n  entity A { id: Int PK }\n  A ||--|| A : \"self\"\n}";
+        let err = parse(src).expect_err("self relation should be an error");
+        assert!(
+            err.iter().any(|e| e.message.contains("self relations")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn er_unrecognised_statement_is_error() {
+        let src = "er d {\n  this is not valid\n}";
+        let err = parse(src).expect_err("should error");
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn er_fmt_style_comment_and_string_labels_do_not_break_parsing() {
+        let src =
+            "er d {\n  // top-level comment\n  entity A {\n    id: Int PK // primary key\n  }\n}";
+        let d = parse(src).expect("comments should be stripped");
+        let e = er_diagram(&d);
+        assert_eq!(e.entities["A"].attributes[0].name, "id");
+    }
+
+    #[test]
+    fn er_inline_single_line_entity_block() {
+        // Spec example: `entity Order { id: Int PK; customer_id: Int FK }`.
+        let src = "er shop {\n  entity Order { id: Int PK; customer_id: Int FK }\n}";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        let order = &e.entities["Order"];
+        assert_eq!(order.attributes.len(), 2);
+        assert_eq!(order.attributes[0].name, "id");
+        assert_eq!(order.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(order.attributes[1].name, "customer_id");
+        assert_eq!(order.attributes[1].keys, vec!["FK".to_string()]);
+    }
+
+    #[test]
+    fn class_inline_single_line_interface_block() {
+        // Spec example: `interface Payable { +pay(): void }`.
+        let src = "class orders {\n  interface Payable { +pay(): void }\n}";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(
+            c.classes["Payable"].stereotype.as_deref(),
+            Some("interface")
+        );
+        assert_eq!(c.classes["Payable"].methods[0], "+pay(): void");
     }
 }

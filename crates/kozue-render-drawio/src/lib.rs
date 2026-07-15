@@ -42,13 +42,21 @@
 //!   survives while the horizontal connection follows when a participant is
 //!   moved (see the M8c design notes). Self-messages become self-loop
 //!   connectors with explicit fold waypoints.
+//! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
+//!   [`CompartmentBox`] becomes a rounded-rectangle vertex whose HTML `value`
+//!   lays out the title/stereotype followed by one `<hr>`-separated section
+//!   per compartment. Each [`RelationLayout`] becomes a connector whose
+//!   `startArrow`/`endArrow` (+ `Fill`) encode the UML/ER end markers (see
+//!   [`drawio_arrow`]); multiplicities are emitted as child `edgeLabel`
+//!   cells near each endpoint.
 //!
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle};
 use kozue_layout::semantic::{
-    GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
+    ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
+    StateLayout,
 };
 
 const MARGIN: f64 = 20.0;
@@ -128,6 +136,8 @@ pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
         SemanticLayout::Graph(g) => render_graph(g),
         SemanticLayout::State(s) => render_state(s),
         SemanticLayout::Sequence(seq) => render_sequence(seq),
+        SemanticLayout::Class(c) => render_class(c),
+        SemanticLayout::Er(e) => render_er(e),
         _ => Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
     }
 }
@@ -591,6 +601,189 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
 }
 
 // ---------------------------------------------------------------------------
+// Class / ER diagram renderer
+// ---------------------------------------------------------------------------
+
+/// Emit an `<Array as="points">` element for a class/ER relation's interior
+/// waypoints (tuple-based route, unlike [`waypoints_xml`]'s `Point`-based
+/// graph/state/sequence routes).
+fn waypoints_xml_tuples(route: &[(f64, f64)]) -> String {
+    let len = route.len();
+    if len <= 2 {
+        return String::new();
+    }
+    let interior = &route[1..len - 1];
+    let mut s = String::from("\n            <Array as=\"points\">");
+    for &(x, y) in interior {
+        s.push_str(&format!(
+            "\n              <mxPoint x=\"{}\" y=\"{}\"/>",
+            f(x + MARGIN),
+            f(y + MARGIN)
+        ));
+    }
+    s.push_str("\n            </Array>");
+    s
+}
+
+/// Map an [`EndMarker`] to a draw.io `startArrow`/`endArrow` shape name and
+/// whether it should be filled (`Fill=1`) or hollow (`Fill=0`).
+///
+/// | `EndMarker`      | draw.io arrow    | fill |
+/// |-------------------|------------------|------|
+/// | `None`            | `none`           | –    |
+/// | `HollowTriangle`  | `block`          | 0    |
+/// | `OpenArrow`       | `open`           | 0    |
+/// | `FilledDiamond`   | `diamond`        | 1    |
+/// | `HollowDiamond`   | `diamond`        | 0    |
+/// | `ErOne`           | `ERone`          | 0    |
+/// | `ErMany`          | `ERmany`         | 0    |
+/// | `ErZeroOrOne`     | `ERzeroToOne`    | 0    |
+/// | `ErOneOrMany`     | `ERoneToMany`    | 0    |
+/// | `ErZeroOrMany`    | `ERzeroToMany`   | 0    |
+///
+/// Any future `#[non_exhaustive]` variant falls back to `none`.
+fn drawio_arrow(marker: EndMarker) -> (&'static str, u8) {
+    match marker {
+        EndMarker::None => ("none", 0),
+        EndMarker::HollowTriangle => ("block", 0),
+        EndMarker::OpenArrow => ("open", 0),
+        EndMarker::FilledDiamond => ("diamond", 1),
+        EndMarker::HollowDiamond => ("diamond", 0),
+        EndMarker::ErOne => ("ERone", 0),
+        EndMarker::ErMany => ("ERmany", 0),
+        EndMarker::ErZeroOrOne => ("ERzeroToOne", 0),
+        EndMarker::ErOneOrMany => ("ERoneToMany", 0),
+        EndMarker::ErZeroOrMany => ("ERzeroToMany", 0),
+        _ => ("none", 0),
+    }
+}
+
+/// Build the HTML `value` for a [`CompartmentBox`] vertex: an optional
+/// centered stereotype line, the centered bold title, then each compartment
+/// as a left-aligned, `<hr>`-separated block of rows.
+fn class_box_value(b: &CompartmentBox) -> String {
+    let mut s = String::new();
+    if let Some(st) = &b.stereotype {
+        s.push_str(&format!(
+            "<div style=\"text-align:center\">&#171;{}&#187;</div>",
+            xml_escape(st)
+        ));
+    }
+    s.push_str(&format!(
+        "<div style=\"text-align:center\"><b>{}</b></div>",
+        xml_escape(&b.title)
+    ));
+    for c in &b.compartments {
+        s.push_str("<hr size=\"1\"/>");
+        let rows: Vec<String> = c.rows.iter().map(|r| xml_escape(r)).collect();
+        s.push_str(&rows.join("<br/>"));
+    }
+    s
+}
+
+fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
+    let mut out = mxfile_header();
+
+    for (i, b) in layout.boxes.iter().enumerate() {
+        let r = &b.rect;
+        out.push_str(&format!(
+            "        <mxCell id=\"n{i}\" value=\"{}\" \
+             style=\"rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;\
+             spacingLeft=6;spacingTop=4;spacingBottom=4;\" vertex=\"1\" parent=\"1\">\n\
+             \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+             \x20       </mxCell>\n",
+            class_box_value(b),
+            f(r.x + MARGIN),
+            f(r.y + MARGIN),
+            f(r.width),
+            f(r.height),
+        ));
+    }
+
+    let find_box_idx = |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id == id) };
+
+    for (i, rel) in layout.relations.iter().enumerate() {
+        let src_idx = find_box_idx(&rel.from).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.from.clone(),
+        })?;
+        let tgt_idx = find_box_idx(&rel.to).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.to.clone(),
+        })?;
+
+        let (start_arrow, start_fill) = drawio_arrow(rel.from_marker);
+        let (end_arrow, end_fill) = drawio_arrow(rel.to_marker);
+        let dashed = if rel.line == LineStyle::Dashed {
+            "dashed=1;"
+        } else {
+            ""
+        };
+        let style = format!(
+            "edgeStyle=none;html=1;{dashed}\
+             startArrow={start_arrow};startFill={start_fill};\
+             endArrow={end_arrow};endFill={end_fill};",
+        );
+
+        let label_value = xml_escape(rel.label.as_deref().unwrap_or(""));
+        let wp = waypoints_xml_tuples(&rel.points);
+        let has_children = !wp.is_empty();
+        let edge_id = format!("e{i}");
+
+        if has_children {
+            out.push_str(&format!(
+                "        <mxCell id=\"{edge_id}\" value=\"{label_value}\" style=\"{style}\" \
+                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\">{wp}\n\
+                 \x20         </mxGeometry>\n\
+                 \x20       </mxCell>\n",
+            ));
+        } else {
+            out.push_str(&format!(
+                "        <mxCell id=\"{edge_id}\" value=\"{label_value}\" style=\"{style}\" \
+                 edge=\"1\" source=\"n{src_idx}\" target=\"n{tgt_idx}\" parent=\"1\">\n\
+                 \x20         <mxGeometry relative=\"1\" as=\"geometry\"/>\n\
+                 \x20       </mxCell>\n",
+            ));
+        }
+
+        // Multiplicity labels, positioned near each endpoint via a relative
+        // edge-label child cell (x=-1 near the source, x=1 near the target;
+        // draw.io interprets `x` on an edge label as a position along the
+        // edge path in [-1, 1]).
+        if let Some(m) = &rel.from_mult {
+            out.push_str(&mult_label_cell(&edge_id, "from", m, -1.0));
+        }
+        if let Some(m) = &rel.to_mult {
+            out.push_str(&mult_label_cell(&edge_id, "to", m, 1.0));
+        }
+    }
+
+    out.push_str(mxfile_footer());
+    Ok(out)
+}
+
+fn render_er(layout: &ClassLayout) -> Result<String, RenderError> {
+    // ER layouts are structurally identical ClassLayouts (see
+    // `kozue_layout::semantic::ErLayout`); reuse the same renderer.
+    render_class(layout)
+}
+
+/// A small `edgeLabel` child cell showing a relation multiplicity near one
+/// endpoint of edge `edge_id`.
+fn mult_label_cell(edge_id: &str, side: &str, value: &str, x: f64) -> String {
+    format!(
+        "        <mxCell id=\"{edge_id}-mult-{side}\" value=\"{}\" \
+         style=\"edgeLabel;html=1;align=center;verticalAlign=middle;\" \
+         vertex=\"1\" connectable=\"0\" parent=\"{edge_id}\">\n\
+         \x20         <mxGeometry x=\"{}\" relative=\"1\" as=\"geometry\">\n\
+         \x20           <mxPoint as=\"offset\"/>\n\
+         \x20         </mxGeometry>\n\
+         \x20       </mxCell>\n",
+        xml_escape(value),
+        f(x),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -673,6 +866,184 @@ mod tests {
         )));
         let out = kozue_layout::layout_full(&Diagram::Sequence(seq)).expect("layout");
         out.semantic
+    }
+
+    // Helper: class diagram layout with an inheritance relation (hollow
+    // triangle) and a composition relation (filled diamond + multiplicities).
+    fn class_layout() -> SemanticLayout {
+        use kozue_ir::{ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker};
+        let mut cd = ClassDiagram::new(Direction::Down);
+
+        let mut animal = ClassNode::new("Animal", "Animal");
+        animal.stereotype = Some("abstract".to_string());
+        animal.attributes.push("+name: String".to_string());
+        animal.methods.push("+speak(): void".to_string());
+        cd.classes.insert("Animal".into(), animal);
+
+        let mut dog = ClassNode::new("Dog", "Dog");
+        dog.methods.push("+bark(): void".to_string());
+        cd.classes.insert("Dog".into(), dog);
+
+        let mut kennel = ClassNode::new("Kennel", "Kennel");
+        kennel.attributes.push("+capacity: Int".to_string());
+        cd.classes.insert("Kennel".into(), kennel);
+
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            kozue_ir::LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        cd.relations.push(ClassRelation::new(
+            "Kennel",
+            "Dog",
+            EndMarker::FilledDiamond,
+            EndMarker::None,
+            kozue_ir::LineStyle::Dashed,
+            Some("houses".to_string()),
+            Some("1".to_string()),
+            Some("*".to_string()),
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Class(cd)).expect("layout");
+        out.semantic
+    }
+
+    // Helper: ER diagram layout with a crow's-foot relation.
+    fn er_layout() -> SemanticLayout {
+        use kozue_ir::{Diagram, EndMarker, ErAttribute, ErDiagram, ErEntity, ErRelation};
+        let mut ed = ErDiagram::new();
+
+        let mut customer = ErEntity::new("Customer", "CUSTOMER");
+        customer
+            .attributes
+            .push(ErAttribute::new("int", "id", vec!["PK".to_string()], None));
+        ed.entities.insert("Customer".into(), customer);
+
+        let mut order = ErEntity::new("Order", "ORDER");
+        order.attributes.push(ErAttribute::new(
+            "int",
+            "customer_id",
+            vec!["FK".to_string()],
+            None,
+        ));
+        ed.entities.insert("Order".into(), order);
+
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("places".to_string()),
+            kozue_ir::LineStyle::Solid,
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Er(ed)).expect("layout");
+        out.semantic
+    }
+
+    // --- class rendering ---
+
+    #[test]
+    fn class_render_produces_box_with_compartments() {
+        let layout = class_layout();
+        let xml = render(&layout).expect("class render");
+        assert!(xml.starts_with("<mxfile>"));
+        assert!(
+            xml.contains("rounded=1"),
+            "class boxes are rounded rects: {xml}"
+        );
+        assert!(xml.contains("Animal"), "class name must appear: {xml}");
+        assert!(
+            xml.contains("+speak(): void"),
+            "method compartment row must appear: {xml}"
+        );
+        assert!(xml.contains("<hr"), "compartments are hr-separated: {xml}");
+    }
+
+    #[test]
+    fn class_render_maps_end_markers() {
+        let layout = class_layout();
+        let xml = render(&layout).expect("class render");
+        assert!(
+            xml.contains("endArrow=block;endFill=0"),
+            "inheritance is a hollow block arrow: {xml}"
+        );
+        assert!(
+            xml.contains("startArrow=diamond;startFill=1"),
+            "composition is a filled diamond: {xml}"
+        );
+        assert!(xml.contains("dashed=1;"), "dashed relation: {xml}");
+    }
+
+    #[test]
+    fn class_render_multiplicities_are_child_cells() {
+        let layout = class_layout();
+        let xml = render(&layout).expect("class render");
+        assert!(xml.contains("value=\"1\""), "from_mult label: {xml}");
+        assert!(xml.contains("value=\"*\""), "to_mult label: {xml}");
+        assert!(
+            xml.contains("edgeLabel"),
+            "mult labels are edgeLabel cells: {xml}"
+        );
+    }
+
+    #[test]
+    fn class_render_is_deterministic() {
+        let layout = class_layout();
+        let xml1 = render(&layout).expect("render 1");
+        let xml2 = render(&layout).expect("render 2");
+        assert_eq!(xml1, xml2, "class render must be deterministic");
+    }
+
+    // --- er rendering ---
+
+    #[test]
+    fn er_render_produces_box_and_crowsfoot_markers() {
+        let layout = er_layout();
+        let xml = render(&layout).expect("er render");
+        assert!(xml.contains("CUSTOMER"), "entity name must appear: {xml}");
+        assert!(
+            xml.contains("customer_id"),
+            "attribute row must appear: {xml}"
+        );
+        assert!(
+            xml.contains("startArrow=ERone"),
+            "ErOne maps to ERone: {xml}"
+        );
+        assert!(
+            xml.contains("endArrow=ERzeroToMany"),
+            "ErZeroOrMany maps to ERzeroToMany: {xml}"
+        );
+        assert!(xml.contains("value=\"places\""), "relation label: {xml}");
+    }
+
+    #[test]
+    fn er_render_is_deterministic() {
+        let layout = er_layout();
+        let xml1 = render(&layout).expect("render 1");
+        let xml2 = render(&layout).expect("render 2");
+        assert_eq!(xml1, xml2, "er render must be deterministic");
+    }
+
+    #[test]
+    fn class_render_dangling_relation_is_error() {
+        let layout = class_layout();
+        let SemanticLayout::Class(mut cl) = layout else {
+            panic!("expected class layout");
+        };
+        cl.relations[0].to = "does-not-exist".to_string();
+        let err = render(&SemanticLayout::Class(cl)).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::DanglingEdge {
+                node_id: "does-not-exist".to_string()
+            }
+        );
     }
 
     // --- xml_escape ---

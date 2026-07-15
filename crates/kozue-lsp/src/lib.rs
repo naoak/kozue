@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn valid_input_has_no_diagnostics() {
-        let kozue = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let kozue = "graph d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
         assert!(to_lsp_diagnostics(&uri("a.kozue"), kozue, Language::Kozue).is_empty());
     }
 
@@ -536,7 +536,7 @@ mod tests {
     fn kozue_duplicate_id_surfaces_related_information() {
         // Duplicate declaration carries a "first declared here" secondary label
         // that must be attached as related_information (no data loss).
-        let dup = "diagram d {\n  a: \"A\"\n  a: \"B\"\n}";
+        let dup = "graph d {\n  a: \"A\"\n  a: \"B\"\n}";
         let diags = to_lsp_diagnostics(&uri("a.kozue"), dup, Language::Kozue);
         let related: Vec<_> = diags
             .iter()
@@ -570,7 +570,7 @@ mod tests {
     fn cjk_dsl_error_does_not_panic_and_ranges_are_sane() {
         // Regression: DSL spans are char indices; byte-slicing them would panic
         // on multi-byte input. Must produce clean diagnostics instead.
-        let bad = "diagram d {\n  a: \"あいうえお\" @\n}";
+        let bad = "graph d {\n  a: \"あいうえお\" @\n}";
         let diags = to_lsp_diagnostics(&uri("a.kozue"), bad, Language::Kozue);
         assert!(!diags.is_empty());
         for d in &diags {
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn related_information_location_points_at_this_document() {
-        let dup = "diagram d {\n  a: \"A\"\n  a: \"B\"\n}";
+        let dup = "graph d {\n  a: \"A\"\n  a: \"B\"\n}";
         let u = uri("dup.kozue");
         let diags = to_lsp_diagnostics(&u, dup, Language::Kozue);
         let related = diags
@@ -667,14 +667,14 @@ mod tests {
 
     #[test]
     fn hover_for_word_unknown_id_is_none() {
-        let src = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+        let src = "graph d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
         let diagram = kozue_dsl::parse(src).unwrap();
         assert!(hover_for_word(&diagram, "z").is_none());
     }
 
     #[test]
     fn hover_for_word_graph_node_returns_markdown() {
-        let src = "diagram d {\n  a: \"Alpha\"\n  b: \"Beta\"\n  a -> b\n}";
+        let src = "graph d {\n  a: \"Alpha\"\n  b: \"Beta\"\n  a -> b\n}";
         let diagram = kozue_dsl::parse(src).unwrap();
         let md = hover_for_word(&diagram, "a").unwrap();
         assert!(md.contains("node"), "expected 'node' in: {md}");
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn hover_for_word_sequence_participant_returns_markdown() {
-        let src = "diagram s {\n  participant alice: \"Alice\"\n  participant bob: \"Bob\"\n  alice -> bob : \"hi\"\n}";
+        let src = "sequence s {\n  participant alice: \"Alice\"\n  participant bob: \"Bob\"\n  alice -> bob : \"hi\"\n}";
         let diagram = kozue_dsl::parse(src).unwrap();
         let md = hover_for_word(&diagram, "alice").unwrap();
         assert!(

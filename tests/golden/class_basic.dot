@@ -1,0 +1,11 @@
+digraph {
+  rankdir=TB;
+  node [shape=record];
+  "Shape" [label="{Shape|+area(): float\l}"];
+  "Circle" [label="{Circle|+radius: float\l|+area(): float\l}"];
+  "Drawable" [label="{«interface»\nDrawable|+draw(): void\l}"];
+  "Canvas" [label="{Canvas}"];
+  "Circle" -> "Shape" [dir=both arrowtail=none arrowhead=empty];
+  "Circle" -> "Drawable" [dir=both arrowtail=none arrowhead=empty style=dashed];
+  "Canvas" -> "Shape" [dir=both arrowtail=odiamond arrowhead=none label="holds" taillabel="1" headlabel="*"];
+}

@@ -1,4 +1,4 @@
-diagram flow {
+graph flow {
   direction down
 
   start: "開始"
