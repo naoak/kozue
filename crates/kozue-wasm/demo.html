@@ -47,12 +47,26 @@
     background: var(--bg);
     color: var(--fg);
   }
-  .logo-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.25rem; }
-  .logo-row img { width: 240px; height: auto; display: block; }
-  h1 { margin: 0; font-size: 1.1rem; font-weight: 500; color: var(--muted); }
+  .logo-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 1.5rem; }
+  /* Fade the logo's edges into the page background so it sits flush with it. */
+  .logo-row img {
+    width: 240px; height: auto; display: block;
+    --fade: 6px;
+    -webkit-mask-image:
+      linear-gradient(to right,  transparent 0, #000 var(--fade), #000 calc(100% - var(--fade)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, #000 var(--fade), #000 calc(100% - var(--fade)), transparent 100%);
+    -webkit-mask-composite: source-in;
+    mask-image:
+      linear-gradient(to right,  transparent 0, #000 var(--fade), #000 calc(100% - var(--fade)), transparent 100%),
+      linear-gradient(to bottom, transparent 0, #000 var(--fade), #000 calc(100% - var(--fade)), transparent 100%);
+    mask-composite: intersect;
+  }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; }
   .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
   .controls label { font-size: 0.85rem; color: var(--muted); }
+  /* Align the Sample and Language dropdowns' left edges by giving their
+     labels a shared width. */
+  label[for="sample"], label[for="lang"] { display: inline-block; min-width: 4.5rem; }
   textarea {
     width: 100%;
     height: 260px;
@@ -107,46 +121,65 @@
     max-height: 60vh;
   }
   .col { flex: 1; min-width: 320px; }
-  .output-actions { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+  /* Both column headers share a height and bottom-align their contents, so the
+     Render/Check and Download/Copy button rows line up horizontally and the
+     textarea and output panels share a top edge. */
+  .col-head { display: flex; flex-direction: column; justify-content: flex-end; min-height: 4.75rem; }
+  .col-head > :last-child { margin-bottom: 0.5rem; }
+  /* Split a control row into a left group and a right (button) group. */
+  .controls.split { justify-content: space-between; flex-wrap: nowrap; }
+  .group { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 </style>
 
 <div class="logo-row">
   <img src="./kozue_logo.svg" alt="kozue logo" width="240">
 </div>
-<h1>WASM demo — kozue diagram compiler</h1>
 
 <div class="row">
   <div class="col">
-    <div class="controls">
-      <label for="lang">Language</label>
-      <select id="lang">
-        <option value="kozue">kozue</option>
-        <option value="mermaid">mermaid</option>
-        <option value="plantuml">plantuml</option>
-      </select>
-      <label for="format">Format</label>
-      <select id="format">
-        <option value="svg">SVG</option>
-        <option value="png">PNG</option>
-        <option value="term">Term</option>
-        <option value="dot">DOT</option>
-        <option value="drawio">draw.io</option>
-        <option value="excalidraw">Excalidraw</option>
-      </select>
-      <label for="sample">Sample</label>
-      <select id="sample"></select>
-    </div>
-    <div class="controls">
-      <button id="btn-render" class="primary">Render</button>
-      <button id="btn-check">Check</button>
+    <div class="col-head">
+      <div class="controls">
+        <label for="sample">Sample</label>
+        <select id="sample"></select>
+      </div>
+      <div class="controls split">
+        <div class="group">
+          <label for="lang">Language</label>
+          <select id="lang">
+            <option value="kozue">kozue</option>
+            <option value="mermaid">mermaid</option>
+            <option value="plantuml">plantuml</option>
+          </select>
+        </div>
+        <div class="group">
+          <button id="btn-render" class="primary">Render</button>
+          <button id="btn-check">Check</button>
+        </div>
+      </div>
     </div>
     <textarea id="input" spellcheck="false"></textarea>
   </div>
   <div class="col">
-    <div id="status"></div>
-    <div class="output-actions">
-      <button id="btn-download">Download</button>
-      <button id="btn-copy">Copy</button>
+    <div class="col-head">
+      <div id="status"></div>
+      <div class="controls split">
+        <div class="group">
+          <label for="format">Format</label>
+          <select id="format">
+            <option value="svg">SVG</option>
+            <option value="png">PNG</option>
+            <option value="term">Term</option>
+            <option value="dot">DOT</option>
+            <option value="drawio">draw.io</option>
+            <option value="excalidraw">Excalidraw</option>
+          </select>
+        </div>
+        <div class="group">
+          <button id="btn-view-as" hidden>View As</button>
+          <button id="btn-download">Download</button>
+          <button id="btn-copy">Copy</button>
+        </div>
+      </div>
     </div>
     <div id="output"></div>
   </div>
@@ -268,10 +301,14 @@ const renderBtn  = document.getElementById('btn-render');
 const checkBtn   = document.getElementById('btn-check');
 const downloadBtn = document.getElementById('btn-download');
 const copyBtn    = document.getElementById('btn-copy');
+const viewAsBtn  = document.getElementById('btn-view-as');
 
 let wasmReady = false;
 
 function populateSamples() {
+  // Preserve the current selection across a language switch so that changing
+  // Language keeps the same sample kind when the new language also has it.
+  const prev = sampleEl.value;
   sampleEl.innerHTML = '';
   for (const name of Object.keys(SAMPLES[langEl.value])) {
     const opt = document.createElement('option');
@@ -279,6 +316,7 @@ function populateSamples() {
     opt.textContent = name;
     sampleEl.appendChild(opt);
   }
+  if (prev in SAMPLES[langEl.value]) sampleEl.value = prev;
 }
 
 function loadSample() {
@@ -307,10 +345,20 @@ function revokeOldUrl() {
 // Current rendered output, kept around for download/copy.
 let current = null; // { kind: 'svg'|'png'|'text', text?: string, bytes?: Uint8Array, format }
 
+// Formats that can be opened in an external editor via "View As".
+const VIEW_AS = {
+  drawio:     'draw.io',
+  excalidraw: 'Excalidraw',
+};
+
 function updateActionButtons() {
   const hasOutput = current !== null;
   downloadBtn.disabled = !hasOutput;
   copyBtn.disabled = !hasOutput || current.kind === 'png';
+
+  const site = hasOutput ? VIEW_AS[current.format] : undefined;
+  viewAsBtn.hidden = !site;
+  if (site) viewAsBtn.textContent = `View in ${site}`;
 }
 
 function doRender() {
@@ -425,6 +473,63 @@ copyBtn.addEventListener('click', async () => {
     setStatus('Copied output to clipboard', false);
   } catch (e) {
     setStatus(`Copy failed: ${e}`, true);
+  }
+});
+
+// Compress a string with raw DEFLATE and base64-encode it, matching the
+// encoding draw.io uses for its `#R` URL fragment (decode = atob -> inflateRaw
+// -> decodeURIComponent, so we deflate the encodeURIComponent'd XML).
+async function deflateRawBase64(str) {
+  const cs = new CompressionStream('deflate-raw');
+  const writer = cs.writable.getWriter();
+  writer.write(new TextEncoder().encode(str));
+  writer.close();
+  const buf = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+  return btoa(bin);
+}
+
+// kozue emits a full <mxfile> with an uncompressed <mxGraphModel>; the draw.io
+// `#R` fragment wants just the graph model.
+function drawioGraphXml(mxfile) {
+  const m = mxfile.match(/<mxGraphModel[\s\S]*<\/mxGraphModel>/);
+  return m ? m[0] : mxfile;
+}
+
+viewAsBtn.addEventListener('click', async () => {
+  if (!current || !VIEW_AS[current.format]) return;
+
+  if (current.format === 'excalidraw') {
+    // Excalidraw has no way to load client-generated data from a URL, so open
+    // the editor and put the scene JSON on the clipboard for the user to paste.
+    window.open('https://excalidraw.com/', '_blank', 'noopener');
+    try {
+      await navigator.clipboard.writeText(current.text);
+      setStatus('Opened Excalidraw — paste (Ctrl/Cmd+V) on the canvas to load the copied scene', false);
+    } catch (e) {
+      setStatus(`Opened Excalidraw, but copying the scene failed: ${e}. Use Copy, then paste.`, true);
+    }
+    return;
+  }
+
+  // draw.io: embed the diagram in the URL fragment and open it directly.
+  if (typeof CompressionStream === 'undefined') {
+    window.open('https://app.diagrams.net/', '_blank', 'noopener');
+    try { await navigator.clipboard.writeText(drawioGraphXml(current.text)); } catch {}
+    setStatus('Opened draw.io — this browser lacks compression, so paste via Extras → Edit Diagram', false);
+    return;
+  }
+  const tab = window.open('about:blank', '_blank'); // keep the handle to navigate it
+  if (tab) tab.opener = null;
+  try {
+    const b64 = await deflateRawBase64(encodeURIComponent(drawioGraphXml(current.text)));
+    const url = 'https://app.diagrams.net/?title=kozue-diagram.drawio#R' + encodeURIComponent(b64);
+    if (tab) tab.location = url; else window.open(url, '_blank', 'noopener');
+    setStatus('Opened in draw.io', false);
+  } catch (e) {
+    if (tab) tab.close();
+    setStatus(`Failed to open in draw.io: ${e}`, true);
   }
 });
 
