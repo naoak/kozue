@@ -198,7 +198,7 @@ import init, {
 
 const SAMPLES = {
   kozue: {
-    'flow: three-step process': `diagram flow {
+    'flow: three-step process': `graph flow {
   direction down
   a: "Start"
   b: "Process"
@@ -206,7 +206,7 @@ const SAMPLES = {
   a -> b : "next"
   b -> c
 }`,
-    'sequence: login flow': `diagram seq {
+    'sequence: login flow': `sequence seq {
   participant web: "Web Browser"
   participant api: "API Server"
   participant db: "DB"
@@ -216,7 +216,7 @@ const SAMPLES = {
   api --> web : "200 OK"
   api -> api : "make session"
 }`,
-    'state: traffic light': `diagram state_basic {
+    'state: traffic light': `state state_basic {
   state idle: "Idle"
   state active: "Active"
   state done: "Done"
@@ -226,6 +226,33 @@ const SAMPLES = {
   active -> active : "tick"
   active -> done : "finish"
   done -> [*]
+}`,
+    'class: shapes': `class shapes {
+  class Shape {
+    +area(): float
+  }
+  class Circle {
+    +radius: float
+    +area(): float
+  }
+  class Square {
+    +side: float
+  }
+  Circle --|> Shape
+  Square --|> Shape
+}`,
+    'er: shop': `er shop {
+  entity Customer {
+    id: Int PK
+    name: String
+    email: String UK
+  }
+  entity Order {
+    id: Int PK
+    customer_id: Int FK
+    total: Money
+  }
+  Customer ||--o{ Order : "places"
 }`,
   },
   mermaid: {
@@ -250,6 +277,29 @@ const SAMPLES = {
     active --> active : tick
     active --> done : finish
     done --> [*]`,
+    'class: shapes': `classDiagram
+  class Shape {
+    +area() float
+  }
+  class Circle {
+    +float radius
+    +area() float
+  }
+  class Square {
+    +float side
+  }
+  Circle --|> Shape
+  Square --|> Shape`,
+    'er: shop': `erDiagram
+  CUSTOMER {
+    string name
+    string email UK
+  }
+  ORDER {
+    int id PK
+    int customer_id FK
+  }
+  CUSTOMER ||--o{ ORDER : places`,
   },
   plantuml: {
     'sequence: greeting': `@startuml
@@ -279,6 +329,30 @@ idle --> active : start
 active --> active : tick
 active --> done : finish
 done --> [*]
+@enduml`,
+    'class: shapes': `@startuml
+abstract class Shape {
+  +area() double
+}
+class Circle {
+  +double radius
+}
+class Square {
+  +double side
+}
+Circle --|> Shape
+Square --|> Shape
+@enduml`,
+    'er: shop': `@startuml
+entity Customer {
+  * id : int
+  name : string
+}
+entity Order {
+  * id : int
+  customer_id : int
+}
+Customer ||--o{ Order
 @enduml`,
   },
 };
