@@ -18,6 +18,8 @@ pub enum Diagram {
     Graph(GraphDiagram),
     Sequence(SequenceDiagram),
     State(StateDiagram),
+    Class(ClassDiagram),
+    Er(ErDiagram),
 }
 
 /// Layout direction for a graph diagram.
@@ -248,6 +250,223 @@ pub struct Transition {
 impl Transition {
     pub fn new(from: Endpoint, to: Endpoint, label: Option<String>) -> Self {
         Transition { from, to, label }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Class / ER diagrams
+// ---------------------------------------------------------------------------
+
+/// The symbol drawn at one end of a relation line. Shared by [`ClassDiagram`]
+/// and [`ErDiagram`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EndMarker {
+    None,
+    /// UML generalization/realization (inheritance).
+    HollowTriangle,
+    /// UML association/dependency direction (open V shape).
+    OpenArrow,
+    /// UML composition.
+    FilledDiamond,
+    /// UML aggregation.
+    HollowDiamond,
+    /// ER crow's foot: exactly one (`‖`).
+    ErOne,
+    /// ER crow's foot: many (`<`).
+    ErMany,
+    /// ER crow's foot: zero or one (`o|`).
+    ErZeroOrOne,
+    /// ER crow's foot: one or many (`|<`).
+    ErOneOrMany,
+    /// ER crow's foot: zero or many (`o<`).
+    ErZeroOrMany,
+}
+
+/// A class diagram: a set of classes/interfaces and relations between them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassDiagram {
+    pub direction: Direction,
+    /// Classes keyed by their stable string ID. Iteration order is insertion
+    /// (declaration) order, which the layout relies on for determinism.
+    pub classes: IndexMap<String, ClassNode>,
+    pub relations: Vec<ClassRelation>,
+}
+
+impl ClassDiagram {
+    pub fn new(direction: Direction) -> Self {
+        ClassDiagram {
+            direction,
+            classes: IndexMap::new(),
+            relations: Vec::new(),
+        }
+    }
+}
+
+/// A class (or interface/abstract class/enum) in a class diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassNode {
+    pub id: String,
+    pub name: String,
+    /// `"interface"` / `"abstract"` / `"enumeration"` (from `<<...>>` annotations).
+    pub stereotype: Option<String>,
+    /// Pre-formatted display lines, e.g. `"+name: String"`.
+    pub attributes: Vec<String>,
+    /// Pre-formatted display lines, e.g. `"+getName(): String"`.
+    pub methods: Vec<String>,
+}
+
+impl ClassNode {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        ClassNode {
+            id: id.into(),
+            name: name.into(),
+            stereotype: None,
+            attributes: Vec::new(),
+            methods: Vec::new(),
+        }
+    }
+}
+
+/// A relation (edge) between two classes in a class diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassRelation {
+    pub from: String,
+    pub to: String,
+    pub from_marker: EndMarker,
+    pub to_marker: EndMarker,
+    /// Solid / Dashed (reuses the sequence-diagram line style).
+    pub line: LineStyle,
+    pub label: Option<String>,
+    /// Multiplicity at the `from` end, e.g. `"1"` or `"0..*"`.
+    pub from_mult: Option<String>,
+    /// Multiplicity at the `to` end.
+    pub to_mult: Option<String>,
+}
+
+impl ClassRelation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        from_marker: EndMarker,
+        to_marker: EndMarker,
+        line: LineStyle,
+        label: Option<String>,
+        from_mult: Option<String>,
+        to_mult: Option<String>,
+    ) -> Self {
+        ClassRelation {
+            from: from.into(),
+            to: to.into(),
+            from_marker,
+            to_marker,
+            line,
+            label,
+            from_mult,
+            to_mult,
+        }
+    }
+}
+
+/// An entity-relationship (ER) diagram: entities and relations between them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErDiagram {
+    /// Entities keyed by their stable string ID. Iteration order is insertion
+    /// (declaration) order, which the layout relies on for determinism.
+    pub entities: IndexMap<String, ErEntity>,
+    pub relations: Vec<ErRelation>,
+}
+
+impl ErDiagram {
+    pub fn new() -> Self {
+        ErDiagram {
+            entities: IndexMap::new(),
+            relations: Vec::new(),
+        }
+    }
+}
+
+impl Default for ErDiagram {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An entity in an ER diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErEntity {
+    pub id: String,
+    pub name: String,
+    pub attributes: Vec<ErAttribute>,
+}
+
+impl ErEntity {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        ErEntity {
+            id: id.into(),
+            name: name.into(),
+            attributes: Vec::new(),
+        }
+    }
+}
+
+/// A single attribute row of an ER entity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErAttribute {
+    /// `"string"`, `"int"`, etc. Empty string if not specified.
+    pub type_name: String,
+    pub name: String,
+    /// `"PK"` / `"FK"` / `"UK"`.
+    pub keys: Vec<String>,
+    pub comment: Option<String>,
+}
+
+impl ErAttribute {
+    pub fn new(
+        type_name: impl Into<String>,
+        name: impl Into<String>,
+        keys: Vec<String>,
+        comment: Option<String>,
+    ) -> Self {
+        ErAttribute {
+            type_name: type_name.into(),
+            name: name.into(),
+            keys,
+            comment,
+        }
+    }
+}
+
+/// A relation (edge) between two entities in an ER diagram.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ErRelation {
+    pub from: String,
+    pub to: String,
+    pub from_marker: EndMarker,
+    pub to_marker: EndMarker,
+    pub label: Option<String>,
+    /// Solid = identifying relationship, Dashed = non-identifying.
+    pub line: LineStyle,
+}
+
+impl ErRelation {
+    pub fn new(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        from_marker: EndMarker,
+        to_marker: EndMarker,
+        label: Option<String>,
+        line: LineStyle,
+    ) -> Self {
+        ErRelation {
+            from: from.into(),
+            to: to.into(),
+            from_marker,
+            to_marker,
+            label,
+            line,
+        }
     }
 }
 

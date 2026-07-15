@@ -42,7 +42,8 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, Edge, Endpoint, GraphDiagram, LineStyle, Message, Node,
+    ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, Edge, EndMarker,
+    Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, LineStyle, Message, Node,
     Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
@@ -140,10 +141,26 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
             ));
         }
         parse_state(&lines[1..], source, &mut errors)
+    } else if let Some(rest) = strip_keyword_ci(header_trimmed, "classDiagram") {
+        if !rest.trim().is_empty() {
+            errors.push(Diagnostic::new(
+                "unexpected tokens after `classDiagram`; the header must be on its own line",
+                header_offset..header_offset + header_line.len(),
+            ));
+        }
+        parse_class(&lines[1..], source, &mut errors)
+    } else if let Some(rest) = strip_keyword_ci(header_trimmed, "erDiagram") {
+        if !rest.trim().is_empty() {
+            errors.push(Diagnostic::new(
+                "unexpected tokens after `erDiagram`; the header must be on its own line",
+                header_offset..header_offset + header_line.len(),
+            ));
+        }
+        parse_er(&lines[1..], source, &mut errors)
     } else {
         errors.push(Diagnostic::new(
             format!(
-                "unrecognised diagram header `{}`; expected `flowchart`, `graph`, `sequenceDiagram`, or `stateDiagram-v2`",
+                "unrecognised diagram header `{}`; expected `flowchart`, `graph`, `sequenceDiagram`, `stateDiagram-v2`, `classDiagram`, or `erDiagram`",
                 header_trimmed.chars().take(40).collect::<String>()
             ),
             header_offset..header_offset + header_line.len(),
@@ -431,8 +448,10 @@ fn parse_sequence(
             } else {
                 trimmed.strip_prefix("actor ").unwrap_or("").trim()
             };
-            // `participant X as Label` or `participant X`
-            let (id, label) = if let Some(idx) = find_keyword_boundary(rest, " as ") {
+            // `participant X as Label` or `participant X`. The needle `" as "`
+            // carries its own surrounding spaces, which is what enforces the
+            // word boundary — a bare `as` inside an id would not match.
+            let (id, label) = if let Some(idx) = rest.find(" as ") {
                 let id = rest[..idx].trim().to_string();
                 let label = rest[idx + 4..].trim().to_string();
                 (id, Some(label))
@@ -788,11 +807,6 @@ fn strip_keyword_ci<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
         }
         _ => None,
     }
-}
-
-/// Find `needle` within `haystack` respecting word-boundary (space before and after is part of needle).
-fn find_keyword_boundary(haystack: &str, needle: &str) -> Option<usize> {
-    haystack.find(needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1232,820 @@ fn try_parse_seq_message(line: &str, _offset: usize) -> Option<Result<SeqMsgResu
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Class diagram parser
+// ---------------------------------------------------------------------------
+
+/// Mermaid `classDiagram` relation connectors: `(token, from_marker, to_marker, line)`.
+/// `from_marker`/`to_marker` are the markers drawn at the left/right end of the
+/// token as written, matching Mermaid's own left-to-right convention. Mermaid
+/// class diagrams allow a symbol at either end, so both spelling directions of
+/// each relation are listed (e.g. `A <|-- B` puts the hollow triangle at A's
+/// end; `A --|> B` puts it at B's end).
+const CLASS_CONNECTORS: &[(&str, EndMarker, EndMarker, LineStyle)] = &[
+    // Generalization / realization (hollow triangle).
+    (
+        "<|--",
+        EndMarker::HollowTriangle,
+        EndMarker::None,
+        LineStyle::Solid,
+    ),
+    (
+        "--|>",
+        EndMarker::None,
+        EndMarker::HollowTriangle,
+        LineStyle::Solid,
+    ),
+    (
+        "<|..",
+        EndMarker::HollowTriangle,
+        EndMarker::None,
+        LineStyle::Dashed,
+    ),
+    (
+        "..|>",
+        EndMarker::None,
+        EndMarker::HollowTriangle,
+        LineStyle::Dashed,
+    ),
+    // Composition (filled diamond).
+    (
+        "*--",
+        EndMarker::FilledDiamond,
+        EndMarker::None,
+        LineStyle::Solid,
+    ),
+    (
+        "--*",
+        EndMarker::None,
+        EndMarker::FilledDiamond,
+        LineStyle::Solid,
+    ),
+    // Aggregation (hollow diamond).
+    (
+        "o--",
+        EndMarker::HollowDiamond,
+        EndMarker::None,
+        LineStyle::Solid,
+    ),
+    (
+        "--o",
+        EndMarker::None,
+        EndMarker::HollowDiamond,
+        LineStyle::Solid,
+    ),
+    // Association / dependency (open arrow).
+    (
+        "-->",
+        EndMarker::None,
+        EndMarker::OpenArrow,
+        LineStyle::Solid,
+    ),
+    (
+        "<--",
+        EndMarker::OpenArrow,
+        EndMarker::None,
+        LineStyle::Solid,
+    ),
+    (
+        "..>",
+        EndMarker::None,
+        EndMarker::OpenArrow,
+        LineStyle::Dashed,
+    ),
+    (
+        "<..",
+        EndMarker::OpenArrow,
+        EndMarker::None,
+        LineStyle::Dashed,
+    ),
+    // Plain association (no markers).
+    ("--", EndMarker::None, EndMarker::None, LineStyle::Solid),
+    ("..", EndMarker::None, EndMarker::None, LineStyle::Dashed),
+];
+
+/// Split a string into whitespace-separated tokens, treating a `"..."` run as
+/// a single token (so quoted multiplicities/comments containing spaces are
+/// not split apart).
+fn tokenize_ws_quoted(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            cur.push(c);
+        } else if c.is_whitespace() && !in_quotes {
+            if !cur.is_empty() {
+                tokens.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    tokens
+}
+
+/// Split a relation-side token group into (identifier, optional multiplicity).
+/// The multiplicity may appear before or after the identifier.
+fn split_id_and_mult(tokens: &[String]) -> Result<(String, Option<String>), String> {
+    let mut id: Option<String> = None;
+    let mut mult: Option<String> = None;
+    for t in tokens {
+        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+            if mult.is_some() {
+                return Err("multiple multiplicities on one side of a relation".to_string());
+            }
+            mult = Some(t[1..t.len() - 1].to_string());
+        } else {
+            if id.is_some() {
+                return Err("multiple identifiers on one side of a relation".to_string());
+            }
+            id = Some(t.clone());
+        }
+    }
+    let id = id.ok_or_else(|| "missing identifier in relation".to_string())?;
+    Ok((id, mult))
+}
+
+/// Parsed class relation, before validating referenced classes exist.
+struct ParsedClassRelation {
+    from: String,
+    to: String,
+    from_marker: EndMarker,
+    to_marker: EndMarker,
+    line: LineStyle,
+    label: Option<String>,
+    from_mult: Option<String>,
+    to_mult: Option<String>,
+}
+
+/// Try to parse a Mermaid classDiagram relation line, e.g.
+/// `A <|-- B`, `A "1" --> "*" B : label`. Returns `None` if the line does not
+/// contain a recognised relation connector token.
+fn try_parse_class_relation(trimmed: &str) -> Option<Result<ParsedClassRelation, String>> {
+    let (rel_part, label) = match trimmed.find(':') {
+        Some(idx) => (trimmed[..idx].trim(), {
+            let l = trimmed[idx + 1..].trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l.to_string())
+            }
+        }),
+        None => (trimmed, None),
+    };
+    let tokens = tokenize_ws_quoted(rel_part);
+    let conn_idx = tokens
+        .iter()
+        .position(|t| CLASS_CONNECTORS.iter().any(|(tok, ..)| tok == t))?;
+    let (_, from_marker, to_marker, line) = *CLASS_CONNECTORS
+        .iter()
+        .find(|(tok, ..)| tok == &tokens[conn_idx])
+        .unwrap();
+
+    let from_tokens = &tokens[..conn_idx];
+    let to_tokens = &tokens[conn_idx + 1..];
+    let (from, from_mult) = match split_id_and_mult(from_tokens) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    let (to, to_mult) = match split_id_and_mult(to_tokens) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    Some(Ok(ParsedClassRelation {
+        from,
+        to,
+        from_marker,
+        to_marker,
+        line,
+        label,
+        from_mult,
+        to_mult,
+    }))
+}
+
+/// Parse a single class member line (inside a `class Foo { ... }` block) into
+/// its pre-formatted display string. Returns `Some("stereotype", name)` for
+/// `<<stereotype>>` lines via the caller checking the prefix separately.
+fn parse_class_member(trimmed: &str, attributes: &mut Vec<String>, methods: &mut Vec<String>) {
+    let vis = trimmed.chars().next().filter(|c| "+-#~".contains(*c));
+    let rest = if let Some(v) = vis {
+        trimmed[v.len_utf8()..].trim_start()
+    } else {
+        trimmed
+    };
+    let vis_str = vis.map(|c| c.to_string()).unwrap_or_default();
+
+    if let Some(paren_idx) = rest.find('(') {
+        let name = rest[..paren_idx].trim();
+        let close = rest[paren_idx..]
+            .find(')')
+            .map(|o| paren_idx + o)
+            .unwrap_or(rest.len());
+        let args = rest.get(paren_idx + 1..close).unwrap_or("");
+        let after = rest.get(close + 1..).unwrap_or("").trim();
+        let ret = after.trim_start_matches(':').trim();
+        let formatted = if ret.is_empty() {
+            format!("{vis_str}{name}({args})")
+        } else {
+            format!("{vis_str}{name}({args}): {ret}")
+        };
+        methods.push(formatted);
+    } else if let Some(ci) = rest.find(':') {
+        let name = rest[..ci].trim();
+        let ty = rest[ci + 1..].trim();
+        attributes.push(format!("{vis_str}{name}: {ty}"));
+    } else {
+        attributes.push(format!("{vis_str}{}", rest.trim()));
+    }
+}
+
+/// Handle one member line inside a `class Foo { ... }` body (or a colon-omitted
+/// `Foo : member` statement). Dispatches `<<stereotype>>` annotations, rejects
+/// generics, and otherwise routes to [`parse_class_member`]. `span` is used for
+/// any diagnostics.
+fn handle_class_member_line(
+    member: &str,
+    class_id: &str,
+    diagram: &mut ClassDiagram,
+    span: Range<usize>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    if let Some(rest) = member.strip_prefix("<<") {
+        if let Some(close) = rest.find(">>") {
+            let stereotype = rest[..close].trim().to_string();
+            diagram.classes[class_id].stereotype = Some(stereotype);
+        } else {
+            errors.push(Diagnostic::new(
+                "unterminated `<<stereotype>>` annotation (missing `>>`)",
+                span,
+            ));
+        }
+        return;
+    }
+    if member.contains('~') {
+        errors.push(Diagnostic::new(
+            "unsupported: generic type parameters (`~T~`); kozue does not support this yet",
+            span,
+        ));
+        return;
+    }
+    let node = &mut diagram.classes[class_id];
+    let mut attrs = std::mem::take(&mut node.attributes);
+    let mut methods = std::mem::take(&mut node.methods);
+    parse_class_member(member, &mut attrs, &mut methods);
+    let node = &mut diagram.classes[class_id];
+    node.attributes = attrs;
+    node.methods = methods;
+}
+
+fn parse_class(
+    lines: &[(usize, &str)],
+    _source: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Result<Diagram, Vec<Diagnostic>> {
+    let mut diagram = ClassDiagram::new(Direction::Down);
+    let mut relations: Vec<(ParsedClassRelation, Range<usize>)> = Vec::new();
+
+    let ensure_class = |diagram: &mut ClassDiagram, id: &str| {
+        if !diagram.classes.contains_key(id) {
+            diagram.classes.insert(
+                id.to_string(),
+                ClassNode::new(id.to_string(), id.to_string()),
+            );
+        }
+    };
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let (offset, line) = lines[i];
+        let trimmed = line.trim();
+        let span = offset..offset + line.len();
+
+        if let Some(rest) = strip_keyword_ci(trimmed, "direction") {
+            match rest.trim().to_ascii_uppercase().as_str() {
+                "LR" => diagram.direction = Direction::Right,
+                "TD" | "TB" => diagram.direction = Direction::Down,
+                other => errors.push(Diagnostic::new(
+                    format!("unknown classDiagram direction `{other}`; expected TD, TB, or LR"),
+                    span,
+                )),
+            }
+            i += 1;
+            continue;
+        }
+
+        let unsupported_kw: &[&str] = &["namespace", "note", "click", "style", "cssClass"];
+        if let Some(kw) = unsupported_kw
+            .iter()
+            .find(|kw| strip_keyword_ci(trimmed, kw).is_some())
+        {
+            errors.push(Diagnostic::new(
+                format!("unsupported: {kw} (kozue does not support this yet)"),
+                span,
+            ));
+            // These constructs may open a `{ ... }` block; skip forward past a
+            // matching closing brace line so we don't misparse its contents.
+            if trimmed.ends_with('{') {
+                i += 1;
+                while i < lines.len() && lines[i].1.trim() != "}" {
+                    i += 1;
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Standalone stereotype annotation: `<<interface>> Foo`.
+        if let Some(rest) = trimmed.strip_prefix("<<") {
+            if let Some(close) = rest.find(">>") {
+                let stereotype = rest[..close].trim().to_string();
+                let name = rest[close + 2..].trim();
+                if name.is_empty() {
+                    errors.push(Diagnostic::new(
+                        "expected a class name after `<<stereotype>>`",
+                        span,
+                    ));
+                } else if let Some((id, tail)) = split_id(name) {
+                    if !tail.trim().is_empty() {
+                        errors.push(Diagnostic::new(
+                            format!(
+                                "syntax error: unexpected tokens after class name `{}`",
+                                name.chars().take(40).collect::<String>()
+                            ),
+                            span,
+                        ));
+                    } else {
+                        ensure_class(&mut diagram, &id);
+                        diagram.classes[&id].stereotype = Some(stereotype);
+                    }
+                } else {
+                    errors.push(Diagnostic::new(
+                        format!(
+                            "syntax error: expected a class identifier, got `{}`",
+                            name.chars().take(40).collect::<String>()
+                        ),
+                        span,
+                    ));
+                }
+            } else {
+                errors.push(Diagnostic::new(
+                    "unterminated `<<stereotype>>` annotation (missing `>>`)",
+                    span,
+                ));
+            }
+            i += 1;
+            continue;
+        }
+
+        // Class declaration: `class Foo`, `class Foo { ... }` (multi-line), or
+        // `class Foo { +a: int }` (single-line inline; members split by `;`).
+        if let Some(rest) = strip_keyword_ci(trimmed, "class") {
+            let rest = rest.trim();
+            // Body-shape detection (mirrors the native DSL). `~` in the name
+            // portion means generics; inside an inline body it is handled per
+            // member by `handle_class_member_line`.
+            enum Body<'a> {
+                None(&'a str),
+                Inline(&'a str, &'a str),
+                Multiline(&'a str),
+                Malformed,
+            }
+            let body = if let Some(open) = rest.find('{') {
+                if let Some(inner) = rest[open + 1..].strip_suffix('}') {
+                    Body::Inline(rest[..open].trim(), inner.trim())
+                } else if rest.trim_end().ends_with('{') {
+                    Body::Multiline(rest[..open].trim())
+                } else {
+                    Body::Malformed
+                }
+            } else {
+                Body::None(rest)
+            };
+            let name = match body {
+                Body::None(n) | Body::Inline(n, _) | Body::Multiline(n) => n,
+                Body::Malformed => {
+                    errors.push(Diagnostic::new(
+                        format!(
+                            "syntax error: malformed class body `{}`",
+                            trimmed.chars().take(40).collect::<String>()
+                        ),
+                        span,
+                    ));
+                    i += 1;
+                    continue;
+                }
+            };
+            if name.contains('~') {
+                errors.push(Diagnostic::new(
+                    "unsupported: generic type parameters (`~T~`); kozue does not support this yet",
+                    span,
+                ));
+                i += 1;
+                continue;
+            }
+            let Some((id, tail)) = split_id(name) else {
+                errors.push(Diagnostic::new(
+                    format!(
+                        "syntax error: expected a class identifier, got `{}`",
+                        name.chars().take(40).collect::<String>()
+                    ),
+                    span,
+                ));
+                i += 1;
+                continue;
+            };
+            if !tail.trim().is_empty() {
+                errors.push(Diagnostic::new(
+                    format!(
+                        "syntax error: unexpected tokens after class name `{}`",
+                        name.chars().take(40).collect::<String>()
+                    ),
+                    span,
+                ));
+                i += 1;
+                continue;
+            }
+            ensure_class(&mut diagram, &id);
+            match body {
+                Body::None(_) => {
+                    i += 1;
+                }
+                Body::Inline(_, inner) => {
+                    for member in inner.split(';') {
+                        let member = member.trim();
+                        if member.is_empty() {
+                            continue;
+                        }
+                        handle_class_member_line(member, &id, &mut diagram, span.clone(), errors);
+                    }
+                    i += 1;
+                }
+                Body::Multiline(_) => {
+                    i += 1;
+                    loop {
+                        if i >= lines.len() {
+                            errors.push(Diagnostic::new(
+                                format!("unterminated `class {id} {{ ... }}` block (missing `}}`)"),
+                                span.clone(),
+                            ));
+                            break;
+                        }
+                        let (moff, mline) = lines[i];
+                        let mtrim = mline.trim();
+                        if mtrim == "}" {
+                            i += 1;
+                            break;
+                        }
+                        handle_class_member_line(
+                            mtrim,
+                            &id,
+                            &mut diagram,
+                            moff..moff + mline.len(),
+                            errors,
+                        );
+                        i += 1;
+                    }
+                }
+                Body::Malformed => unreachable!(),
+            }
+            continue;
+        }
+
+        // Relation line.
+        if let Some(result) = try_parse_class_relation(trimmed) {
+            match result {
+                Ok(rel) => relations.push((rel, span)),
+                Err(msg) => errors.push(Diagnostic::new(msg, span)),
+            }
+            i += 1;
+            continue;
+        }
+
+        // Colon-omitted member statement: `Foo : +member` / `Foo : +move() void`.
+        // The class is created implicitly if not already declared. Checked after
+        // the relation attempt so labelled relations (`A --> B : label`) win.
+        if let Some(ci) = trimmed.find(':') {
+            let id_part = trimmed[..ci].trim();
+            let member = trimmed[ci + 1..].trim();
+            if let Some((id, tail)) = split_id(id_part) {
+                if tail.trim().is_empty() && !member.is_empty() {
+                    ensure_class(&mut diagram, &id);
+                    handle_class_member_line(member, &id, &mut diagram, span, errors);
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+        i += 1;
+    }
+
+    for (rel, span) in relations {
+        if rel.from == rel.to {
+            errors.push(Diagnostic::new(
+                format!(
+                    "self relations are not supported in class diagrams (`{}` -> `{}`)",
+                    rel.from, rel.to
+                ),
+                span,
+            ));
+            continue;
+        }
+        ensure_class(&mut diagram, &rel.from);
+        ensure_class(&mut diagram, &rel.to);
+        diagram.relations.push(ClassRelation::new(
+            rel.from,
+            rel.to,
+            rel.from_marker,
+            rel.to_marker,
+            rel.line,
+            rel.label,
+            rel.from_mult,
+            rel.to_mult,
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(Diagram::Class(diagram))
+    } else {
+        Err(errors.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ER diagram parser
+// ---------------------------------------------------------------------------
+
+/// Decode a Mermaid ER crow's-foot connector token, e.g. `||--o{`, into
+/// `(from_marker, to_marker, line_style)`.
+fn parse_crowfoot_token(tok: &str) -> Option<(EndMarker, EndMarker, LineStyle)> {
+    let (mid, dashed) = if let Some(idx) = tok.find("--") {
+        (idx, false)
+    } else if let Some(idx) = tok.find("..") {
+        (idx, true)
+    } else {
+        return None;
+    };
+    if mid != 2 || tok.len() != mid + 4 {
+        return None;
+    }
+    let left = &tok[..mid];
+    let right = &tok[mid + 2..];
+    let from_marker = match left {
+        "||" => EndMarker::ErOne,
+        "o|" => EndMarker::ErZeroOrOne,
+        "}o" => EndMarker::ErZeroOrMany,
+        "}|" => EndMarker::ErOneOrMany,
+        _ => return None,
+    };
+    let to_marker = match right {
+        "||" => EndMarker::ErOne,
+        "|o" => EndMarker::ErZeroOrOne,
+        "o{" => EndMarker::ErZeroOrMany,
+        "|{" => EndMarker::ErOneOrMany,
+        _ => return None,
+    };
+    Some((
+        from_marker,
+        to_marker,
+        if dashed {
+            LineStyle::Dashed
+        } else {
+            LineStyle::Solid
+        },
+    ))
+}
+
+struct ParsedErRelation {
+    from: String,
+    to: String,
+    from_marker: EndMarker,
+    to_marker: EndMarker,
+    line: LineStyle,
+    label: Option<String>,
+}
+
+/// Try to parse an ER relation line, e.g. `CUSTOMER ||--o{ ORDER : places`.
+/// Returns `None` if the line has no crow's-foot connector token.
+fn try_parse_er_relation(trimmed: &str) -> Option<Result<ParsedErRelation, String>> {
+    let (rel_part, label) = match trimmed.find(':') {
+        Some(idx) => (trimmed[..idx].trim(), {
+            let l = trimmed[idx + 1..].trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l.to_string())
+            }
+        }),
+        None => (trimmed, None),
+    };
+    let tokens: Vec<&str> = rel_part.split_whitespace().collect();
+    if tokens.len() != 3 {
+        return None;
+    }
+    let (from_marker, to_marker, line) = parse_crowfoot_token(tokens[1])?;
+    Some(Ok(ParsedErRelation {
+        from: tokens[0].to_string(),
+        to: tokens[2].to_string(),
+        from_marker,
+        to_marker,
+        line,
+        label,
+    }))
+}
+
+/// Parse one ER entity attribute line: `type name [PK|FK|UK]... ["comment"]`.
+fn parse_er_attr_line(trimmed: &str) -> Result<ErAttribute, String> {
+    let tokens = tokenize_ws_quoted(trimmed);
+    if tokens.len() < 2 {
+        return Err(format!(
+            "syntax error: expected `type name` in entity attribute, got `{}`",
+            trimmed.chars().take(40).collect::<String>()
+        ));
+    }
+    let type_name = tokens[0].clone();
+    let name = tokens[1].clone();
+    let mut keys = Vec::new();
+    let mut comment = None;
+    for t in &tokens[2..] {
+        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+            if comment.is_some() {
+                return Err("multiple comments on one attribute line".to_string());
+            }
+            comment = Some(t[1..t.len() - 1].to_string());
+        } else if matches!(t.as_str(), "PK" | "FK" | "UK") {
+            keys.push(t.clone());
+        } else {
+            return Err(format!(
+                "syntax error: unrecognised token `{t}` in entity attribute"
+            ));
+        }
+    }
+    Ok(ErAttribute::new(type_name, name, keys, comment))
+}
+
+fn parse_er(
+    lines: &[(usize, &str)],
+    _source: &str,
+    errors: &mut Vec<Diagnostic>,
+) -> Result<Diagram, Vec<Diagnostic>> {
+    let mut diagram = ErDiagram::new();
+
+    let ensure_entity = |diagram: &mut ErDiagram, id: &str| {
+        if !diagram.entities.contains_key(id) {
+            diagram.entities.insert(
+                id.to_string(),
+                ErEntity::new(id.to_string(), id.to_string()),
+            );
+        }
+    };
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let (offset, line) = lines[i];
+        let trimmed = line.trim();
+        let span = offset..offset + line.len();
+
+        if trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Entity block: `NAME { ... }` (multi-line) or `NAME { a; b }`
+        // (single-line inline; attributes split by `;`). Only enter this branch
+        // when the text before `{` is a bare identifier, so a relation line
+        // whose crow's-foot token contains `{` (e.g. `A ||--o{ B`) is not
+        // misread as an entity block and instead falls through to the relation
+        // parser below.
+        if let Some((open, id)) = trimmed.find('{').and_then(|open| {
+            let name = trimmed[..open].trim();
+            match split_id(name) {
+                Some((id, tail)) if tail.trim().is_empty() => Some((open, id)),
+                _ => None,
+            }
+        }) {
+            let inline_body = trimmed[open + 1..]
+                .strip_suffix('}')
+                .map(|inner| inner.trim());
+            let is_multiline = inline_body.is_none() && trimmed.trim_end().ends_with('{');
+            if inline_body.is_none() && !is_multiline {
+                errors.push(Diagnostic::new(
+                    format!(
+                        "syntax error: malformed entity body `{}`",
+                        trimmed.chars().take(40).collect::<String>()
+                    ),
+                    span,
+                ));
+                i += 1;
+                continue;
+            }
+            ensure_entity(&mut diagram, &id);
+            if let Some(inner) = inline_body {
+                for attr in inner.split(';') {
+                    let attr = attr.trim();
+                    if attr.is_empty() {
+                        continue;
+                    }
+                    match parse_er_attr_line(attr) {
+                        Ok(a) => diagram.entities[&id].attributes.push(a),
+                        Err(msg) => errors.push(Diagnostic::new(msg, span.clone())),
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            i += 1;
+            loop {
+                if i >= lines.len() {
+                    errors.push(Diagnostic::new(
+                        format!("unterminated `{id} {{ ... }}` entity block (missing `}}`)"),
+                        span.clone(),
+                    ));
+                    break;
+                }
+                let (moff, mline) = lines[i];
+                let mtrim = mline.trim();
+                if mtrim == "}" {
+                    i += 1;
+                    break;
+                }
+                match parse_er_attr_line(mtrim) {
+                    Ok(attr) => diagram.entities[&id].attributes.push(attr),
+                    Err(msg) => {
+                        errors.push(Diagnostic::new(msg, moff..moff + mline.len()));
+                    }
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // Relation line.
+        if let Some(result) = try_parse_er_relation(trimmed) {
+            match result {
+                Ok(rel) => {
+                    if rel.from == rel.to {
+                        errors.push(Diagnostic::new(
+                            format!(
+                                "self relations are not supported in ER diagrams (`{}` -> `{}`)",
+                                rel.from, rel.to
+                            ),
+                            span,
+                        ));
+                    } else {
+                        ensure_entity(&mut diagram, &rel.from);
+                        ensure_entity(&mut diagram, &rel.to);
+                        diagram.relations.push(ErRelation::new(
+                            rel.from,
+                            rel.to,
+                            rel.from_marker,
+                            rel.to_marker,
+                            rel.label,
+                            rel.line,
+                        ));
+                    }
+                }
+                Err(msg) => errors.push(Diagnostic::new(msg, span)),
+            }
+            i += 1;
+            continue;
+        }
+
+        errors.push(Diagnostic::new(
+            format!(
+                "syntax error: unrecognised statement `{}`",
+                trimmed.chars().take(40).collect::<String>()
+            ),
+            span,
+        ));
+        i += 1;
+    }
+
+    if errors.is_empty() {
+        Ok(Diagram::Er(diagram))
+    } else {
+        Err(errors.clone())
+    }
 }
 
 #[cfg(test)]
@@ -1748,5 +2576,352 @@ mod tests {
         let src = "stateDiagram-v2\n  ああ\n";
         let errs = parse(src).expect_err("non-ascii bare line should error");
         assert!(!errs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Class diagram tests
+    // -----------------------------------------------------------------------
+
+    fn class_diagram(d: &Diagram) -> &kozue_ir::ClassDiagram {
+        match d {
+            Diagram::Class(c) => c,
+            other => panic!("expected class diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn class_basic_block_and_relation() {
+        let src = r#"classDiagram
+  class Animal {
+    +String name
+    +makeSound() void
+  }
+  class Dog {
+    +bark() void
+  }
+  Dog <|-- Animal
+"#;
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes.len(), 2);
+        assert!(c.classes["Animal"].attributes[0].contains("name"));
+        assert_eq!(c.classes["Animal"].methods[0], "+makeSound(): void");
+        assert_eq!(c.relations.len(), 1);
+        assert_eq!(c.relations[0].from, "Dog");
+        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from_marker, EndMarker::HollowTriangle);
+        assert_eq!(c.relations[0].to_marker, EndMarker::None);
+    }
+
+    #[test]
+    fn class_mermaid_direction_inheritance() {
+        let src = "classDiagram\n  Dog <|-- Animal\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.relations[0].from, "Dog");
+        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from_marker, EndMarker::HollowTriangle);
+        assert_eq!(c.relations[0].to_marker, EndMarker::None);
+        assert_eq!(c.relations[0].line, LineStyle::Solid);
+    }
+
+    /// Helper: parse a single-relation classDiagram body and return the relation.
+    fn class_one_relation(rel_line: &str) -> ClassRelation {
+        let src = format!("classDiagram\n  {rel_line}\n");
+        let d = parse(&src).unwrap_or_else(|e| panic!("`{rel_line}` should parse: {e:?}"));
+        let c = class_diagram(&d);
+        assert_eq!(c.relations.len(), 1, "`{rel_line}` produced != 1 relation");
+        c.relations[0].clone()
+    }
+
+    #[test]
+    fn class_all_connector_directions_are_accepted() {
+        // Every token, forward and reverse, must parse and place the marker on
+        // the end the glyph points at. (token, from_marker, to_marker, line)
+        let cases: &[(&str, EndMarker, EndMarker, LineStyle)] = &[
+            (
+                "A <|-- B",
+                EndMarker::HollowTriangle,
+                EndMarker::None,
+                LineStyle::Solid,
+            ),
+            (
+                "A --|> B",
+                EndMarker::None,
+                EndMarker::HollowTriangle,
+                LineStyle::Solid,
+            ),
+            (
+                "A <|.. B",
+                EndMarker::HollowTriangle,
+                EndMarker::None,
+                LineStyle::Dashed,
+            ),
+            (
+                "A ..|> B",
+                EndMarker::None,
+                EndMarker::HollowTriangle,
+                LineStyle::Dashed,
+            ),
+            (
+                "A *-- B",
+                EndMarker::FilledDiamond,
+                EndMarker::None,
+                LineStyle::Solid,
+            ),
+            (
+                "A --* B",
+                EndMarker::None,
+                EndMarker::FilledDiamond,
+                LineStyle::Solid,
+            ),
+            (
+                "A o-- B",
+                EndMarker::HollowDiamond,
+                EndMarker::None,
+                LineStyle::Solid,
+            ),
+            (
+                "A --o B",
+                EndMarker::None,
+                EndMarker::HollowDiamond,
+                LineStyle::Solid,
+            ),
+            (
+                "A --> B",
+                EndMarker::None,
+                EndMarker::OpenArrow,
+                LineStyle::Solid,
+            ),
+            (
+                "A <-- B",
+                EndMarker::OpenArrow,
+                EndMarker::None,
+                LineStyle::Solid,
+            ),
+            (
+                "A ..> B",
+                EndMarker::None,
+                EndMarker::OpenArrow,
+                LineStyle::Dashed,
+            ),
+            (
+                "A <.. B",
+                EndMarker::OpenArrow,
+                EndMarker::None,
+                LineStyle::Dashed,
+            ),
+            ("A -- B", EndMarker::None, EndMarker::None, LineStyle::Solid),
+            (
+                "A .. B",
+                EndMarker::None,
+                EndMarker::None,
+                LineStyle::Dashed,
+            ),
+        ];
+        for &(line, from_m, to_m, ls) in cases {
+            let r = class_one_relation(line);
+            assert_eq!(r.from, "A", "`{line}` from");
+            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
+            assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
+            assert_eq!(r.line, ls, "`{line}` line");
+        }
+    }
+
+    #[test]
+    fn class_forward_and_reverse_tokens_are_mirror_images() {
+        // `A <|-- B` and `B --|> A` describe the same UML relation; swapping
+        // from/to must yield swapped markers with the same line style.
+        for (fwd, rev) in [
+            ("A <|-- B", "B --|> A"),
+            ("A *-- B", "B --* A"),
+            ("A o-- B", "B --o A"),
+            ("A --> B", "B <-- A"),
+            ("A ..|> B", "B <|.. A"),
+            ("A ..> B", "B <.. A"),
+        ] {
+            let f = class_one_relation(fwd);
+            let r = class_one_relation(rev);
+            assert_eq!(f.from, r.to, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(f.to, r.from, "{fwd} / {rev}: endpoints must swap");
+            assert_eq!(
+                f.from_marker, r.to_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(
+                f.to_marker, r.from_marker,
+                "{fwd} / {rev}: markers must mirror"
+            );
+            assert_eq!(f.line, r.line, "{fwd} / {rev}: line style must match");
+        }
+    }
+
+    #[test]
+    fn class_stereotype_annotation() {
+        let src = "classDiagram\n  <<interface>> Shape\n  class Shape\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Shape"].stereotype.as_deref(), Some("interface"));
+    }
+
+    #[test]
+    fn class_multiplicity_and_label() {
+        let src = "classDiagram\n  Customer \"1\" --> \"*\" Order : places\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        let r = &c.relations[0];
+        assert_eq!(r.from_mult.as_deref(), Some("1"));
+        assert_eq!(r.to_mult.as_deref(), Some("*"));
+        assert_eq!(r.label.as_deref(), Some("places"));
+    }
+
+    #[test]
+    fn class_colon_omitted_member_notation() {
+        // F2: `ClassName : member` form, implicit class creation, `()` decides
+        // method vs attribute.
+        let src = "classDiagram\n  Animal : +String name\n  Animal : +move() void\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert!(c.classes.contains_key("Animal"), "class auto-created");
+        assert_eq!(c.classes["Animal"].attributes, vec!["+String name"]);
+        assert_eq!(c.classes["Animal"].methods, vec!["+move(): void"]);
+    }
+
+    #[test]
+    fn class_colon_omitted_does_not_break_relation_label() {
+        // A labelled relation must still be parsed as a relation, not a member.
+        let src = "classDiagram\n  A --> B : uses\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.relations.len(), 1);
+        assert_eq!(c.relations[0].label.as_deref(), Some("uses"));
+        assert!(c.classes["A"].attributes.is_empty());
+    }
+
+    #[test]
+    fn class_single_line_inline_block() {
+        // F3: `{` and `}` on the same line, members split by `;`.
+        let src = "classDiagram\n  class Point { +x: int; +y: int; +dist(): float }\n";
+        let d = parse(src).expect("should parse");
+        let c = class_diagram(&d);
+        assert_eq!(c.classes["Point"].attributes, vec!["+x: int", "+y: int"]);
+        assert_eq!(c.classes["Point"].methods, vec!["+dist(): float"]);
+    }
+
+    #[test]
+    fn class_namespace_is_unsupported() {
+        let src = "classDiagram\n  namespace Foo {\n    class A\n  }\n";
+        let errs = parse(src).expect_err("namespace should be unsupported");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("namespace")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn class_generics_are_unsupported() {
+        let src = "classDiagram\n  class Box~T~\n";
+        let errs = parse(src).expect_err("generics should be unsupported");
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("generic")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn class_self_relation_is_error() {
+        let src = "classDiagram\n  A --> A\n";
+        let errs = parse(src).expect_err("self relation should be an error");
+        assert!(
+            errs.iter().any(|e| e.message.contains("self relations")),
+            "got: {errs:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ER diagram tests
+    // -----------------------------------------------------------------------
+
+    fn er_diagram(d: &Diagram) -> &kozue_ir::ErDiagram {
+        match d {
+            Diagram::Er(e) => e,
+            other => panic!("expected er diagram, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn er_basic_relation() {
+        let src = "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        assert_eq!(e.entities.len(), 2);
+        assert_eq!(e.relations.len(), 1);
+        let r = &e.relations[0];
+        assert_eq!(r.from, "CUSTOMER");
+        assert_eq!(r.to, "ORDER");
+        assert_eq!(r.from_marker, EndMarker::ErOne);
+        assert_eq!(r.to_marker, EndMarker::ErZeroOrMany);
+        assert_eq!(r.line, LineStyle::Solid);
+        assert_eq!(r.label.as_deref(), Some("places"));
+    }
+
+    #[test]
+    fn er_entity_block_with_attributes() {
+        let src = r#"erDiagram
+  CUSTOMER {
+    string name PK
+    string email "unique"
+  }
+"#;
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        let entity = &e.entities["CUSTOMER"];
+        assert_eq!(entity.attributes.len(), 2);
+        assert_eq!(entity.attributes[0].type_name, "string");
+        assert_eq!(entity.attributes[0].name, "name");
+        assert_eq!(entity.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(entity.attributes[1].comment.as_deref(), Some("unique"));
+    }
+
+    #[test]
+    fn er_single_line_inline_entity_block() {
+        // F3: inline `NAME { a; b }` with `;`-separated attributes.
+        let src = "erDiagram\n  ORDER { int id PK; int customer_id FK }\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        let entity = &e.entities["ORDER"];
+        assert_eq!(entity.attributes.len(), 2);
+        assert_eq!(entity.attributes[0].name, "id");
+        assert_eq!(entity.attributes[0].keys, vec!["PK".to_string()]);
+        assert_eq!(entity.attributes[1].name, "customer_id");
+        assert_eq!(entity.attributes[1].keys, vec!["FK".to_string()]);
+    }
+
+    #[test]
+    fn er_non_identifying_dashed_relation() {
+        let src = "erDiagram\n  A o|..|o B : maybe\n";
+        let d = parse(src).expect("should parse");
+        let e = er_diagram(&d);
+        assert_eq!(e.relations[0].line, LineStyle::Dashed);
+    }
+
+    #[test]
+    fn er_unrecognised_line_is_error() {
+        let src = "erDiagram\n  this is not valid\n";
+        let errs = parse(src).expect_err("should error");
+        assert!(!errs.is_empty());
+    }
+
+    #[test]
+    fn er_self_relation_is_error() {
+        let src = "erDiagram\n  A ||--|| A : self\n";
+        let errs = parse(src).expect_err("self relation should be an error");
+        assert!(
+            errs.iter().any(|e| e.message.contains("self relations")),
+            "got: {errs:?}"
+        );
     }
 }

@@ -1,0 +1,14 @@
+erDiagram
+  CUSTOMER {
+    string name PK
+    string email UK
+  }
+  ORDER {
+    int id PK
+    int customer_id FK
+  }
+  LINE_ITEM {
+    int qty
+  }
+  CUSTOMER ||--o{ ORDER : places
+  ORDER ||--|{ LINE_ITEM : contains

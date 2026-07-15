@@ -1,0 +1,14 @@
+@startuml
+class Animal {
+  +name : String
+  +age : int
+  +makeSound() : void
+}
+class Dog {
+  +bark() : void
+}
+class Cat
+Dog --|> Animal
+Cat --|> Animal
+Owner "1" o-- "*" Animal : owns
+@enduml

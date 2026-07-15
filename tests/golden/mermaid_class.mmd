@@ -1,0 +1,13 @@
+classDiagram
+  class Animal {
+    +String name
+    +int age
+    +makeSound() void
+  }
+  class Dog {
+    +bark() void
+  }
+  class Cat
+  Dog --|> Animal
+  Cat --|> Animal
+  Owner "1" o-- "*" Animal : owns

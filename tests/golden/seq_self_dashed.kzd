@@ -1,4 +1,4 @@
-diagram seq {
+sequence seq {
   participant a: "Alice"
   participant b: "Bob"
   a -> b : "hello"

@@ -64,9 +64,24 @@ pub const FEATURES: &[Feature] = &[
         note: "detected when the @startuml body uses `[*]` or a `state` declaration; parsed into StateDiagram IR",
     },
     Feature {
+        name: "class diagram",
+        support: Support::Supported,
+        note: "detected when the body uses `class`/`interface`/`abstract`/`enum` or a UML relation symbol (`<|`, `|>`, `*--`, `o--`); parsed into ClassDiagram IR",
+    },
+    Feature {
+        name: "entity-relationship (ER) diagram",
+        support: Support::Supported,
+        note: "detected when the body has an `entity NAME {` block or a crow's-foot relation token; parsed into ErDiagram IR",
+    },
+    Feature {
         name: "diagram-kind inference",
         support: Support::Partial,
-        note: "a body with no `[*]` and no `state` keyword (only `A --> B` lines) is read as a sequence diagram, since that is ambiguous with a dashed message",
+        note: "a body with none of the state/class/ER markers (only `A --> B` lines) is read as a sequence diagram, since that is ambiguous with a dashed message",
+    },
+    Feature {
+        name: "ambiguous body (markers for 2+ kinds)",
+        support: Support::Unsupported,
+        note: "reports an explicit \"ambiguous @startuml body\" error rather than silently guessing",
     },
     Feature {
         name: "@startmindmap / @startgantt / @startjson / etc.",
@@ -267,5 +282,57 @@ pub const FEATURES: &[Feature] = &[
         name: "! preprocessor directives",
         support: Support::Unsupported,
         note: "any line starting with ! reports unsupported; kozue targets a preprocessor-free subset",
+    },
+    // --- Class diagram ---
+    Feature {
+        name: "class Foo / class Foo { ... }",
+        support: Support::Supported,
+        note: "multi-line or single-line `{ +a; +b }` (members split by newline or `;`); visibility markers (+ - # ~)",
+    },
+    Feature {
+        name: "interface / abstract [class] / enum",
+        support: Support::Supported,
+        note: "maps to stereotype \"interface\" / \"abstract\" / \"enumeration\"",
+    },
+    Feature {
+        name: "class relations, both spelling directions",
+        support: Support::Supported,
+        note: "<|-- --|> <|.. ..|> *-- --* o-- --o --> <-- ..> <.. -- .. all supported",
+    },
+    Feature {
+        name: "class relation multiplicity A \"1\" -- \"*\" B",
+        support: Support::Supported,
+        note: "quoted multiplicity next to each class; also with markers/labels",
+    },
+    Feature {
+        name: "generic type parameters ~T~",
+        support: Support::Unsupported,
+        note: "reports an unsupported error",
+    },
+    Feature {
+        name: "namespace / note / hnote / rnote / package (class)",
+        support: Support::Unsupported,
+        note: "reports an unsupported error",
+    },
+    // --- ER diagram ---
+    Feature {
+        name: "entity Foo { [*] name : type }",
+        support: Support::Supported,
+        note: "multi-line or single-line `{ a; b }`; leading `*` marks a primary key; a bare `--` PK-separator line is skipped",
+    },
+    Feature {
+        name: "crow's-foot relation A ||--o{ B : label",
+        support: Support::Supported,
+        note: "same glyph table as kozue-mermaid's erDiagram",
+    },
+    Feature {
+        name: "plain (non-crow's-foot) relation A -- B",
+        support: Support::Supported,
+        note: "no end markers; `--` = solid, `..` = dashed — PlantUML's ER subset is smaller than Mermaid's",
+    },
+    Feature {
+        name: "entity Foo (no `{ ... }` block)",
+        support: Support::Unsupported,
+        note: "an `entity` participant declaration without a block stays a sequence participant, not an ER entity",
     },
 ];

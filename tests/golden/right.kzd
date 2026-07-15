@@ -1,4 +1,4 @@
-diagram pipeline {
+graph pipeline {
   direction right
 
   src:  "ソース"

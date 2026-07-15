@@ -206,7 +206,7 @@ fn golden_chains_are_collinear() {
 
 #[test]
 fn undeclared_node_is_error() {
-    let src = "diagram d {\n a: \"A\"\n a -> ghost\n}";
+    let src = "graph d {\n a: \"A\"\n a -> ghost\n}";
     let result = kozue_dsl::parse(src);
     assert!(result.is_err(), "undeclared node must be an error");
     let errs = result.unwrap_err();
@@ -288,7 +288,7 @@ fn seq_rendering_is_deterministic_across_processes() {
 
 #[test]
 fn unknown_participant_is_error() {
-    let src = "diagram seq {\n  participant a: \"A\"\n  a -> ghost : \"msg\"\n}";
+    let src = "sequence seq {\n  participant a: \"A\"\n  a -> ghost : \"msg\"\n}";
     let result = kozue_dsl::parse(src);
     assert!(result.is_err());
     let errs = result.unwrap_err();
@@ -301,7 +301,7 @@ fn unknown_participant_is_error() {
 
 #[test]
 fn duplicate_participant_is_error() {
-    let src = "diagram seq {\n  participant a: \"A\"\n  participant a: \"B\"\n}";
+    let src = "sequence seq {\n  participant a: \"A\"\n  participant a: \"B\"\n}";
     let result = kozue_dsl::parse(src);
     assert!(result.is_err());
     let errs = result.unwrap_err();
@@ -314,19 +314,22 @@ fn duplicate_participant_is_error() {
 
 #[test]
 fn mixing_participant_and_node_is_error() {
-    let src = "diagram seq {\n  participant a: \"A\"\n  b: \"B\"\n}";
+    // With keyword-based dispatch (no signal inference), a plain node
+    // declaration inside a `sequence` diagram is rejected explicitly.
+    let src = "sequence seq {\n  participant a: \"A\"\n  b: \"B\"\n}";
     let result = kozue_dsl::parse(src);
     assert!(result.is_err());
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("mix")),
-        "error should mention mixing, got: {errs:?}"
+        errs.iter()
+            .any(|e| e.message.contains("not valid in sequence diagrams")),
+        "error should reject the plain node declaration, got: {errs:?}"
     );
 }
 
 #[test]
 fn dashed_edge_in_graph_is_error() {
-    let src = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a --> b\n}";
+    let src = "graph d {\n  a: \"A\"\n  b: \"B\"\n  a --> b\n}";
     let result = kozue_dsl::parse(src);
     assert!(
         result.is_err(),
@@ -336,7 +339,7 @@ fn dashed_edge_in_graph_is_error() {
 
 #[test]
 fn seq_long_label_widens_columns() {
-    let src = r#"diagram seq {
+    let src = r#"sequence seq {
   participant a: "A"
   participant b: "B"
   a -> b : "this is a very long message label that should widen the columns"
@@ -344,7 +347,7 @@ fn seq_long_label_widens_columns() {
     let diagram = kozue_dsl::parse(src).expect("should parse");
     let scene = kozue_layout::layout(&diagram).expect("should layout");
 
-    let src_short = r#"diagram seq {
+    let src_short = r#"sequence seq {
   participant a: "A"
   participant b: "B"
   a -> b : "hi"
@@ -363,7 +366,13 @@ fn seq_long_label_widens_columns() {
 // Mermaid golden tests
 // ---------------------------------------------------------------------------
 
-const MERMAID_GOLDEN_CASES: &[&str] = &["mermaid_flow", "mermaid_seq", "mermaid_state"];
+const MERMAID_GOLDEN_CASES: &[&str] = &[
+    "mermaid_flow",
+    "mermaid_seq",
+    "mermaid_state",
+    "mermaid_class",
+    "mermaid_er",
+];
 
 fn compile_mermaid(src: &str) -> String {
     let diagram = kozue_mermaid::parse(src).expect("mermaid golden input must parse");
@@ -445,7 +454,12 @@ fn mermaid_rendering_is_deterministic_across_processes() {
 // PlantUML golden tests
 // ---------------------------------------------------------------------------
 
-const PLANTUML_GOLDEN_CASES: &[&str] = &["plantuml_seq", "plantuml_state"];
+const PLANTUML_GOLDEN_CASES: &[&str] = &[
+    "plantuml_seq",
+    "plantuml_state",
+    "plantuml_class",
+    "plantuml_er",
+];
 
 fn compile_plantuml(src: &str) -> String {
     let diagram = kozue_plantuml::parse(src).expect("plantuml golden input must parse");
@@ -535,7 +549,7 @@ fn write_temp_mmd(suffix: &str, content: &str) -> std::path::PathBuf {
 }
 
 const MINIMAL_MMD: &str = "flowchart TD\n  A --> B\n";
-const MINIMAL_KZD: &str = "diagram d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}\n";
+const MINIMAL_KZD: &str = "graph d {\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}\n";
 
 #[test]
 fn cli_routing_uppercase_mmd_extension() {
@@ -661,8 +675,8 @@ fn write_temp_kzd(suffix: &str, content: &str) -> std::path::PathBuf {
     path
 }
 
-const CANONICAL_KZD: &str = "diagram d {\n  a: \"A\"\n  b: \"B\"\n\n  a -> b\n}\n";
-const UNFORMATTED_KZD: &str = "diagram d{a:\"A\"\nb:\"B\"\na->b}\n";
+const CANONICAL_KZD: &str = "graph d {\n  a: \"A\"\n  b: \"B\"\n\n  a -> b\n}\n";
+const UNFORMATTED_KZD: &str = "graph d{a:\"A\"\nb:\"B\"\na->b}\n";
 
 #[test]
 fn fmt_check_exits_nonzero_when_not_formatted() {
@@ -758,7 +772,7 @@ fn fmt_rejects_mmd_files() {
 #[test]
 fn fmt_syntax_error_does_not_modify_file() {
     let bin = env!("CARGO_BIN_EXE_kozue");
-    let bad_src = "diagram d { bad syntax !!! }\n";
+    let bad_src = "graph d { bad syntax !!! }\n";
     let path = write_temp_kzd("_syntax_err", bad_src);
     let status = std::process::Command::new(bin)
         .args(["fmt", path.to_str().unwrap()])
@@ -1088,6 +1102,146 @@ fn state_rendering_is_deterministic() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase B: class / ER diagram golden tests (native DSL frontend)
+// ---------------------------------------------------------------------------
+
+const CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
+const ER_GOLDEN_CASES: &[&str] = &["er_basic"];
+
+/// SVG golden match for the native-DSL class and ER diagrams.
+#[test]
+fn class_er_golden_svgs_match() {
+    for name in CLASS_GOLDEN_CASES.iter().chain(ER_GOLDEN_CASES.iter()) {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let svg_path = golden_dir().join(format!("{name}.svg"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&svg_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                svg_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "class/ER golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// Term (text) golden match for the native-DSL class and ER diagrams.
+#[test]
+fn class_er_golden_term_match() {
+    for name in CLASS_GOLDEN_CASES.iter().chain(ER_GOLDEN_CASES.iter()) {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let txt_path = golden_dir().join(format!("{name}.txt"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = {
+            let diagram = kozue_dsl::parse(&src).expect("class/ER golden input must parse");
+            let scene =
+                kozue_layout::layout(&diagram).expect("class/ER golden layout must succeed");
+            kozue_render_term::render(&scene)
+        };
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&txt_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&txt_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                txt_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "class/ER term golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// PNG golden match for the native-DSL class and ER diagrams.
+#[test]
+fn class_er_golden_pngs_match() {
+    for name in CLASS_GOLDEN_CASES.iter().chain(ER_GOLDEN_CASES.iter()) {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let png_path = golden_dir().join(format!("{name}.png"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_png(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&png_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read(&png_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                png_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "class/ER PNG golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+/// Verify that class-diagram rendering is deterministic across separate process
+/// invocations (guards against HashMap-seed or other process-level randomness).
+#[test]
+fn class_rendering_is_deterministic_across_processes() {
+    let kzd = golden_dir().join("class_basic.kzd");
+    let bin = env!("CARGO_BIN_EXE_kozue");
+
+    let tmp = std::env::temp_dir();
+    let out1 = tmp.join("kozue_class_det_test_1.svg");
+    let out2 = tmp.join("kozue_class_det_test_2.svg");
+
+    let status1 = std::process::Command::new(bin)
+        .args([
+            "render",
+            kzd.to_str().unwrap(),
+            "-o",
+            out1.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (first run)");
+    assert!(status1.success(), "first kozue class run failed");
+
+    let status2 = std::process::Command::new(bin)
+        .args([
+            "render",
+            kzd.to_str().unwrap(),
+            "-o",
+            out2.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue (second run)");
+    assert!(status2.success(), "second kozue class run failed");
+
+    let svg1 = std::fs::read(&out1).expect("read first output");
+    let svg2 = std::fs::read(&out2).expect("read second output");
+    let _ = std::fs::remove_file(&out1);
+    let _ = std::fs::remove_file(&out2);
+
+    assert_eq!(
+        svg1, svg2,
+        "same class input must produce byte-identical SVG across separate process invocations"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // M8b: draw.io golden tests
 // ---------------------------------------------------------------------------
 
@@ -1100,6 +1254,8 @@ fn compile_drawio_kzd(src: &str) -> String {
 const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
+const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
 #[test]
 fn drawio_graph_goldens_match() {
@@ -1131,6 +1287,36 @@ fn drawio_graph_goldens_match() {
 #[test]
 fn drawio_state_goldens_match() {
     for name in DRAWIO_STATE_GOLDEN_CASES {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let drawio_path = golden_dir().join(format!("{name}.drawio"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_drawio_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&drawio_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&drawio_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                drawio_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "draw.io golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn drawio_class_er_goldens_match() {
+    for name in DRAWIO_CLASS_GOLDEN_CASES
+        .iter()
+        .chain(DRAWIO_ER_GOLDEN_CASES.iter())
+    {
         let kzd = golden_dir().join(format!("{name}.kzd"));
         let drawio_path = golden_dir().join(format!("{name}.drawio"));
         let src =
@@ -1357,12 +1543,16 @@ fn compile_dot_kzd(src: &str) -> String {
 const DOT_GRAPH_GOLDEN_CASES: &[&str] =
     &["chain", "branch", "right", "cycle", "skip", "wide_right"];
 const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+const DOT_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
+const DOT_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
 #[test]
 fn dot_goldens_match() {
     let cases = DOT_GRAPH_GOLDEN_CASES
         .iter()
-        .chain(DOT_STATE_GOLDEN_CASES.iter());
+        .chain(DOT_STATE_GOLDEN_CASES.iter())
+        .chain(DOT_CLASS_GOLDEN_CASES.iter())
+        .chain(DOT_ER_GOLDEN_CASES.iter());
     for name in cases {
         let kzd = golden_dir().join(format!("{name}.kzd"));
         let dot_path = golden_dir().join(format!("{name}.dot"));
@@ -1449,6 +1639,8 @@ fn compile_excalidraw_kzd(src: &str) -> String {
 const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
+const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
 #[test]
 fn excalidraw_graph_goldens_match() {
@@ -1532,6 +1724,36 @@ fn excalidraw_sequence_goldens_match() {
 }
 
 #[test]
+fn excalidraw_class_er_goldens_match() {
+    for name in EXCALIDRAW_CLASS_GOLDEN_CASES
+        .iter()
+        .chain(EXCALIDRAW_ER_GOLDEN_CASES.iter())
+    {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_excalidraw_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&excalidraw_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read_to_string(&excalidraw_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                excalidraw_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "Excalidraw golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
 fn excalidraw_render_is_deterministic() {
     let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
     let diagram = kozue_dsl::parse(&src).unwrap();
@@ -1549,7 +1771,9 @@ fn excalidraw_goldens_are_well_formed_json() {
     let cases = EXCALIDRAW_GRAPH_GOLDEN_CASES
         .iter()
         .chain(EXCALIDRAW_STATE_GOLDEN_CASES.iter())
-        .chain(EXCALIDRAW_SEQUENCE_GOLDEN_CASES.iter());
+        .chain(EXCALIDRAW_SEQUENCE_GOLDEN_CASES.iter())
+        .chain(EXCALIDRAW_CLASS_GOLDEN_CASES.iter())
+        .chain(EXCALIDRAW_ER_GOLDEN_CASES.iter());
     for name in cases {
         let excalidraw_path = golden_dir().join(format!("{name}.excalidraw"));
         let content = std::fs::read_to_string(&excalidraw_path)
@@ -1615,6 +1839,8 @@ fn compile_pptx_kzd(src: &str) -> Vec<u8> {
 const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
+const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
 fn run_pptx_golden_cases(cases: &[&str]) {
     for name in cases {
@@ -1658,6 +1884,12 @@ fn pptx_sequence_goldens_match() {
 }
 
 #[test]
+fn pptx_class_er_goldens_match() {
+    run_pptx_golden_cases(PPTX_CLASS_GOLDEN_CASES);
+    run_pptx_golden_cases(PPTX_ER_GOLDEN_CASES);
+}
+
+#[test]
 fn pptx_render_is_deterministic() {
     let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
     let diagram = kozue_dsl::parse(&src).unwrap();
@@ -1678,7 +1910,9 @@ fn pptx_goldens_are_well_formed_zip() {
     let cases = PPTX_GRAPH_GOLDEN_CASES
         .iter()
         .chain(PPTX_STATE_GOLDEN_CASES.iter())
-        .chain(PPTX_SEQUENCE_GOLDEN_CASES.iter());
+        .chain(PPTX_SEQUENCE_GOLDEN_CASES.iter())
+        .chain(PPTX_CLASS_GOLDEN_CASES.iter())
+        .chain(PPTX_ER_GOLDEN_CASES.iter());
     for name in cases {
         let pptx_path = golden_dir().join(format!("{name}.pptx"));
         let bytes = std::fs::read(&pptx_path)

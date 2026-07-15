@@ -64,6 +64,16 @@ pub const FEATURES: &[Feature] = &[
         support: Support::Supported,
         note: "[*] pseudostates, --> transitions with labels, `state \"desc\" as id`, auto-declared states",
     },
+    Feature {
+        name: "classDiagram",
+        support: Support::Supported,
+        note: "class/interface blocks with attributes and methods, relations with markers and multiplicities",
+    },
+    Feature {
+        name: "erDiagram",
+        support: Support::Supported,
+        note: "entity blocks with typed attributes and PK/FK/UK, crow's-foot relations",
+    },
     // --- Flowchart directions ---
     Feature {
         name: "direction TD / TB",
@@ -289,5 +299,52 @@ pub const FEATURES: &[Feature] = &[
         name: "classDef / class / style / linkStyle",
         support: Support::Unsupported,
         note: "styling keywords report an unsupported error",
+    },
+    // --- Class diagram ---
+    Feature {
+        name: "class Foo / class Foo { ... }",
+        support: Support::Supported,
+        note: "multi-line or single-line `{ +a; +b }` (members split by newline or `;`); visibility markers (+ - # ~)",
+    },
+    Feature {
+        name: "colon member `Foo : +member`",
+        support: Support::Supported,
+        note: "colon-omitted member statement; class auto-created; `()` decides method vs attribute",
+    },
+    Feature {
+        name: "<<interface>> / <<abstract>> / <<enumeration>>",
+        support: Support::Supported,
+        note: "standalone annotation line or first line inside a class block",
+    },
+    Feature {
+        name: "class relations (<|-- ..|> *-- o-- --> ..> --)",
+        support: Support::Supported,
+        note: "mapped to shared EndMarker/LineStyle; multiplicities and labels supported",
+    },
+    Feature {
+        name: "direction (classDiagram)",
+        support: Support::Supported,
+        note: "TD/TB maps to Direction::Down, LR to Direction::Right",
+    },
+    Feature {
+        name: "namespace / note / click / style / cssClass (class)",
+        support: Support::Unsupported,
+        note: "reports an unsupported error",
+    },
+    Feature {
+        name: "generic type parameters ~T~",
+        support: Support::Unsupported,
+        note: "reports an unsupported error",
+    },
+    // --- ER diagram ---
+    Feature {
+        name: "entity block NAME { type name PK/FK/UK \"comment\" }",
+        support: Support::Supported,
+        note: "multi-line or single-line `{ a; b }`; attribute rows keep type/name/keys/comment as structured fields",
+    },
+    Feature {
+        name: "crow's-foot relation A ||--o{ B : label",
+        support: Support::Supported,
+        note: "`--` = identifying (solid), `..` = non-identifying (dashed)",
     },
 ];

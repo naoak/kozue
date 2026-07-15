@@ -56,12 +56,21 @@
 //!   message arrows are **not** Excalidraw-bound to a shape — their absolute
 //!   `points` geometry is authoritative instead (see [`RenderError`] docs).
 //!
+//! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
+//!   [`CompartmentBox`] becomes a rectangle, a title text (stereotype +
+//!   name), a horizontal `line` divider per compartment, and one free
+//!   (unbound) text element per compartment listing its rows. Each
+//!   [`RelationLayout`] becomes an arrow; because Excalidraw's arrowhead set
+//!   is much smaller than kozue's [`EndMarker`] set, markers are approximated
+//!   (see [`excalidraw_arrowhead`]) — this is a deliberate, documented
+//!   degradation, not a silent one.
+//!
 //! Any future [`SemanticLayout`] variants return [`RenderError::UnsupportedDiagram`]
 //! rather than silently dropping data.
 
-use kozue_ir::{ArrowType, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle};
 use kozue_layout::semantic::{
-    GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
+    ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
 use serde::Serialize;
 
@@ -338,6 +347,8 @@ pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
         SemanticLayout::Graph(g) => render_graph(g)?,
         SemanticLayout::State(s) => render_state(s)?,
         SemanticLayout::Sequence(seq) => render_sequence(seq)?,
+        SemanticLayout::Class(c) => render_class(c)?,
+        SemanticLayout::Er(e) => render_er(e)?,
         _ => return Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
     };
     assign_seeds(&mut elements);
@@ -469,6 +480,23 @@ fn make_text(
     w: f64,
     h: f64,
 ) -> ElementBase<TextExtra> {
+    make_text_aligned(id, container_id, text, x, y, w, h, "center", "middle")
+}
+
+/// Like [`make_text`], but with an explicit alignment. Used for class/ER
+/// compartment rows, which are left/top-aligned rather than centered.
+#[allow(clippy::too_many_arguments)]
+fn make_text_aligned(
+    id: &str,
+    container_id: Option<String>,
+    text: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    text_align: &'static str,
+    vertical_align: &'static str,
+) -> ElementBase<TextExtra> {
     ElementBase {
         id: id.to_string(),
         kind: "text",
@@ -498,8 +526,8 @@ fn make_text(
             original_text: text.to_string(),
             font_size: FONT_SIZE,
             font_family: FONT_FAMILY,
-            text_align: "center",
-            vertical_align: "middle",
+            text_align,
+            vertical_align,
             line_height: LINE_HEIGHT,
         },
     }
@@ -515,6 +543,7 @@ fn make_arrow(
     points: Vec<[f64; 2]>,
     start_binding: Option<Binding>,
     end_binding: Option<Binding>,
+    start_arrowhead: Option<&'static str>,
     end_arrowhead: Option<&'static str>,
     dashed: bool,
 ) -> ElementBase<ArrowExtra> {
@@ -545,7 +574,7 @@ fn make_arrow(
             points,
             start_binding,
             end_binding,
-            start_arrowhead: None,
+            start_arrowhead,
             end_arrowhead,
         },
     }
@@ -701,6 +730,7 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
                 focus: 0.0,
                 gap: 4.0,
             }),
+            None,
             end_arrowhead,
             /* dashed */ false,
         );
@@ -902,6 +932,7 @@ fn render_state(s: &StateLayout) -> Result<Vec<AnyElement>, RenderError> {
                 focus: 0.0,
                 gap: 4.0,
             }),
+            None,
             // Filled triangle head, matching the SVG/PNG backends.
             Some("triangle"),
             /* dashed */ false,
@@ -1043,6 +1074,7 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
             points,
             None,
             None,
+            None,
             end_arrowhead,
             dashed,
         );
@@ -1079,6 +1111,240 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
     }
 
     Ok(elements)
+}
+
+// ---------------------------------------------------------------------------
+// Class / ER diagram renderer
+// ---------------------------------------------------------------------------
+
+/// Map an [`EndMarker`] to an Excalidraw arrowhead name.
+///
+/// Excalidraw's arrowhead set (`arrow` / `triangle` / `triangle_outline` /
+/// `bar` / `dot` / `diamond` / `diamond_outline`) is much smaller than
+/// kozue's ten [`EndMarker`] variants, so ER crow's-foot cardinalities are
+/// lossily approximated here (documented in the crate's determinism/degradation
+/// notes): the "many" markers collapse onto `triangle` and the "zero"
+/// markers collapse onto `dot`, each losing the paired bar/crow they'd carry
+/// in a full crow's-foot rendering.
+///
+/// | `EndMarker`      | Excalidraw arrowhead | notes                    |
+/// |-------------------|-----------------------|---------------------------|
+/// | `None`            | (none)                |                           |
+/// | `HollowTriangle`  | `triangle_outline`    |                           |
+/// | `OpenArrow`       | `arrow`               |                           |
+/// | `FilledDiamond`   | `diamond`             |                           |
+/// | `HollowDiamond`   | `diamond_outline`     |                           |
+/// | `ErOne`           | `bar`                 |                           |
+/// | `ErMany`          | `triangle`            | approximates the crow's foot |
+/// | `ErZeroOrOne`      | `dot`                 | loses the paired bar     |
+/// | `ErOneOrMany`      | `triangle`            | loses the paired bar     |
+/// | `ErZeroOrMany`     | `dot`                 | loses the paired crow    |
+fn excalidraw_arrowhead(marker: EndMarker) -> Option<&'static str> {
+    match marker {
+        EndMarker::None => None,
+        EndMarker::HollowTriangle => Some("triangle_outline"),
+        EndMarker::OpenArrow => Some("arrow"),
+        EndMarker::FilledDiamond => Some("diamond"),
+        EndMarker::HollowDiamond => Some("diamond_outline"),
+        EndMarker::ErOne => Some("bar"),
+        EndMarker::ErMany => Some("triangle"),
+        EndMarker::ErZeroOrOne => Some("dot"),
+        EndMarker::ErOneOrMany => Some("triangle"),
+        EndMarker::ErZeroOrMany => Some("dot"),
+        _ => None,
+    }
+}
+
+fn render_class(layout: &ClassLayout) -> Result<Vec<AnyElement>, RenderError> {
+    let mut elements: Vec<AnyElement> = Vec::new();
+
+    // Boxes -- rectangle + centered title text (stereotype + name) + one
+    // divider line and one left/top-aligned free text per compartment.
+    for (i, b) in layout.boxes.iter().enumerate() {
+        let r = &b.rect;
+        let rect_id = format!("n{i}");
+        elements.push(AnyElement::Shape(make_rect(
+            &rect_id,
+            r.x + MARGIN,
+            r.y + MARGIN,
+            r.width,
+            r.height,
+        )));
+
+        let title_bottom = b
+            .compartments
+            .first()
+            .map(|c| c.top_y)
+            .unwrap_or(r.y + r.height);
+        let title_h = (title_bottom - r.y).max(1.0);
+        let mut title_lines: Vec<String> = Vec::new();
+        if let Some(st) = &b.stereotype {
+            title_lines.push(format!("\u{ab}{st}\u{bb}"));
+        }
+        title_lines.push(b.title.clone());
+        let title_text = title_lines.join("\n");
+        elements.push(AnyElement::Text(make_text(
+            &format!("{rect_id}-title"),
+            None,
+            &title_text,
+            r.x + MARGIN,
+            r.y + MARGIN,
+            r.width,
+            title_h,
+        )));
+
+        for (ci, c) in b.compartments.iter().enumerate() {
+            let div_id = format!("{rect_id}-div{ci}");
+            let route = [Point::new(r.x, c.top_y), Point::new(r.x + r.width, c.top_y)];
+            let (lx, ly, points, w, h) = route_geometry(&route);
+            elements.push(AnyElement::Line(make_line(
+                &div_id, lx, ly, w, h, points, false,
+            )));
+
+            let bottom = b
+                .compartments
+                .get(ci + 1)
+                .map(|c2| c2.top_y)
+                .unwrap_or(r.y + r.height);
+            let sect_h = (bottom - c.top_y).max(1.0);
+            let content = c.rows.join("\n");
+            elements.push(AnyElement::Text(make_text_aligned(
+                &format!("{rect_id}-sect{ci}"),
+                None,
+                &content,
+                r.x + MARGIN + 4.0,
+                c.top_y + MARGIN,
+                r.width - 8.0,
+                sect_h,
+                "left",
+                "top",
+            )));
+        }
+    }
+
+    // Box id -> index lookup (Vec-based, deterministic). Returns
+    // RenderError::DanglingEdge for unknown IDs.
+    let find_box = |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id == id) };
+
+    // Relations -- arrow bound to both endpoint rectangles, with markers on
+    // both ends and optional label / multiplicity texts.
+    for (i, rel) in layout.relations.iter().enumerate() {
+        let src_idx = find_box(&rel.from).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.from.clone(),
+        })?;
+        let tgt_idx = find_box(&rel.to).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.to.clone(),
+        })?;
+        let src_id = format!("n{src_idx}");
+        let tgt_id = format!("n{tgt_idx}");
+        let arrow_id = format!("e{i}");
+
+        let route: Vec<Point> = rel.points.iter().map(|&(x, y)| Point::new(x, y)).collect();
+        let (ax, ay, points, w, h) = route_geometry(&route);
+        let start_arrowhead = excalidraw_arrowhead(rel.from_marker);
+        let end_arrowhead = excalidraw_arrowhead(rel.to_marker);
+        let dashed = rel.line == LineStyle::Dashed;
+        let arrow = make_arrow(
+            &arrow_id,
+            ax,
+            ay,
+            w,
+            h,
+            points,
+            Some(Binding {
+                element_id: src_id.clone(),
+                focus: 0.0,
+                gap: 4.0,
+            }),
+            Some(Binding {
+                element_id: tgt_id.clone(),
+                focus: 0.0,
+                gap: 4.0,
+            }),
+            start_arrowhead,
+            end_arrowhead,
+            dashed,
+        );
+        elements.push(AnyElement::Arrow(arrow));
+        add_bound_element(
+            &mut elements,
+            &src_id,
+            BoundElementRef {
+                id: arrow_id.clone(),
+                kind: "arrow",
+            },
+        );
+        add_bound_element(
+            &mut elements,
+            &tgt_id,
+            BoundElementRef {
+                id: arrow_id.clone(),
+                kind: "arrow",
+            },
+        );
+
+        if let Some(label) = &rel.label {
+            let label_id = format!("{arrow_id}-text");
+            let (tw, th) = text_size(label);
+            let mid = &route[route.len() / 2];
+            let lx = mid.x + MARGIN - tw / 2.0;
+            let ly = mid.y + MARGIN - th / 2.0;
+            elements.push(AnyElement::Text(make_text(
+                &label_id,
+                Some(arrow_id.clone()),
+                label,
+                lx,
+                ly,
+                tw,
+                th,
+            )));
+            add_bound_element(
+                &mut elements,
+                &arrow_id,
+                BoundElementRef {
+                    id: label_id,
+                    kind: "text",
+                },
+            );
+        }
+
+        // Multiplicity labels -- small free (unbound) texts just inside each
+        // endpoint of the route.
+        if let Some(m) = &rel.from_mult {
+            let p0 = &route[0];
+            let (tw, th) = text_size(m);
+            elements.push(AnyElement::Text(make_text(
+                &format!("{arrow_id}-mult-from"),
+                None,
+                m,
+                p0.x + MARGIN + 4.0,
+                p0.y + MARGIN - th - 2.0,
+                tw,
+                th,
+            )));
+        }
+        if let Some(m) = &rel.to_mult {
+            let p1 = &route[route.len() - 1];
+            let (tw, th) = text_size(m);
+            elements.push(AnyElement::Text(make_text(
+                &format!("{arrow_id}-mult-to"),
+                None,
+                m,
+                p1.x + MARGIN - tw - 4.0,
+                p1.y + MARGIN - th - 2.0,
+                tw,
+                th,
+            )));
+        }
+    }
+
+    Ok(elements)
+}
+
+fn render_er(layout: &ClassLayout) -> Result<Vec<AnyElement>, RenderError> {
+    // ER layouts are structurally identical ClassLayouts (see
+    // `kozue_layout::semantic::ErLayout`); reuse the same renderer.
+    render_class(layout)
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,6 +1422,79 @@ mod tests {
             ArrowType::Triangle,
         )));
         let out = kozue_layout::layout_full(&Diagram::Sequence(seq)).expect("layout");
+        out.semantic
+    }
+
+    // Helper: class diagram layout with inheritance + composition relations.
+    fn class_layout() -> SemanticLayout {
+        use kozue_ir::{ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker};
+        let mut cd = ClassDiagram::new(Direction::Down);
+
+        let mut animal = ClassNode::new("Animal", "Animal");
+        animal.stereotype = Some("abstract".to_string());
+        animal.attributes.push("+name: String".to_string());
+        animal.methods.push("+speak(): void".to_string());
+        cd.classes.insert("Animal".into(), animal);
+
+        let mut dog = ClassNode::new("Dog", "Dog");
+        dog.methods.push("+bark(): void".to_string());
+        cd.classes.insert("Dog".into(), dog);
+
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::None,
+            EndMarker::HollowTriangle,
+            LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        cd.relations.push(ClassRelation::new(
+            "Dog",
+            "Animal",
+            EndMarker::FilledDiamond,
+            EndMarker::None,
+            LineStyle::Dashed,
+            Some("has".to_string()),
+            Some("1".to_string()),
+            Some("*".to_string()),
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Class(cd)).expect("layout");
+        out.semantic
+    }
+
+    // Helper: ER diagram layout with a crow's-foot relation.
+    fn er_layout() -> SemanticLayout {
+        use kozue_ir::{Diagram, EndMarker, ErAttribute, ErDiagram, ErEntity, ErRelation};
+        let mut ed = ErDiagram::new();
+
+        let mut customer = ErEntity::new("Customer", "CUSTOMER");
+        customer
+            .attributes
+            .push(ErAttribute::new("int", "id", vec!["PK".to_string()], None));
+        ed.entities.insert("Customer".into(), customer);
+
+        let mut order = ErEntity::new("Order", "ORDER");
+        order.attributes.push(ErAttribute::new(
+            "int",
+            "customer_id",
+            vec!["FK".to_string()],
+            None,
+        ));
+        ed.entities.insert("Order".into(), order);
+
+        ed.relations.push(ErRelation::new(
+            "Customer",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("places".to_string()),
+            LineStyle::Solid,
+        ));
+
+        let out = kozue_layout::layout_full(&Diagram::Er(ed)).expect("layout");
         out.semantic
     }
 
@@ -1482,5 +1821,126 @@ mod tests {
         let (_, _, _, w, h) = route_geometry(&route);
         assert_eq!(w, 20.0);
         assert_eq!(h, 10.0);
+    }
+
+    // --- class rendering ---
+
+    #[test]
+    fn class_render_has_boxes_dividers_and_texts() {
+        let layout = class_layout();
+        let json = render(&layout).expect("class render");
+        let v = parse(&json);
+        let elements = v["elements"].as_array().unwrap();
+
+        let rect = elements
+            .iter()
+            .find(|e| e["id"] == "n0")
+            .expect("n0 rectangle present");
+        assert_eq!(rect["type"], "rectangle");
+
+        assert!(
+            elements.iter().any(|e| e["type"] == "line"),
+            "compartment divider lines must be present: {json}"
+        );
+
+        let title = elements
+            .iter()
+            .find(|e| e["id"] == "n0-title")
+            .expect("title text present");
+        assert!(title["text"].as_str().unwrap().contains("Animal"));
+
+        assert!(
+            elements.iter().any(|e| e["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("+speak(): void"))),
+            "method row text must appear: {json}"
+        );
+    }
+
+    #[test]
+    fn class_render_arrowheads_are_approximated() {
+        let layout = class_layout();
+        let json = render(&layout).expect("class render");
+        let v = parse(&json);
+        let elements = v["elements"].as_array().unwrap();
+
+        let inherit = elements
+            .iter()
+            .find(|e| e["id"] == "e0")
+            .expect("inheritance arrow");
+        assert_eq!(inherit["endArrowhead"], "triangle_outline");
+
+        let compose = elements
+            .iter()
+            .find(|e| e["id"] == "e1")
+            .expect("composition arrow");
+        assert_eq!(compose["startArrowhead"], "diamond");
+        assert_eq!(compose["strokeStyle"], "dashed");
+    }
+
+    #[test]
+    fn class_render_multiplicities_are_free_texts() {
+        let layout = class_layout();
+        let json = render(&layout).expect("class render");
+        let v = parse(&json);
+        let elements = v["elements"].as_array().unwrap();
+        assert!(elements.iter().any(|e| e["text"] == "1"));
+        assert!(elements.iter().any(|e| e["text"] == "*"));
+    }
+
+    #[test]
+    fn class_render_is_deterministic() {
+        let layout = class_layout();
+        let json1 = render(&layout).expect("render 1");
+        let json2 = render(&layout).expect("render 2");
+        assert_eq!(json1, json2, "class render must be deterministic");
+    }
+
+    // --- er rendering ---
+
+    #[test]
+    fn er_render_has_entity_rows_and_crowsfoot_approximation() {
+        let layout = er_layout();
+        let json = render(&layout).expect("er render");
+        let v = parse(&json);
+        let elements = v["elements"].as_array().unwrap();
+
+        assert!(
+            elements.iter().any(|e| e["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("customer_id"))),
+            "attribute row text must appear: {json}"
+        );
+
+        let rel = elements
+            .iter()
+            .find(|e| e["id"] == "e0")
+            .expect("relation arrow");
+        assert_eq!(rel["startArrowhead"], "bar");
+        assert_eq!(rel["endArrowhead"], "dot");
+    }
+
+    #[test]
+    fn er_render_is_deterministic() {
+        let layout = er_layout();
+        let json1 = render(&layout).expect("render 1");
+        let json2 = render(&layout).expect("render 2");
+        assert_eq!(json1, json2, "er render must be deterministic");
+    }
+
+    #[test]
+    fn class_render_dangling_relation_is_error() {
+        let layout = class_layout();
+        let SemanticLayout::Class(mut cl) = layout else {
+            panic!("expected class layout");
+        };
+        cl.relations[0].to = "does-not-exist".to_string();
+        let err = render(&SemanticLayout::Class(cl)).unwrap_err();
+        assert_eq!(
+            err,
+            RenderError::DanglingEdge {
+                node_id: "does-not-exist".to_string()
+            }
+        );
     }
 }

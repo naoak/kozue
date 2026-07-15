@@ -305,8 +305,7 @@ pub fn check(input: &str, lang: &str) -> Result<(), JsValue> {
 mod tests {
     use super::*;
 
-    const KOZUE_MINIMAL: &str =
-        "diagram d {\n  direction down\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
+    const KOZUE_MINIMAL: &str = "graph d {\n  direction down\n  a: \"A\"\n  b: \"B\"\n  a -> b\n}";
     const MERMAID_MINIMAL: &str = "sequenceDiagram\n  participant A as Alice\n  participant B\n  A->>B: hello\n  B-->>A: reply\n";
     const PLANTUML_MINIMAL: &str =
         "@startuml\nparticipant Alice\nparticipant Bob\nAlice -> Bob : hi\n@enduml\n";
@@ -397,7 +396,7 @@ mod tests {
         // Regression for the char-index vs byte-offset bug: DSL spans are
         // character indices, so byte-slicing them would panic on multi-byte
         // input and abort the wasm module. Must return a clean Err instead.
-        let bad = "diagram d {\n  a: \"あいうえお\" @\n}";
+        let bad = "graph d {\n  a: \"あいうえお\" @\n}";
         let err = check_impl(bad, "kozue").expect_err("invalid DSL must error, not panic");
         assert!(err.contains("line"), "got: {err}");
     }
@@ -406,7 +405,7 @@ mod tests {
     fn dsl_secondary_label_is_surfaced() {
         // Duplicate declaration carries a "first declared here" secondary label
         // that must not be silently dropped (project data-loss principle).
-        let dup = "diagram d {\n  a: \"A\"\n  a: \"B\"\n}";
+        let dup = "graph d {\n  a: \"A\"\n  a: \"B\"\n}";
         let err = check_impl(dup, "kozue").expect_err("duplicate id must error");
         assert!(
             err.contains("note at line"),

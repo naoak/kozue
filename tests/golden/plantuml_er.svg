@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 189.89 352.00" width="189.89" height="352.00">
+  <rect x="-20.00" y="-20.00" width="189.89" height="352.00" fill="#ffffff"/>
+  <rect x="11.69" y="0.00" width="126.51" height="120.16" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="74.94" y="23.36" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Customer</text>
+  <polyline points="11.69,35.20 138.20,35.20" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="31.69" y="54.26" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">[PK] id: int</text>
+  <text x="31.69" y="82.58" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">name: string</text>
+  <text x="31.69" y="110.90" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">email: string</text>
+  <rect x="0.00" y="220.16" width="149.89" height="91.84" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="74.94" y="243.52" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Order</text>
+  <polyline points="0.00,255.36 149.89,255.36" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="20.00" y="274.42" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">[PK] id: int</text>
+  <text x="20.00" y="302.74" font-family="DejaVu Sans" font-size="13.60" text-anchor="start" fill="#000000">customer_id: int</text>
+  <polyline points="80.94,130.16 68.94,130.16" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="74.94,220.16 68.94,208.16" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="74.94,220.16 80.94,208.16" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="79.94,201.16 79.70,202.71 78.99,204.10 77.88,205.21 76.49,205.92 74.94,206.16 73.40,205.92 72.01,205.21 70.90,204.10 70.19,202.71 69.94,201.16 70.19,199.61 70.90,198.22 72.01,197.11 73.40,196.40 74.94,196.16 76.49,196.40 77.88,197.11 78.99,198.22 79.70,199.61 79.94,201.16" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="74.94,130.16 74.94,196.16" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="74.94" y="166.16" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">places</text>
+</svg>

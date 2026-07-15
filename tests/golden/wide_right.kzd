@@ -1,4 +1,4 @@
-diagram wide_right {
+graph wide_right {
   direction right
   s: "入力"
   a: "解析A"

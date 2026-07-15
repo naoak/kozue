@@ -1,4 +1,4 @@
-diagram skip {
+graph skip {
   a: "受付"
   b: "審査"
   c: "承認"

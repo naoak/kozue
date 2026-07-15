@@ -1,0 +1,14 @@
+class shapes {
+  class Shape {
+    +area(): float
+  }
+  class Circle {
+    +radius: float
+    +area(): float
+  }
+  interface Drawable { +draw(): void }
+
+  Circle --|> Shape
+  Circle ..|> Drawable
+  Canvas "1" o-- "*" Shape : "holds"
+}
