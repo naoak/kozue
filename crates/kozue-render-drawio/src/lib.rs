@@ -661,6 +661,10 @@ fn drawio_arrow(marker: EndMarker) -> (&'static str, u8) {
 /// Build the HTML `value` for a [`CompartmentBox`] vertex: an optional
 /// centered stereotype line, the centered bold title, then each compartment
 /// as a left-aligned, `<hr>`-separated block of rows.
+///
+/// The returned string contains raw HTML tags; callers must [`xml_escape`] it
+/// before embedding it in an XML `value="…"` attribute (draw.io stores HTML
+/// labels entity-escaped and un-escapes them back to HTML at load time).
 fn class_box_value(b: &CompartmentBox) -> String {
     let mut s = String::new();
     if let Some(st) = &b.stereotype {
@@ -692,7 +696,7 @@ fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
              spacingLeft=6;spacingTop=4;spacingBottom=4;\" vertex=\"1\" parent=\"1\">\n\
              \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
              \x20       </mxCell>\n",
-            class_box_value(b),
+            xml_escape(&class_box_value(b)),
             f(r.x + MARGIN),
             f(r.y + MARGIN),
             f(r.width),
@@ -962,7 +966,10 @@ mod tests {
             xml.contains("+speak(): void"),
             "method compartment row must appear: {xml}"
         );
-        assert!(xml.contains("<hr"), "compartments are hr-separated: {xml}");
+        assert!(
+            xml.contains("&lt;hr"),
+            "compartments are hr-separated (entity-escaped HTML): {xml}"
+        );
     }
 
     #[test]
