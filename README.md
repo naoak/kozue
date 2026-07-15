@@ -4,8 +4,11 @@
 
 [![CI](https://github.com/naoak/kozue/actions/workflows/ci.yml/badge.svg)](https://github.com/naoak/kozue/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Live demo](https://img.shields.io/badge/demo-live-brightgreen.svg)](https://naoak.github.io/kozue/)
 
 kozue is a diagram compiler that takes a custom DSL (`.kzd`) as input and produces deterministic SVG output. It parses the DSL into a semantic IR, lays out the diagram with a naive layered algorithm, and renders it to SVG. The same input always produces byte-identical output.
+
+**[Try it in your browser →](https://naoak.github.io/kozue/)** — a WASM-powered playground that compiles kozue, Mermaid, and PlantUML to SVG, PNG, terminal text, DOT, draw.io, and Excalidraw.
 
 > **kozue** (梢, _kozue_) is Japanese for "treetop" — the slender tip of a branch.
 > The name nods to the branching, tree-like structure of the diagrams it compiles.
