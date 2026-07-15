@@ -1601,3 +1601,125 @@ fn excalidraw_cli_flag_produces_output() {
         "output must be an Excalidraw scene"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PowerPoint (.pptx) golden tests
+// ---------------------------------------------------------------------------
+
+fn compile_pptx_kzd(src: &str) -> Vec<u8> {
+    let diagram = kozue_dsl::parse(src).expect("golden input must parse");
+    let layout_out = kozue_layout::layout_full(&diagram).expect("golden layout must succeed");
+    kozue_render_pptx::render(&layout_out.semantic).expect("golden pptx render must succeed")
+}
+
+const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
+const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+
+fn run_pptx_golden_cases(cases: &[&str]) {
+    for name in cases {
+        let kzd = golden_dir().join(format!("{name}.kzd"));
+        let pptx_path = golden_dir().join(format!("{name}.pptx"));
+        let src =
+            std::fs::read_to_string(&kzd).unwrap_or_else(|e| panic!("read {}: {e}", kzd.display()));
+        let actual = compile_pptx_kzd(&src);
+
+        if std::env::var("UPDATE_GOLDEN").is_ok() {
+            std::fs::write(&pptx_path, &actual).unwrap();
+            continue;
+        }
+
+        let expected = std::fs::read(&pptx_path).unwrap_or_else(|e| {
+            panic!(
+                "read golden {}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+                pptx_path.display()
+            )
+        });
+        assert_eq!(
+            actual, expected,
+            "pptx golden mismatch for {name}.kzd (run with UPDATE_GOLDEN=1 to update)"
+        );
+    }
+}
+
+#[test]
+fn pptx_graph_goldens_match() {
+    run_pptx_golden_cases(PPTX_GRAPH_GOLDEN_CASES);
+}
+
+#[test]
+fn pptx_state_goldens_match() {
+    run_pptx_golden_cases(PPTX_STATE_GOLDEN_CASES);
+}
+
+#[test]
+fn pptx_sequence_goldens_match() {
+    run_pptx_golden_cases(PPTX_SEQUENCE_GOLDEN_CASES);
+}
+
+#[test]
+fn pptx_render_is_deterministic() {
+    let src = std::fs::read_to_string(golden_dir().join("chain.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&src).unwrap();
+    let out1 = kozue_layout::layout_full(&diagram).unwrap();
+    let out2 = kozue_layout::layout_full(&diagram).unwrap();
+    let bytes1 = kozue_render_pptx::render(&out1.semantic).unwrap();
+    let bytes2 = kozue_render_pptx::render(&out2.semantic).unwrap();
+    assert_eq!(bytes1, bytes2, "pptx render must be deterministic");
+}
+
+/// Every pptx golden must be a well-formed ZIP (OPC) container: starts with a
+/// local-file-header signature, contains an End-Of-Central-Directory
+/// signature, and (since entries are stored uncompressed/STORE) the raw
+/// slide1.xml text — including at least one shape and a label — appears
+/// verbatim in the byte stream.
+#[test]
+fn pptx_goldens_are_well_formed_zip() {
+    let cases = PPTX_GRAPH_GOLDEN_CASES
+        .iter()
+        .chain(PPTX_STATE_GOLDEN_CASES.iter())
+        .chain(PPTX_SEQUENCE_GOLDEN_CASES.iter());
+    for name in cases {
+        let pptx_path = golden_dir().join(format!("{name}.pptx"));
+        let bytes = std::fs::read(&pptx_path)
+            .unwrap_or_else(|e| panic!("read golden {}: {e}", pptx_path.display()));
+        assert!(
+            bytes.starts_with(b"PK\x03\x04"),
+            "{name}.pptx must start with a ZIP local file header signature"
+        );
+        assert!(
+            bytes.windows(4).any(|w| w == b"PK\x05\x06"),
+            "{name}.pptx must contain an End Of Central Directory signature"
+        );
+        assert!(
+            bytes.windows(5).any(|w| w == b"<p:sp"),
+            "{name}.pptx slide1.xml must contain at least one shape"
+        );
+    }
+}
+
+#[test]
+fn pptx_cli_flag_produces_output() {
+    let bin = env!("CARGO_BIN_EXE_kozue");
+    let kzd = golden_dir().join("chain.kzd");
+    let tmp_out = std::env::temp_dir().join("kozue_pptx_flag_test.pptx");
+    let status = std::process::Command::new(bin)
+        .args([
+            "render",
+            "--format",
+            "pptx",
+            kzd.to_str().unwrap(),
+            "-o",
+            tmp_out.to_str().unwrap(),
+        ])
+        .status()
+        .expect("failed to run kozue");
+    let content = std::fs::read(&tmp_out).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp_out);
+    assert!(status.success(), "render --format pptx should succeed");
+    assert!(!content.is_empty(), "pptx output should be non-empty");
+    assert!(
+        content.starts_with(b"PK\x03\x04"),
+        "output must be a ZIP (OPC) container"
+    );
+}

@@ -19,4 +19,5 @@ kozue-render-term.workspace = true
 kozue-render-dot.workspace = true
 kozue-render-drawio.workspace = true
 kozue-render-excalidraw.workspace = true
+kozue-render-pptx.workspace = true
 wasm-bindgen.workspace = true

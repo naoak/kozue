@@ -549,6 +549,7 @@ dependencies = [
  "kozue-render-drawio",
  "kozue-render-excalidraw",
  "kozue-render-png",
+ "kozue-render-pptx",
  "kozue-render-svg",
  "kozue-render-term",
  "kozue-text",
@@ -645,6 +646,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kozue-render-pptx"
+version = "0.1.0"
+dependencies = [
+ "kozue-ir",
+ "kozue-layout",
+]
+
+[[package]]
 name = "kozue-render-svg"
 version = "0.1.0"
 dependencies = [
@@ -679,6 +688,7 @@ dependencies = [
  "kozue-render-drawio",
  "kozue-render-excalidraw",
  "kozue-render-png",
+ "kozue-render-pptx",
  "kozue-render-svg",
  "kozue-render-term",
  "wasm-bindgen",

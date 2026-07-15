@@ -172,6 +172,7 @@
             <option value="dot">DOT</option>
             <option value="drawio">draw.io</option>
             <option value="excalidraw">Excalidraw</option>
+            <option value="pptx">PowerPoint</option>
           </select>
         </div>
         <div class="group">
@@ -187,7 +188,7 @@
 
 <script type="module">
 import init, {
-  render_svg, render_png, render_term, render_dot, render_drawio, render_excalidraw, check,
+  render_svg, render_png, render_term, render_dot, render_drawio, render_excalidraw, render_pptx, check,
 } from './pkg/kozue_wasm.js';
 
 // ---------------------------------------------------------------------------
@@ -289,6 +290,7 @@ const FORMAT_INFO = {
   dot:        { ext: 'dot',       mime: 'text/vnd.graphviz',    kind: 'text' },
   drawio:     { ext: 'drawio',    mime: 'application/xml',      kind: 'text' },
   excalidraw: { ext: 'excalidraw',mime: 'application/json',     kind: 'text' },
+  pptx:       { ext: 'pptx',      mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', kind: 'binary' },
 };
 
 const inputEl    = document.getElementById('input');
@@ -403,6 +405,14 @@ function doRender() {
         current = { kind: 'text', text, format };
         break;
       }
+      case 'pptx': {
+        const bytes = render_pptx(input, lang); // Uint8Array (binary, not previewable inline)
+        const pre = document.createElement('pre');
+        pre.textContent = `PowerPoint file rendered (${bytes.length} bytes). Click Download to save the .pptx.`;
+        outputEl.appendChild(pre);
+        current = { kind: 'binary', bytes, format };
+        break;
+      }
       default:
         throw new Error(`unknown format: ${format}`);
     }
@@ -452,7 +462,7 @@ checkBtn.addEventListener('click', doCheck);
 downloadBtn.addEventListener('click', () => {
   if (!current) return;
   const info = FORMAT_INFO[current.format];
-  const blob = current.kind === 'png'
+  const blob = (current.kind === 'png' || current.kind === 'binary')
     ? new Blob([current.bytes], { type: info.mime })
     : new Blob([current.text], { type: info.mime });
   const url = URL.createObjectURL(blob);
@@ -467,7 +477,7 @@ downloadBtn.addEventListener('click', () => {
 });
 
 copyBtn.addEventListener('click', async () => {
-  if (!current || current.kind === 'png') return;
+  if (!current || current.kind === 'png' || current.kind === 'binary') return;
   try {
     await navigator.clipboard.writeText(current.text);
     setStatus('Copied output to clipboard', false);

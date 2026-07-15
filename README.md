@@ -8,7 +8,7 @@
 
 kozue is a diagram compiler that takes a custom DSL (`.kzd`) as input and produces deterministic SVG output. It parses the DSL into a semantic IR, lays out the diagram with a naive layered algorithm, and renders it to SVG. The same input always produces byte-identical output.
 
-**[Try it in your browser →](https://naoak.github.io/kozue/)** — a WASM-powered playground that compiles kozue, Mermaid, and PlantUML to SVG, PNG, terminal text, DOT, draw.io, and Excalidraw.
+**[Try it in your browser →](https://naoak.github.io/kozue/)** — a WASM-powered playground that compiles kozue, Mermaid, and PlantUML to SVG, PNG, terminal text, DOT, draw.io, Excalidraw, and PowerPoint.
 
 > **kozue** (梢, _kozue_) is Japanese for "treetop" — the slender tip of a branch.
 > The name nods to the branching, tree-like structure of the diagrams it compiles.
@@ -49,6 +49,7 @@ The frontend is auto-detected from the input file extension: kozue DSL (`.kzd`),
 | `drawio` | Editable draw.io / mxGraph XML |
 | `dot` | Graphviz DOT — for `graph` and `state` diagrams; Graphviz does its own layout |
 | `excalidraw` | Editable Excalidraw (`.excalidraw`) JSON scene |
+| `pptx` | Editable PowerPoint (`.pptx`) shapes |
 
 ```sh
 kozue render examples/hello.kzd --format dot -o hello.dot
@@ -97,7 +98,7 @@ Go-to-definition and other features are planned for future milestones.
 
 ## WebAssembly
 
-The [`kozue-wasm`](crates/kozue-wasm/) crate exposes the compiler to JavaScript via `wasm-bindgen`, with three functions: `render_svg` (parse → layout → SVG string), `render_png` (parse → layout → PNG bytes), and `check` (parse-only validation). Determinism carries over: the same input always produces identical output in the browser.
+The [`kozue-wasm`](crates/kozue-wasm/) crate exposes the compiler to JavaScript via `wasm-bindgen`, with one entry point per output format plus a validator: `render_svg`, `render_term`, `render_dot`, `render_drawio`, and `render_excalidraw` (which return strings), `render_png` and `render_pptx` (which return bytes as a `Uint8Array` — PNG raster and a PowerPoint `.pptx` package respectively), and `check` (parse-only validation). Determinism carries over: the same input always produces identical output in the browser. The [live demo](https://naoak.github.io/kozue/) wires every format into a dropdown, with Download available for all of them (including the binary PNG and `.pptx` outputs).
 
 The generated `pkg/` directory is **not** checked into the repository (it is git-ignored), so `demo.html` will not work on a fresh clone until you build the bindings yourself. If the buttons and the language selector appear dead, it usually means `pkg/` is missing: the ES-module import fails and none of the page's event handlers get registered (check the browser console for a module-load error).
 

@@ -8,6 +8,7 @@
 //!   supported for sequence diagrams).
 //! - [`render_drawio`]: parse → layout → draw.io (mxGraph) XML string.
 //! - [`render_excalidraw`]: parse → layout → Excalidraw JSON string.
+//! - [`render_pptx`]: parse → layout → PowerPoint (`.pptx`) bytes (as `Uint8Array`).
 //! - [`check`]: parse-only validation.
 //!
 //! ## Determinism
@@ -199,6 +200,13 @@ fn excalidraw_impl(input: &str, lang: &str) -> Result<String, String> {
     kozue_render_excalidraw::render(&out.semantic).map_err(|e| e.to_string())
 }
 
+fn pptx_impl(input: &str, lang: &str) -> Result<Vec<u8>, String> {
+    let lang = parse_lang(lang)?;
+    let diagram = parse_any(input, lang)?;
+    let out = kozue_layout::layout_full(&diagram).map_err(|e| format!("layout failed: {e}"))?;
+    kozue_render_pptx::render(&out.semantic).map_err(|e| e.to_string())
+}
+
 fn check_impl(input: &str, lang: &str) -> Result<(), String> {
     let lang = parse_lang(lang)?;
     parse_any(input, lang).map(|_| ())
@@ -269,6 +277,16 @@ pub fn render_drawio(input: &str, lang: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn render_excalidraw(input: &str, lang: &str) -> Result<String, JsValue> {
     excalidraw_impl(input, lang).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Parse `input` in `lang`, lay it out, and return a `.pptx` (PowerPoint)
+/// file as bytes (`Uint8Array`), suitable for opening directly in
+/// PowerPoint / LibreOffice Impress.
+///
+/// On error, rejects with a human-readable diagnostic string.
+#[wasm_bindgen]
+pub fn render_pptx(input: &str, lang: &str) -> Result<Vec<u8>, JsValue> {
+    pptx_impl(input, lang).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Parse `input` in `lang` and check for errors without rendering.
@@ -506,5 +524,34 @@ mod tests {
     #[test]
     fn excalidraw_impl_unknown_lang_returns_err() {
         assert!(excalidraw_impl(KOZUE_MINIMAL, "unknown").is_err());
+    }
+
+    #[test]
+    fn pptx_impl_returns_zip_magic_bytes() {
+        let result = pptx_impl(KOZUE_MINIMAL, "kozue");
+        let bytes = result.expect("should produce pptx bytes");
+        assert!(
+            bytes.starts_with(b"PK\x03\x04"),
+            "expected ZIP magic header, got: {:?}",
+            &bytes[..bytes.len().min(8)]
+        );
+    }
+
+    #[test]
+    fn pptx_impl_sequence_diagram_ok() {
+        let result = pptx_impl(MERMAID_MINIMAL, "mermaid");
+        assert!(result.is_ok(), "sequence diagrams should render to pptx");
+    }
+
+    #[test]
+    fn pptx_impl_unknown_lang_returns_err() {
+        assert!(pptx_impl(KOZUE_MINIMAL, "unknown").is_err());
+    }
+
+    #[test]
+    fn pptx_impl_deterministic() {
+        let bytes1 = pptx_impl(KOZUE_MINIMAL, "kozue").unwrap();
+        let bytes2 = pptx_impl(KOZUE_MINIMAL, "kozue").unwrap();
+        assert_eq!(bytes1, bytes2, "pptx output must be deterministic");
     }
 }

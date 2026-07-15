@@ -14,6 +14,7 @@ members = [
     "crates/kozue-render-drawio",
     "crates/kozue-render-dot",
     "crates/kozue-render-excalidraw",
+    "crates/kozue-render-pptx",
     "crates/kozue-wasm",
     "crates/kozue-lsp",
 ]
@@ -36,6 +37,7 @@ kozue-render-png = { path = "crates/kozue-render-png" }
 kozue-render-drawio = { path = "crates/kozue-render-drawio" }
 kozue-render-dot = { path = "crates/kozue-render-dot" }
 kozue-render-excalidraw = { path = "crates/kozue-render-excalidraw" }
+kozue-render-pptx = { path = "crates/kozue-render-pptx" }
 tiny-skia = "0.11"
 
 chumsky = "0.9"

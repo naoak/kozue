@@ -30,6 +30,7 @@ enum Format {
     Drawio,
     Dot,
     Excalidraw,
+    Pptx,
 }
 
 #[derive(Subcommand)]
@@ -44,7 +45,7 @@ enum Command {
         /// Override the frontend language (auto-detected from extension by default).
         #[arg(long)]
         lang: Option<Lang>,
-        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), `drawio` (mxGraph XML), `dot` (Graphviz DOT), or `excalidraw` (Excalidraw JSON).
+        /// Output format: `svg` (default), `term` (plain-text terminal), `png` (raster PNG), `drawio` (mxGraph XML), `dot` (Graphviz DOT), `excalidraw` (Excalidraw JSON), or `pptx` (PowerPoint shapes).
         #[arg(long, default_value = "svg")]
         format: Format,
     },
@@ -249,6 +250,20 @@ fn run_render(
             };
             let out_path = output.unwrap_or_else(|| input.with_extension("excalidraw"));
             if let Err(e) = std::fs::write(&out_path, &excalidraw) {
+                eprintln!("error: cannot write {}: {}", out_path.display(), e);
+                return ExitCode::FAILURE;
+            }
+        }
+        Format::Pptx => {
+            let pptx = match kozue_render_pptx::render(&layout_semantic) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!("error: PowerPoint export failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let out_path = output.unwrap_or_else(|| input.with_extension("pptx"));
+            if let Err(e) = std::fs::write(&out_path, &pptx) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
                 return ExitCode::FAILURE;
             }
