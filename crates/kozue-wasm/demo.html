@@ -19,101 +19,152 @@
 <!doctype html>
 <title>kozue WASM demo</title>
 <meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <style>
+  :root {
+    color-scheme: light dark;
+    --bg: light-dark(#f5f5f5, #1a1a1a);
+    --fg: light-dark(#222, #e8e8e8);
+    --panel-bg: light-dark(#fff, #242424);
+    --panel-border: light-dark(#ddd, #3a3a3a);
+    --input-border: light-dark(#ccc, #4a4a4a);
+    --control-border: light-dark(#999, #666);
+    --control-bg: light-dark(#fff, #2e2e2e);
+    --accent: light-dark(#0066cc, #4d9fff);
+    --accent-hover: light-dark(#0055aa, #3d8fef);
+    --accent-fg: light-dark(#fff, #0a0a0a);
+    --ok-bg: light-dark(#d4edda, #16351f);
+    --ok-fg: light-dark(#155724, #8fd8a4);
+    --err-bg: light-dark(#f8d7da, #3a1a1d);
+    --err-fg: light-dark(#721c24, #f3a7ad);
+    --muted: light-dark(#666, #999);
+  }
   *, *::before, *::after { box-sizing: border-box; }
   body {
     font-family: system-ui, sans-serif;
     margin: 0;
     padding: 1rem;
-    background: #f5f5f5;
-    color: #222;
+    background: var(--bg);
+    color: var(--fg);
   }
-  h1 { margin-top: 0; font-size: 1.4rem; }
+  .logo-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.25rem; }
+  .logo-row img { width: 240px; height: auto; display: block; }
+  h1 { margin: 0; font-size: 1.1rem; font-weight: 500; color: var(--muted); }
   .row { display: flex; gap: 1rem; flex-wrap: wrap; }
   .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
+  .controls label { font-size: 0.85rem; color: var(--muted); }
   textarea {
     width: 100%;
-    height: 220px;
-    font-family: monospace;
+    height: 260px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.9rem;
     padding: 0.5rem;
-    border: 1px solid #ccc;
+    border: 1px solid var(--input-border);
     border-radius: 4px;
     resize: vertical;
+    background: var(--control-bg);
+    color: var(--fg);
   }
   select, button {
     padding: 0.35rem 0.7rem;
     font-size: 0.9rem;
-    border: 1px solid #999;
+    border: 1px solid var(--control-border);
     border-radius: 4px;
     cursor: pointer;
-    background: #fff;
+    background: var(--control-bg);
+    color: var(--fg);
   }
-  button { background: #0066cc; color: #fff; border-color: #0055aa; }
-  button:hover { background: #0055aa; }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent-hover); }
+  button.primary:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #status {
     font-size: 0.85rem;
     min-height: 1.4em;
-    padding: 0.25rem 0.5rem;
+    padding: 0.35rem 0.6rem;
     border-radius: 4px;
     margin-bottom: 0.5rem;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  #status.ok  { background: #d4edda; color: #155724; }
-  #status.err { background: #f8d7da; color: #721c24; white-space: pre-wrap; font-family: monospace; }
+  #status.ok  { background: var(--ok-bg); color: var(--ok-fg); }
+  #status.err { background: var(--err-bg); color: var(--err-fg); }
+  #status:empty { padding: 0; }
   #output {
-    background: #fff;
-    border: 1px solid #ddd;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
     border-radius: 4px;
     padding: 1rem;
-    min-height: 120px;
+    min-height: 160px;
     overflow: auto;
   }
   #output img { max-width: 100%; }
-  .col { flex: 1; min-width: 300px; }
+  #output pre {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre;
+    overflow: auto;
+    max-height: 60vh;
+  }
+  .col { flex: 1; min-width: 320px; }
+  .output-actions { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 </style>
 
-<h1>kozue WASM demo</h1>
+<div class="logo-row">
+  <img src="./kozue_logo.svg" alt="kozue logo" width="240">
+</div>
+<h1>WASM demo — kozue diagram compiler</h1>
 
 <div class="row">
   <div class="col">
     <div class="controls">
-      <label for="lang">Language:</label>
+      <label for="lang">Language</label>
       <select id="lang">
         <option value="kozue">kozue</option>
         <option value="mermaid">mermaid</option>
         <option value="plantuml">plantuml</option>
       </select>
-      <button id="btn-svg">Render SVG</button>
-      <button id="btn-png">Render PNG</button>
+      <label for="format">Format</label>
+      <select id="format">
+        <option value="svg">SVG</option>
+        <option value="png">PNG</option>
+        <option value="term">Term</option>
+        <option value="dot">DOT</option>
+        <option value="drawio">draw.io</option>
+        <option value="excalidraw">Excalidraw</option>
+      </select>
+      <label for="sample">Sample</label>
+      <select id="sample"></select>
     </div>
-    <textarea id="input" spellcheck="false">diagram flow {
-  direction down
-  a: "Start"
-  b: "Process"
-  c: "End"
-  a -> b : "next"
-  b -> c
-}</textarea>
+    <div class="controls">
+      <button id="btn-render" class="primary">Render</button>
+      <button id="btn-check">Check</button>
+    </div>
+    <textarea id="input" spellcheck="false"></textarea>
   </div>
   <div class="col">
     <div id="status"></div>
+    <div class="output-actions">
+      <button id="btn-download">Download</button>
+      <button id="btn-copy">Copy</button>
+    </div>
     <div id="output"></div>
   </div>
 </div>
 
 <script type="module">
-import init, { render_svg, render_png, check } from './pkg/kozue_wasm.js';
+import init, {
+  render_svg, render_png, render_term, render_dot, render_drawio, render_excalidraw, check,
+} from './pkg/kozue_wasm.js';
 
-await init();
+// ---------------------------------------------------------------------------
+// Samples — at least 2-3 per language, covering different diagram kinds.
+// Every sample here has been verified to parse and render via the kozue CLI.
+// ---------------------------------------------------------------------------
 
-const inputEl  = document.getElementById('input');
-const langEl   = document.getElementById('lang');
-const statusEl = document.getElementById('status');
-const outputEl = document.getElementById('output');
-
-// Update textarea placeholder text when language changes.
-const EXAMPLES = {
-  kozue: `diagram flow {
+const SAMPLES = {
+  kozue: {
+    'flow: three-step process': `diagram flow {
   direction down
   a: "Start"
   b: "Process"
@@ -121,26 +172,127 @@ const EXAMPLES = {
   a -> b : "next"
   b -> c
 }`,
-  mermaid: `sequenceDiagram
+    'sequence: login flow': `diagram seq {
+  participant web: "Web Browser"
+  participant api: "API Server"
+  participant db: "DB"
+  web -> api : "POST /login"
+  api -> db : "SELECT user"
+  db --> api : "row"
+  api --> web : "200 OK"
+  api -> api : "make session"
+}`,
+    'state: traffic light': `diagram state_basic {
+  state idle: "Idle"
+  state active: "Active"
+  state done: "Done"
+
+  [*] -> idle
+  idle -> active : "start"
+  active -> active : "tick"
+  active -> done : "finish"
+  done -> [*]
+}`,
+  },
+  mermaid: {
+    'flow: three-step process': `flowchart TD
+  start[Start] --> proc[Process]
+  proc -->|OK| finish[Finish]
+  proc -->|NG| err[Error]
+  finish --> stop
+  err --> stop[Stop]`,
+    'sequence: greeting': `sequenceDiagram
   participant A as Alice
   participant B as Bob
   A->>B: Hello
-  B-->>A: Hi there`,
-  plantuml: `@startuml
+  B-->>A: Hi there
+  A->>A: Think`,
+    'state: traffic light': `stateDiagram-v2
+    state "Idle" as idle
+    state "Active" as active
+    state "Done" as done
+    [*] --> idle
+    idle --> active : start
+    active --> active : tick
+    active --> done : finish
+    done --> [*]`,
+  },
+  plantuml: {
+    'sequence: greeting': `@startuml
 participant Alice
 participant Bob
 Alice -> Bob : Hello
 Bob --> Alice : Hi there
+Alice -> Alice : Think
 @enduml`,
+    'sequence: login flow': `@startuml
+participant Client as C
+participant "API Server" as S
+participant Database as DB
+
+C -> S : POST /login
+S --> C : 200 OK
+S -> DB : SELECT user
+DB --> S : row
+C -> C : save session
+@enduml`,
+    'state: traffic light': `@startuml
+state "Idle" as idle
+state "Active" as active
+state "Done" as done
+[*] --> idle
+idle --> active : start
+active --> active : tick
+active --> done : finish
+done --> [*]
+@enduml`,
+  },
 };
 
-langEl.addEventListener('change', () => {
-  inputEl.value = EXAMPLES[langEl.value] ?? '';
-});
+const FORMAT_INFO = {
+  svg:        { ext: 'svg',       mime: 'image/svg+xml',        kind: 'svg'  },
+  png:        { ext: 'png',       mime: 'image/png',            kind: 'png'  },
+  term:       { ext: 'txt',       mime: 'text/plain',           kind: 'text' },
+  dot:        { ext: 'dot',       mime: 'text/vnd.graphviz',    kind: 'text' },
+  drawio:     { ext: 'drawio',    mime: 'application/xml',      kind: 'text' },
+  excalidraw: { ext: 'excalidraw',mime: 'application/json',     kind: 'text' },
+};
+
+const inputEl    = document.getElementById('input');
+const langEl     = document.getElementById('lang');
+const formatEl   = document.getElementById('format');
+const sampleEl   = document.getElementById('sample');
+const statusEl   = document.getElementById('status');
+const outputEl   = document.getElementById('output');
+const renderBtn  = document.getElementById('btn-render');
+const checkBtn   = document.getElementById('btn-check');
+const downloadBtn = document.getElementById('btn-download');
+const copyBtn    = document.getElementById('btn-copy');
+
+let wasmReady = false;
+
+function populateSamples() {
+  sampleEl.innerHTML = '';
+  for (const name of Object.keys(SAMPLES[langEl.value])) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sampleEl.appendChild(opt);
+  }
+}
+
+function loadSample() {
+  const samples = SAMPLES[langEl.value];
+  const name = sampleEl.value in samples ? sampleEl.value : Object.keys(samples)[0];
+  inputEl.value = samples[name];
+}
+
+populateSamples();
+loadSample();
 
 function setStatus(msg, isError) {
   statusEl.textContent = msg;
-  statusEl.className = isError ? 'err' : 'ok';
+  statusEl.className = isError ? 'err' : (msg ? 'ok' : '');
 }
 
 // Revoke any previous object URL to avoid memory leaks.
@@ -152,38 +304,136 @@ function revokeOldUrl() {
   }
 }
 
-document.getElementById('btn-svg').addEventListener('click', () => {
+// Current rendered output, kept around for download/copy.
+let current = null; // { kind: 'svg'|'png'|'text', text?: string, bytes?: Uint8Array, format }
+
+function updateActionButtons() {
+  const hasOutput = current !== null;
+  downloadBtn.disabled = !hasOutput;
+  copyBtn.disabled = !hasOutput || current.kind === 'png';
+}
+
+function doRender() {
+  if (!wasmReady) return;
   const input = inputEl.value;
-  const lang  = langEl.value;
+  const lang = langEl.value;
+  const format = formatEl.value;
+
   try {
-    const svg = render_svg(input, lang);
     revokeOldUrl();
-    outputEl.innerHTML = svg;
-    setStatus('SVG rendered successfully', false);
+    outputEl.innerHTML = '';
+    current = null;
+
+    switch (format) {
+      case 'svg': {
+        const svg = render_svg(input, lang);
+        outputEl.innerHTML = svg;
+        current = { kind: 'svg', text: svg, format };
+        break;
+      }
+      case 'png': {
+        const bytes = render_png(input, lang); // Uint8Array
+        const blob = new Blob([bytes], { type: 'image/png' });
+        const url = URL.createObjectURL(blob);
+        prevObjectUrl = url;
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = 'kozue PNG output';
+        outputEl.appendChild(img);
+        current = { kind: 'png', bytes, format };
+        break;
+      }
+      case 'term':
+      case 'dot':
+      case 'drawio':
+      case 'excalidraw': {
+        const fn = { term: render_term, dot: render_dot, drawio: render_drawio, excalidraw: render_excalidraw }[format];
+        const text = fn(input, lang);
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        outputEl.appendChild(pre);
+        current = { kind: 'text', text, format };
+        break;
+      }
+      default:
+        throw new Error(`unknown format: ${format}`);
+    }
+
+    setStatus(`${format.toUpperCase()} rendered successfully`, false);
   } catch (e) {
     outputEl.innerHTML = '';
+    current = null;
     setStatus(String(e), true);
+  } finally {
+    updateActionButtons();
+  }
+}
+
+function doCheck() {
+  if (!wasmReady) return;
+  try {
+    check(inputEl.value, langEl.value);
+    setStatus('OK', false);
+  } catch (e) {
+    setStatus(String(e), true);
+  }
+}
+
+// Debounced auto-render on input/lang/format changes.
+let debounceTimer = null;
+function scheduleRender() {
+  if (debounceTimer !== null) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(doRender, 300);
+}
+
+inputEl.addEventListener('input', scheduleRender);
+langEl.addEventListener('change', () => {
+  populateSamples();
+  loadSample();
+  scheduleRender();
+});
+formatEl.addEventListener('change', scheduleRender);
+sampleEl.addEventListener('change', () => {
+  loadSample();
+  scheduleRender();
+});
+
+renderBtn.addEventListener('click', doRender);
+checkBtn.addEventListener('click', doCheck);
+
+downloadBtn.addEventListener('click', () => {
+  if (!current) return;
+  const info = FORMAT_INFO[current.format];
+  const blob = current.kind === 'png'
+    ? new Blob([current.bytes], { type: info.mime })
+    : new Blob([current.text], { type: info.mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `kozue-diagram.${info.ext}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  setStatus(`Downloaded kozue-diagram.${info.ext}`, false);
+});
+
+copyBtn.addEventListener('click', async () => {
+  if (!current || current.kind === 'png') return;
+  try {
+    await navigator.clipboard.writeText(current.text);
+    setStatus('Copied output to clipboard', false);
+  } catch (e) {
+    setStatus(`Copy failed: ${e}`, true);
   }
 });
 
-document.getElementById('btn-png').addEventListener('click', () => {
-  const input = inputEl.value;
-  const lang  = langEl.value;
-  try {
-    const bytes = render_png(input, lang);  // Uint8Array
-    revokeOldUrl();
-    const blob = new Blob([bytes], { type: 'image/png' });
-    const url  = URL.createObjectURL(blob);
-    prevObjectUrl = url;
-    outputEl.innerHTML = '';
-    const img = document.createElement('img');
-    img.src = url;
-    img.alt = 'kozue PNG output';
-    outputEl.appendChild(img);
-    setStatus(`PNG rendered (${bytes.length} bytes)`, false);
-  } catch (e) {
-    outputEl.innerHTML = '';
-    setStatus(String(e), true);
-  }
+updateActionButtons();
+
+init().then(() => {
+  wasmReady = true;
+  doRender();
+}).catch((e) => {
+  setStatus(`Failed to initialize WASM module: ${e}`, true);
 });
 </script>

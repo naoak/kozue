@@ -675,8 +675,12 @@ dependencies = [
  "kozue-layout",
  "kozue-mermaid",
  "kozue-plantuml",
+ "kozue-render-dot",
+ "kozue-render-drawio",
+ "kozue-render-excalidraw",
  "kozue-render-png",
  "kozue-render-svg",
+ "kozue-render-term",
  "wasm-bindgen",
 ]
 

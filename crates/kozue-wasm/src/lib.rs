@@ -1,8 +1,13 @@
 //! WASM entry point for the kozue diagram compiler.
 //!
-//! This crate exposes three functions to JavaScript via wasm-bindgen:
+//! This crate exposes the following functions to JavaScript via wasm-bindgen:
 //! - [`render_svg`]: parse → layout → SVG string.
 //! - [`render_png`]: parse → layout → PNG bytes (as `Uint8Array`).
+//! - [`render_term`]: parse → layout → terminal/ASCII-art string.
+//! - [`render_dot`]: parse → Graphviz DOT string (no layout step; not
+//!   supported for sequence diagrams).
+//! - [`render_drawio`]: parse → layout → draw.io (mxGraph) XML string.
+//! - [`render_excalidraw`]: parse → layout → Excalidraw JSON string.
 //! - [`check`]: parse-only validation.
 //!
 //! ## Determinism
@@ -167,6 +172,33 @@ fn png_impl(input: &str, lang: &str) -> Result<Vec<u8>, String> {
     kozue_render_png::render(&scene).map_err(|e| e.to_string())
 }
 
+fn term_impl(input: &str, lang: &str) -> Result<String, String> {
+    let lang = parse_lang(lang)?;
+    let diagram = parse_any(input, lang)?;
+    let scene = kozue_layout::layout(&diagram).map_err(|e| format!("layout failed: {e}"))?;
+    Ok(kozue_render_term::render(&scene))
+}
+
+fn dot_impl(input: &str, lang: &str) -> Result<String, String> {
+    let lang = parse_lang(lang)?;
+    let diagram = parse_any(input, lang)?;
+    kozue_render_dot::render(&diagram).map_err(|e| e.to_string())
+}
+
+fn drawio_impl(input: &str, lang: &str) -> Result<String, String> {
+    let lang = parse_lang(lang)?;
+    let diagram = parse_any(input, lang)?;
+    let out = kozue_layout::layout_full(&diagram).map_err(|e| format!("layout failed: {e}"))?;
+    kozue_render_drawio::render(&out.semantic).map_err(|e| e.to_string())
+}
+
+fn excalidraw_impl(input: &str, lang: &str) -> Result<String, String> {
+    let lang = parse_lang(lang)?;
+    let diagram = parse_any(input, lang)?;
+    let out = kozue_layout::layout_full(&diagram).map_err(|e| format!("layout failed: {e}"))?;
+    kozue_render_excalidraw::render(&out.semantic).map_err(|e| e.to_string())
+}
+
 fn check_impl(input: &str, lang: &str) -> Result<(), String> {
     let lang = parse_lang(lang)?;
     parse_any(input, lang).map(|_| ())
@@ -196,6 +228,47 @@ pub fn render_svg(input: &str, lang: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn render_png(input: &str, lang: &str) -> Result<Vec<u8>, JsValue> {
     png_impl(input, lang).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Parse `input` in `lang`, lay it out, and return a terminal/ASCII-art
+/// rendering as a plain string. Always succeeds once layout succeeds (no
+/// separate render-time failure mode).
+///
+/// On error, rejects with a human-readable diagnostic string.
+#[wasm_bindgen]
+pub fn render_term(input: &str, lang: &str) -> Result<String, JsValue> {
+    term_impl(input, lang).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Parse `input` in `lang` and return a Graphviz DOT string.
+///
+/// Unlike the other renderers this does not run the `kozue-layout` pass —
+/// DOT does its own layout via Graphviz. Sequence diagrams are not
+/// representable as DOT graphs and will reject with an "unsupported
+/// diagram" diagnostic.
+///
+/// On error, rejects with a human-readable diagnostic string.
+#[wasm_bindgen]
+pub fn render_dot(input: &str, lang: &str) -> Result<String, JsValue> {
+    dot_impl(input, lang).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Parse `input` in `lang`, lay it out, and return a draw.io (mxGraph) XML
+/// string suitable for importing into diagrams.net / draw.io.
+///
+/// On error, rejects with a human-readable diagnostic string.
+#[wasm_bindgen]
+pub fn render_drawio(input: &str, lang: &str) -> Result<String, JsValue> {
+    drawio_impl(input, lang).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Parse `input` in `lang`, lay it out, and return an Excalidraw scene as a
+/// JSON string.
+///
+/// On error, rejects with a human-readable diagnostic string.
+#[wasm_bindgen]
+pub fn render_excalidraw(input: &str, lang: &str) -> Result<String, JsValue> {
+    excalidraw_impl(input, lang).map_err(|e| JsValue::from_str(&e))
 }
 
 /// Parse `input` in `lang` and check for errors without rendering.
@@ -358,5 +431,80 @@ mod tests {
     fn png_impl_unknown_lang_returns_err() {
         let result = png_impl(KOZUE_MINIMAL, "unknown");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn term_impl_kozue_returns_nonempty_text() {
+        let result = term_impl(KOZUE_MINIMAL, "kozue");
+        let text = result.expect("should produce term output");
+        assert!(!text.trim().is_empty(), "term output should be non-empty");
+    }
+
+    #[test]
+    fn term_impl_unknown_lang_returns_err() {
+        assert!(term_impl(KOZUE_MINIMAL, "unknown").is_err());
+    }
+
+    #[test]
+    fn dot_impl_graph_contains_digraph() {
+        let result = dot_impl(KOZUE_MINIMAL, "kozue");
+        let dot = result.expect("should produce DOT output");
+        assert!(
+            dot.starts_with("digraph {"),
+            "expected digraph, got: {}",
+            &dot[..dot.len().min(80)]
+        );
+    }
+
+    #[test]
+    fn dot_impl_sequence_diagram_returns_err() {
+        // Sequence diagrams are not representable as DOT (kozue_render_dot
+        // rejects them with RenderError::UnsupportedDiagram).
+        let result = dot_impl(MERMAID_MINIMAL, "mermaid");
+        assert!(
+            result.is_err(),
+            "sequence diagrams must be rejected by render_dot"
+        );
+    }
+
+    #[test]
+    fn drawio_impl_contains_mxgraphmodel() {
+        let result = drawio_impl(KOZUE_MINIMAL, "kozue");
+        let xml = result.expect("should produce draw.io XML");
+        assert!(xml.starts_with("<mxfile>"), "expected <mxfile>, got: {xml}");
+        assert!(
+            xml.contains("<mxGraphModel"),
+            "expected <mxGraphModel>, got: {xml}"
+        );
+    }
+
+    #[test]
+    fn drawio_impl_sequence_diagram_ok() {
+        // draw.io supports sequence diagrams (unlike DOT).
+        let result = drawio_impl(MERMAID_MINIMAL, "mermaid");
+        assert!(result.is_ok(), "sequence diagrams should render to draw.io");
+    }
+
+    #[test]
+    fn excalidraw_impl_produces_valid_json_with_elements() {
+        let result = excalidraw_impl(KOZUE_MINIMAL, "kozue");
+        let json = result.expect("should produce Excalidraw JSON");
+        assert!(
+            json.contains("\"type\""),
+            "expected \"type\" field, got: {json}"
+        );
+        assert!(
+            json.contains("\"elements\""),
+            "expected \"elements\" field, got: {json}"
+        );
+        assert!(
+            json.contains("excalidraw"),
+            "expected \"excalidraw\" type marker, got: {json}"
+        );
+    }
+
+    #[test]
+    fn excalidraw_impl_unknown_lang_returns_err() {
+        assert!(excalidraw_impl(KOZUE_MINIMAL, "unknown").is_err());
     }
 }

@@ -1,0 +1,79 @@
+name: Deploy WASM demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one Pages deployment at a time; new pushes cancel in-flight builds.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Must match the `wasm-bindgen` version pinned in Cargo.lock — a mismatched
+  # CLI/lib version pair fails at `wasm-bindgen` invocation time.
+  WASM_BINDGEN_VERSION: 0.2.92
+
+jobs:
+  build:
+    name: Build WASM demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        # Downloads a prebuilt binary (matched to the wasm-bindgen lib version in
+        # Cargo.lock) instead of compiling from source on every run.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN_VERSION }}
+
+      - name: Build kozue-wasm (release)
+        run: cargo build -p kozue-wasm --target wasm32-unknown-unknown --release --locked
+
+      - name: Generate JS bindings
+        run: |
+          wasm-bindgen target/wasm32-unknown-unknown/release/kozue_wasm.wasm \
+            --out-dir crates/kozue-wasm/pkg --target web
+
+      - name: Assemble Pages site
+        run: |
+          mkdir -p dist
+          cp crates/kozue-wasm/demo.html dist/index.html
+          cp crates/kozue-wasm/kozue_logo.svg dist/kozue_logo.svg
+          cp -r crates/kozue-wasm/pkg dist/pkg
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
