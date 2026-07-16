@@ -4,10 +4,10 @@
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
-        <mxCell id="n0" value="<div style="text-align:center"><b>Customer</b></div><hr size="1"/>[PK] id: Int<br/>name: String<br/>[UK] email: String" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n0" value="&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Customer&lt;/b&gt;&lt;/div&gt;&lt;hr size=&quot;1&quot;/&gt;[PK] id: Int&lt;br/&gt;name: String&lt;br/&gt;[UK] email: String" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="30.50" y="20.00" width="160.81" height="120.16" as="geometry"/>
         </mxCell>
-        <mxCell id="n1" value="<div style="text-align:center"><b>Order</b></div><hr size="1"/>[PK] id: Int<br/>[FK] customer_id: Int" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n1" value="&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Order&lt;/b&gt;&lt;/div&gt;&lt;hr size=&quot;1&quot;/&gt;[PK] id: Int&lt;br/&gt;[FK] customer_id: Int" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="20.00" y="240.16" width="181.80" height="91.84" as="geometry"/>
         </mxCell>
         <mxCell id="e0" value="places" style="edgeStyle=none;html=1;startArrow=ERone;startFill=0;endArrow=ERzeroToMany;endFill=0;" edge="1" source="n0" target="n1" parent="1">

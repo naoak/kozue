@@ -4,16 +4,16 @@
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
-        <mxCell id="n0" value="<div style="text-align:center"><b>Shape</b></div><hr size="1"/>+area(): float" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n0" value="&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Shape&lt;/b&gt;&lt;/div&gt;&lt;hr size=&quot;1&quot;/&gt;+area(): float" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="193.37" y="211.84" width="132.09" height="63.52" as="geometry"/>
         </mxCell>
-        <mxCell id="n1" value="<div style="text-align:center"><b>Circle</b></div><hr size="1"/>+radius: float<hr size="1"/>+area(): float" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n1" value="&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Circle&lt;/b&gt;&lt;/div&gt;&lt;hr size=&quot;1&quot;/&gt;+radius: float&lt;hr size=&quot;1&quot;/&gt;+area(): float" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="67.65" y="20.00" width="132.90" height="91.84" as="geometry"/>
         </mxCell>
-        <mxCell id="n2" value="<div style="text-align:center">&#171;interface&#187;</div><div style="text-align:center"><b>Drawable</b></div><hr size="1"/>+draw(): void" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n2" value="&lt;div style=&quot;text-align:center&quot;&gt;&amp;#171;interface&amp;#187;&lt;/div&gt;&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Drawable&lt;/b&gt;&lt;/div&gt;&lt;hr size=&quot;1&quot;/&gt;+draw(): void" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="20.00" y="211.84" width="133.37" height="81.84" as="geometry"/>
         </mxCell>
-        <mxCell id="n3" value="<div style="text-align:center"><b>Canvas</b></div>" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
+        <mxCell id="n3" value="&lt;div style=&quot;text-align:center&quot;&gt;&lt;b&gt;Canvas&lt;/b&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;spacingBottom=4;" vertex="1" parent="1">
           <mxGeometry x="240.55" y="20.00" width="98.73" height="35.20" as="geometry"/>
         </mxCell>
         <mxCell id="e0" value="" style="edgeStyle=none;html=1;startArrow=none;startFill=0;endArrow=block;endFill=0;" edge="1" source="n1" target="n0" parent="1">
