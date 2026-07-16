@@ -258,16 +258,19 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     // Build node id -> index lookup (Vec-based, deterministic).
     // Returns RenderError::DanglingEdge for unknown IDs instead of silently
     // dropping source/target attributes.
-    let find_node_idx = |id: &str| -> Option<usize> { g.nodes.iter().position(|n| n.id == id) };
+    let find_node_idx =
+        |id: &str| -> Option<usize> { g.nodes.iter().position(|n| n.id.as_str() == id) };
 
     // Edges
     for (i, edge) in g.edges.iter().enumerate() {
-        let src_idx = find_node_idx(&edge.from.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.from.id.clone(),
-        })?;
-        let tgt_idx = find_node_idx(&edge.to.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.to.id.clone(),
-        })?;
+        let src_idx =
+            find_node_idx(edge.from.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+                node_id: edge.from.id.to_string(),
+            })?;
+        let tgt_idx =
+            find_node_idx(edge.to.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+                node_id: edge.to.id.to_string(),
+            })?;
 
         let src_attr = format!(" source=\"n{src_idx}\"");
         let tgt_attr = format!(" target=\"n{tgt_idx}\"");
@@ -505,16 +508,17 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
     // Participant id -> index lookup (Vec-based, deterministic). Returns
     // DanglingEdge for an unknown participant instead of dropping the message.
     let find_participant =
-        |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id == id) };
+        |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id.as_str() == id) };
 
     // Messages — one connector per message (`e{i}`), pinned to fractional
     // heights on the source/target lifelines.
     for (i, m) in s.messages.iter().enumerate() {
-        let src_idx = find_participant(&m.from).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: m.from.clone(),
-        })?;
-        let tgt_idx = find_participant(&m.to).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: m.to.clone(),
+        let src_idx =
+            find_participant(m.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+                node_id: m.from.to_string(),
+            })?;
+        let tgt_idx = find_participant(m.to.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: m.to.to_string(),
         })?;
         let src = &s.participants[src_idx];
         let tgt = &s.participants[tgt_idx];
@@ -704,14 +708,15 @@ fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
         ));
     }
 
-    let find_box_idx = |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id == id) };
+    let find_box_idx =
+        |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id.as_str() == id) };
 
     for (i, rel) in layout.relations.iter().enumerate() {
-        let src_idx = find_box_idx(&rel.from).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: rel.from.clone(),
+        let src_idx = find_box_idx(rel.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.from.to_string(),
         })?;
-        let tgt_idx = find_box_idx(&rel.to).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: rel.to.clone(),
+        let tgt_idx = find_box_idx(rel.to.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.to.to_string(),
         })?;
 
         let (start_arrow, start_fill) = drawio_arrow(rel.from_marker);
@@ -1043,7 +1048,7 @@ mod tests {
         let SemanticLayout::Class(mut cl) = layout else {
             panic!("expected class layout");
         };
-        cl.relations[0].to = "does-not-exist".to_string();
+        cl.relations[0].to = "does-not-exist".into();
         let err = render(&SemanticLayout::Class(cl)).unwrap_err();
         assert_eq!(
             err,

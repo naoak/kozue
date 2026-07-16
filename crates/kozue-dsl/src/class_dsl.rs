@@ -123,7 +123,7 @@ fn parse_bytes(src: &str) -> Result<Diagram, Vec<CompileError>> {
     let ensure_class = |diagram: &mut ClassDiagram, id: &str| {
         if !diagram.classes.contains_key(id) {
             diagram.classes.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ClassNode::new(id.to_string(), id.to_string()),
             );
         }

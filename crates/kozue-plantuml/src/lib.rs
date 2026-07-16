@@ -53,8 +53,8 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
-    ErAttribute, ErDiagram, ErEntity, ErRelation, LineStyle, Message, Participant, SequenceDiagram,
-    SequenceItem, State, StateDiagram, Transition,
+    ErAttribute, ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, Participant,
+    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -78,7 +78,7 @@ impl Diagnostic {
 /// Returns `Ok(diagram)` on success, or `Err(diagnostics)` where diagnostics
 /// is a non-empty list of errors (all errors from the whole source are
 /// collected before returning, following the same convention as `kozue-dsl`).
-pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
+fn parse_diagram(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
     let mut errors: Vec<Diagnostic> = Vec::new();
 
     // Strip UTF-8 BOM if present.
@@ -219,6 +219,28 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
             Err(errors)
         }
     }
+}
+
+/// Parse PlantUML source text into a versioned semantic IR document.
+pub fn parse_document(source: &str) -> Result<IrDocument, Vec<Diagnostic>> {
+    let diagram = parse_diagram(source)?;
+    let mut document = IrDocument::new(diagram);
+    document.metadata.name = plantuml_name(source);
+    Ok(document)
+}
+
+/// Parse PlantUML source text into a semantic [`Diagram`].
+pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
+    parse_document(source).map(IrDocument::into_diagram)
+}
+
+fn plantuml_name(source: &str) -> Option<String> {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let (masked, _) = mask_comments(source);
+    let lines = logical_lines(&masked);
+    let header = lines.first()?.1.trim();
+    let name = header.get("@startuml".len()..)?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Does this body use state-diagram syntax? True when any logical line has a
@@ -517,7 +539,7 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
         if !seq.participants.contains_key(id) {
             let lbl = label.unwrap_or(id).to_string();
             seq.participants
-                .insert(id.to_string(), Participant::new(id.to_string(), lbl));
+                .insert(id.into(), Participant::new(id, lbl));
         }
     };
 
@@ -699,9 +721,7 @@ fn parse_state_clean(lines: &[(usize, String)]) -> Diagram {
     let ensure_state = |diagram: &mut StateDiagram, id: &str, label: Option<&str>| {
         if !diagram.states.contains_key(id) {
             let lbl = label.unwrap_or(id).to_string();
-            diagram
-                .states
-                .insert(id.to_string(), State::new(id.to_string(), lbl));
+            diagram.states.insert(id.into(), State::new(id, lbl));
         }
     };
 
@@ -724,7 +744,7 @@ fn parse_state_clean(lines: &[(usize, String)]) -> Diagram {
         if let Some(Ok((from, to, label))) = try_parse_state_transition(trimmed) {
             for ep in [&from, &to] {
                 if let Endpoint::State(id) = ep {
-                    ensure_state(&mut diagram, id, None);
+                    ensure_state(&mut diagram, id.as_str(), None);
                 }
             }
             diagram.transitions.push(Transition::new(from, to, label));
@@ -834,7 +854,7 @@ fn parse_state_endpoint_puml(part: &str, is_source: bool) -> Result<Endpoint, St
         });
     }
     if is_single_token(part) && is_valid_participant_id(part) {
-        Ok(Endpoint::State(part.to_string()))
+        Ok(Endpoint::State(part.into()))
     } else {
         Err(format!(
             "syntax error: expected a state identifier or `[*]`, got `{}`",
@@ -1177,7 +1197,7 @@ fn parse_class_clean(lines: &[(usize, String)]) -> Diagram {
     let ensure_class = |diagram: &mut ClassDiagram, id: &str| {
         if !diagram.classes.contains_key(id) {
             diagram.classes.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ClassNode::new(id.to_string(), id.to_string()),
             );
         }
@@ -1494,7 +1514,7 @@ fn parse_er_clean(lines: &[(usize, String)]) -> Diagram {
     let ensure_entity = |diagram: &mut ErDiagram, id: &str| {
         if !diagram.entities.contains_key(id) {
             diagram.entities.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ErEntity::new(id.to_string(), id.to_string()),
             );
         }
@@ -1523,7 +1543,7 @@ fn parse_er_clean(lines: &[(usize, String)]) -> Diagram {
                                 continue;
                             }
                             if let Ok(a) = parse_er_attr_line(attr) {
-                                diagram.entities[&name].attributes.push(a);
+                                diagram.entities[name.as_str()].attributes.push(a);
                             }
                         }
                         i += 1;
@@ -1544,7 +1564,7 @@ fn parse_er_clean(lines: &[(usize, String)]) -> Diagram {
                             }
                             if mtrim != "--" {
                                 if let Ok(attr) = parse_er_attr_line(mtrim) {
-                                    diagram.entities[&name].attributes.push(attr);
+                                    diagram.entities[name.as_str()].attributes.push(attr);
                                 }
                             }
                             i += 1;
@@ -1928,6 +1948,20 @@ mod tests {
     use super::*;
     use kozue_ir::{ArrowType, EndMarker, LineStyle, SequenceItem};
 
+    #[test]
+    fn parse_document_preserves_optional_plantuml_name() {
+        let named = parse_document("@startuml checkout flow\n@enduml\n").unwrap();
+        assert_eq!(named.metadata.name.as_deref(), Some("checkout flow"));
+        assert!(named.extensions.is_empty());
+
+        let unnamed = parse_document("@startuml\n@enduml\n").unwrap();
+        assert_eq!(unnamed.metadata.name, None);
+        assert_eq!(
+            parse("@startuml\n@enduml\n").unwrap(),
+            unnamed.into_diagram()
+        );
+    }
+
     fn parse_ok(src: &str) -> SequenceDiagram {
         match parse(src).expect("should parse without errors") {
             Diagram::Sequence(s) => s,
@@ -1954,8 +1988,8 @@ mod tests {
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
-        assert_eq!(m.from, "Alice");
-        assert_eq!(m.to, "Bob");
+        assert_eq!(m.from.as_str(), "Alice");
+        assert_eq!(m.to.as_str(), "Bob");
         assert_eq!(m.label.as_deref(), Some("hello"));
         assert_eq!(m.line, LineStyle::Solid);
         assert_eq!(m.arrow, ArrowType::Triangle);
@@ -2003,8 +2037,8 @@ mod tests {
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
-        assert_eq!(m.from, "A");
-        assert_eq!(m.to, "A");
+        assert_eq!(m.from.as_str(), "A");
+        assert_eq!(m.to.as_str(), "A");
         assert_eq!(m.label.as_deref(), Some("think"));
     }
 
@@ -2572,8 +2606,8 @@ mod tests {
         assert!(c.classes["Animal"].attributes[0].contains("name"));
         assert_eq!(c.classes["Animal"].methods[0], "+makeSound(): void");
         assert_eq!(c.relations.len(), 1);
-        assert_eq!(c.relations[0].from, "Dog");
-        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from.as_str(), "Dog");
+        assert_eq!(c.relations[0].to.as_str(), "Animal");
         assert_eq!(c.relations[0].from_marker, EndMarker::None);
         assert_eq!(c.relations[0].to_marker, EndMarker::HollowTriangle);
     }
@@ -2623,8 +2657,8 @@ mod tests {
         ];
         for &(line, from_m, to_m, ls) in cases {
             let r = class_one_relation(line);
-            assert_eq!(r.from, "A", "`{line}` from");
-            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from.as_str(), "A", "`{line}` from");
+            assert_eq!(r.to.as_str(), "B", "`{line}` to");
             assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
             assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
             assert_eq!(r.line, ls, "`{line}` line");
@@ -2685,8 +2719,8 @@ mod tests {
         let d = parse(src).expect("should parse");
         let c = class_diagram(&d);
         let r = &c.relations[0];
-        assert_eq!(r.from, "A");
-        assert_eq!(r.to, "B");
+        assert_eq!(r.from.as_str(), "A");
+        assert_eq!(r.to.as_str(), "B");
         assert_eq!(r.from_mult.as_deref(), Some("1"));
         assert_eq!(r.to_mult.as_deref(), Some("*"));
         assert_eq!(r.label.as_deref(), Some("owns"));

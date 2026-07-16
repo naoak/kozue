@@ -135,7 +135,7 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
     for node in g.nodes.values() {
         out.push_str(&format!(
             "  {} [label={}];\n",
-            quote(&node.id),
+            quote(node.id.as_str()),
             quote(&node.label)
         ));
     }
@@ -144,17 +144,17 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
     for edge in &g.edges {
         if !g.nodes.contains_key(&edge.from) {
             return Err(RenderError::DanglingEdge {
-                node_id: edge.from.clone(),
+                node_id: edge.from.to_string(),
             });
         }
         if !g.nodes.contains_key(&edge.to) {
             return Err(RenderError::DanglingEdge {
-                node_id: edge.to.clone(),
+                node_id: edge.to.to_string(),
             });
         }
         out.push_str(&edge_stmt(
-            &edge.from,
-            &edge.to,
+            edge.from.as_str(),
+            edge.to.as_str(),
             edge.label.as_deref(),
             edge.arrow,
         ));
@@ -227,7 +227,7 @@ fn render_state(s: &StateDiagram) -> Result<String, RenderError> {
     for state in s.states.values() {
         out.push_str(&format!(
             "  {} [label={}];\n",
-            quote(&state.id),
+            quote(state.id.as_str()),
             quote(&state.label)
         ));
     }
@@ -259,10 +259,10 @@ fn endpoint_id(s: &StateDiagram, ep: &Endpoint) -> Result<String, RenderError> {
         Endpoint::Final => Ok(FINAL_ID.to_string()),
         Endpoint::State(id) => {
             if s.states.contains_key(id) {
-                Ok(id.clone())
+                Ok(id.to_string())
             } else {
                 Err(RenderError::DanglingEdge {
-                    node_id: id.clone(),
+                    node_id: id.to_string(),
                 })
             }
         }
@@ -291,7 +291,7 @@ fn render_class(c: &ClassDiagram) -> Result<String, RenderError> {
     for node in c.classes.values() {
         out.push_str(&format!(
             "  {} [label=\"{}\"];\n",
-            quote(&node.id),
+            quote(node.id.as_str()),
             class_record_label(node)
         ));
     }
@@ -299,12 +299,12 @@ fn render_class(c: &ClassDiagram) -> Result<String, RenderError> {
     for rel in &c.relations {
         if !c.classes.contains_key(&rel.from) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.from.clone(),
+                node_id: rel.from.to_string(),
             });
         }
         if !c.classes.contains_key(&rel.to) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.to.clone(),
+                node_id: rel.to.to_string(),
             });
         }
         out.push_str(&class_relation_stmt(rel));
@@ -386,7 +386,7 @@ fn render_er(e: &ErDiagram) -> Result<String, RenderError> {
     for entity in e.entities.values() {
         out.push_str(&format!(
             "  {} [label=<{}>];\n",
-            quote(&entity.id),
+            quote(entity.id.as_str()),
             er_table_label(entity)
         ));
     }
@@ -394,12 +394,12 @@ fn render_er(e: &ErDiagram) -> Result<String, RenderError> {
     for rel in &e.relations {
         if !e.entities.contains_key(&rel.from) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.from.clone(),
+                node_id: rel.from.to_string(),
             });
         }
         if !e.entities.contains_key(&rel.to) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.to.clone(),
+                node_id: rel.to.to_string(),
             });
         }
         out.push_str(&er_relation_stmt(rel));
@@ -453,8 +453,8 @@ fn html_escape(s: &str) -> String {
 
 fn er_relation_stmt(rel: &ErRelation) -> String {
     relation_stmt(
-        &rel.from,
-        &rel.to,
+        rel.from.as_str(),
+        rel.to.as_str(),
         rel.from_marker,
         rel.to_marker,
         rel.line,
@@ -470,8 +470,8 @@ fn er_relation_stmt(rel: &ErRelation) -> String {
 
 fn class_relation_stmt(rel: &ClassRelation) -> String {
     relation_stmt(
-        &rel.from,
-        &rel.to,
+        rel.from.as_str(),
+        rel.to.as_str(),
         rel.from_marker,
         rel.to_marker,
         rel.line,

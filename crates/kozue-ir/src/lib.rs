@@ -4,12 +4,333 @@
 //! - Scene IR: [`Scene`] and [`SceneItem`] describe *drawing primitives* only,
 //!   already laid out. The renderer only ever sees the Scene IR.
 
+use std::{borrow::Borrow, collections::BTreeMap, fmt};
+
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
 
 // ---------------------------------------------------------------------------
 // Semantic IR
 // ---------------------------------------------------------------------------
+
+/// Version of the serialized [`IrDocument`] schema.
+///
+/// The wire representation is an integer so schema negotiation does not rely
+/// on Rust enum variant names. Unknown versions are rejected during
+/// deserialization rather than being interpreted as the current schema.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IrSchemaVersion {
+    V1,
+    #[default]
+    V2,
+}
+
+/// Schema version produced by newly constructed IR documents.
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V2;
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+impl Serialize for IrSchemaVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            IrSchemaVersion::V1 => serializer.serialize_u8(1),
+            IrSchemaVersion::V2 => serializer.serialize_u8(2),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IrSchemaVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let version = u64::deserialize(deserializer)?;
+        match version {
+            1 => Ok(IrSchemaVersion::V1),
+            2 => Ok(IrSchemaVersion::V2),
+            other => Err(de::Error::custom(format!(
+                "unsupported IR schema version {other}"
+            ))),
+        }
+    }
+}
+
+/// Stable identifier for a semantic diagram element.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ElementId(String);
+
+impl ElementId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for ElementId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ElementId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl From<&String> for ElementId {
+    fn from(value: &String) -> Self {
+        Self(value.clone())
+    }
+}
+
+impl AsRef<str> for ElementId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for ElementId {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for ElementId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Accessibility metadata independent of any renderer.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccessibilityMetadata {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub description: Option<String>,
+}
+
+/// Metadata attached to a complete IR document.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiagramMetadata {
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub name: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub description: Option<String>,
+    pub accessibility: AccessibilityMetadata,
+}
+
+/// Deterministically ordered, namespaced extension data.
+///
+/// Current schemas intentionally expose no mutation API: frontends always
+/// create an empty value until extension ownership and validation rules are
+/// defined.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Extensions(BTreeMap<String, BTreeMap<String, serde_json::Value>>);
+
+impl Extensions {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A versioned semantic IR document.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrDocument {
+    schema_version: IrSchemaVersion,
+    pub metadata: DiagramMetadata,
+    pub diagram: Diagram,
+    pub annotations: Vec<Annotation>,
+    pub extensions: Extensions,
+}
+
+impl Serialize for IrDocument {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut document = serializer.serialize_struct("IrDocument", 5)?;
+        document.serialize_field("schema_version", &CURRENT_IR_SCHEMA_VERSION)?;
+        document.serialize_field("metadata", &self.metadata)?;
+        document.serialize_field("diagram", &self.diagram)?;
+        document.serialize_field("annotations", &self.annotations)?;
+        document.serialize_field("extensions", &self.extensions)?;
+        document.end()
+    }
+}
+
+impl IrDocument {
+    pub fn new(diagram: Diagram) -> Self {
+        Self {
+            schema_version: CURRENT_IR_SCHEMA_VERSION,
+            metadata: DiagramMetadata::default(),
+            diagram,
+            annotations: Vec::new(),
+            extensions: Extensions::default(),
+        }
+    }
+
+    pub fn into_diagram(self) -> Diagram {
+        self.diagram
+    }
+
+    pub fn schema_version(&self) -> IrSchemaVersion {
+        self.schema_version
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IrDocumentV1 {
+    schema_version: IrSchemaVersion,
+    metadata: DiagramMetadata,
+    diagram: Diagram,
+    extensions: Extensions,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IrDocumentV2 {
+    schema_version: IrSchemaVersion,
+    metadata: DiagramMetadata,
+    diagram: Diagram,
+    annotations: Vec<Annotation>,
+    extensions: Extensions,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IrDocumentWire {
+    V2(IrDocumentV2),
+    V1(IrDocumentV1),
+}
+
+impl<'de> Deserialize<'de> for IrDocument {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match IrDocumentWire::deserialize(deserializer)? {
+            IrDocumentWire::V1(wire) if wire.schema_version == IrSchemaVersion::V1 => Ok(Self {
+                schema_version: CURRENT_IR_SCHEMA_VERSION,
+                metadata: wire.metadata,
+                diagram: wire.diagram,
+                annotations: Vec::new(),
+                extensions: wire.extensions,
+            }),
+            IrDocumentWire::V2(wire) if wire.schema_version == IrSchemaVersion::V2 => Ok(Self {
+                schema_version: CURRENT_IR_SCHEMA_VERSION,
+                metadata: wire.metadata,
+                diagram: wire.diagram,
+                annotations: wire.annotations,
+                extensions: wire.extensions,
+            }),
+            IrDocumentWire::V1(_) => Err(de::Error::custom(
+                "IR schema version 2 requires an `annotations` field",
+            )),
+            IrDocumentWire::V2(_) => Err(de::Error::custom(
+                "IR schema version 1 must not contain an `annotations` field",
+            )),
+        }
+    }
+}
+
+/// Renderer-independent annotation attached to a diagram or its elements.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Annotation {
+    pub id: ElementId,
+    pub target: AnnotationTarget,
+    pub kind: AnnotationKind,
+}
+
+impl Annotation {
+    pub fn new(id: impl Into<ElementId>, target: AnnotationTarget, kind: AnnotationKind) -> Self {
+        Self {
+            id: id.into(),
+            target,
+            kind,
+        }
+    }
+}
+
+/// Target of an [`Annotation`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AnnotationTarget {
+    Diagram,
+    Element(ElementId),
+    Elements(Vec<ElementId>),
+}
+
+/// Placement preference for note annotations.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum NotePlacement {
+    #[default]
+    Auto,
+    Left,
+    Right,
+    Above,
+    Below,
+    Over,
+}
+
+/// Payload of an [`Annotation`].
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum AnnotationKind {
+    Note {
+        text: String,
+        placement: NotePlacement,
+    },
+    Link {
+        url: String,
+    },
+    Tooltip {
+        text: String,
+    },
+    Stereotype {
+        name: String,
+    },
+    Tag {
+        name: String,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        value: Option<String>,
+    },
+}
 
 /// Top-level semantic diagram.
 #[non_exhaustive]
@@ -37,7 +358,7 @@ pub struct GraphDiagram {
     pub direction: Direction,
     /// Nodes keyed by their stable string ID. Iteration order is insertion
     /// (declaration) order, which the layout relies on for determinism.
-    pub nodes: IndexMap<String, Node>,
+    pub nodes: IndexMap<ElementId, Node>,
     pub edges: Vec<Edge>,
 }
 
@@ -54,7 +375,7 @@ impl GraphDiagram {
 /// A sequence diagram: ordered list of participants and message items.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SequenceDiagram {
-    pub participants: IndexMap<String, Participant>,
+    pub participants: IndexMap<ElementId, Participant>,
     pub items: Vec<SequenceItem>,
 }
 
@@ -76,12 +397,12 @@ impl Default for SequenceDiagram {
 /// A participant in a sequence diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Participant {
-    pub id: String,
+    pub id: ElementId,
     pub label: String,
 }
 
 impl Participant {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<String>) -> Self {
         Participant {
             id: id.into(),
             label: label.into(),
@@ -107,8 +428,8 @@ pub enum LineStyle {
 /// A message (arrow) between two participants in a sequence diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
-    pub from: String,
-    pub to: String,
+    pub from: ElementId,
+    pub to: ElementId,
     pub label: Option<String>,
     pub line: LineStyle,
     pub arrow: ArrowType,
@@ -116,8 +437,8 @@ pub struct Message {
 
 impl Message {
     pub fn new(
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
         label: Option<String>,
         line: LineStyle,
         arrow: ArrowType,
@@ -142,13 +463,13 @@ pub enum NodeKind {
 /// A node with a stable ID, a display label, and a kind.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
-    pub id: String,
+    pub id: ElementId,
     pub label: String,
     pub kind: NodeKind,
 }
 
 impl Node {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<String>) -> Self {
         Node {
             id: id.into(),
             label: label.into(),
@@ -170,16 +491,16 @@ pub enum ArrowType {
 /// A directed edge from one node to another, with an optional label.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
-    pub from: String,
-    pub to: String,
+    pub from: ElementId,
+    pub to: ElementId,
     pub label: Option<String>,
     pub arrow: ArrowType,
 }
 
 impl Edge {
     pub fn new(
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
         label: Option<String>,
         arrow: ArrowType,
     ) -> Self {
@@ -195,7 +516,7 @@ impl Edge {
 /// A state diagram: a set of states and transitions between them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateDiagram {
-    pub states: IndexMap<String, State>,
+    pub states: IndexMap<ElementId, State>,
     pub transitions: Vec<Transition>,
 }
 
@@ -217,12 +538,12 @@ impl Default for StateDiagram {
 /// A state in a state diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
-    pub id: String,
+    pub id: ElementId,
     pub label: String,
 }
 
 impl State {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<String>) -> Self {
         State {
             id: id.into(),
             label: label.into(),
@@ -236,7 +557,7 @@ impl State {
 pub enum Endpoint {
     Initial,
     Final,
-    State(String),
+    State(ElementId),
 }
 
 /// A transition between two endpoints in a state diagram.
@@ -289,7 +610,7 @@ pub struct ClassDiagram {
     pub direction: Direction,
     /// Classes keyed by their stable string ID. Iteration order is insertion
     /// (declaration) order, which the layout relies on for determinism.
-    pub classes: IndexMap<String, ClassNode>,
+    pub classes: IndexMap<ElementId, ClassNode>,
     pub relations: Vec<ClassRelation>,
 }
 
@@ -306,7 +627,7 @@ impl ClassDiagram {
 /// A class (or interface/abstract class/enum) in a class diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClassNode {
-    pub id: String,
+    pub id: ElementId,
     pub name: String,
     /// `"interface"` / `"abstract"` / `"enumeration"` (from `<<...>>` annotations).
     pub stereotype: Option<String>,
@@ -317,7 +638,7 @@ pub struct ClassNode {
 }
 
 impl ClassNode {
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>, name: impl Into<String>) -> Self {
         ClassNode {
             id: id.into(),
             name: name.into(),
@@ -331,8 +652,8 @@ impl ClassNode {
 /// A relation (edge) between two classes in a class diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClassRelation {
-    pub from: String,
-    pub to: String,
+    pub from: ElementId,
+    pub to: ElementId,
     pub from_marker: EndMarker,
     pub to_marker: EndMarker,
     /// Solid / Dashed (reuses the sequence-diagram line style).
@@ -347,8 +668,8 @@ pub struct ClassRelation {
 impl ClassRelation {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
         from_marker: EndMarker,
         to_marker: EndMarker,
         line: LineStyle,
@@ -374,7 +695,7 @@ impl ClassRelation {
 pub struct ErDiagram {
     /// Entities keyed by their stable string ID. Iteration order is insertion
     /// (declaration) order, which the layout relies on for determinism.
-    pub entities: IndexMap<String, ErEntity>,
+    pub entities: IndexMap<ElementId, ErEntity>,
     pub relations: Vec<ErRelation>,
 }
 
@@ -396,13 +717,13 @@ impl Default for ErDiagram {
 /// An entity in an ER diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErEntity {
-    pub id: String,
+    pub id: ElementId,
     pub name: String,
     pub attributes: Vec<ErAttribute>,
 }
 
 impl ErEntity {
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>, name: impl Into<String>) -> Self {
         ErEntity {
             id: id.into(),
             name: name.into(),
@@ -441,8 +762,8 @@ impl ErAttribute {
 /// A relation (edge) between two entities in an ER diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErRelation {
-    pub from: String,
-    pub to: String,
+    pub from: ElementId,
+    pub to: ElementId,
     pub from_marker: EndMarker,
     pub to_marker: EndMarker,
     pub label: Option<String>,
@@ -452,8 +773,8 @@ pub struct ErRelation {
 
 impl ErRelation {
     pub fn new(
-        from: impl Into<String>,
-        to: impl Into<String>,
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
         from_marker: EndMarker,
         to_marker: EndMarker,
         label: Option<String>,
@@ -543,4 +864,377 @@ pub struct Text {
 pub struct Group {
     pub name: String,
     pub items: Vec<SceneItem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const EMPTY_GRAPH_DOCUMENT_V1: &str = r#"{"schema_version":1,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V2: &str = r#"{"schema_version":2,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
+
+    #[test]
+    fn element_id_is_transparent_and_supports_string_lookup() {
+        let id = ElementId::new("alpha");
+        assert_eq!(id.as_str(), "alpha");
+        assert_eq!(id.to_string(), "alpha");
+        assert_eq!(serde_json::to_string(&id).unwrap(), r#""alpha""#);
+        assert_eq!(serde_json::from_str::<ElementId>(r#""alpha""#).unwrap(), id);
+
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph
+            .nodes
+            .insert(id.clone(), Node::new(id.clone(), "Alpha"));
+        assert_eq!(graph.nodes.get("alpha").unwrap().id, id);
+        assert_eq!(
+            ElementId::from(String::from("owned")).into_string(),
+            "owned"
+        );
+        let borrowed = String::from("borrowed");
+        assert_eq!(ElementId::from(&borrowed).as_str(), "borrowed");
+    }
+
+    #[test]
+    fn schema_version_is_numeric_and_rejects_unknown_versions() {
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V1).unwrap(), json!(1));
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(1)).unwrap(),
+            IrSchemaVersion::V1
+        );
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V2).unwrap(), json!(2));
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(3)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported IR schema version 3"));
+    }
+
+    #[test]
+    fn document_round_trip_uses_empty_deterministic_extensions() {
+        let document = IrDocument::new(Diagram::Graph(GraphDiagram::new(Direction::Down)));
+        assert!(document.extensions.is_empty());
+        assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
+
+        let serialized = serde_json::to_string(&document).unwrap();
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V2);
+        assert_eq!(
+            serde_json::from_str::<IrDocument>(&serialized).unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn v1_document_is_upgraded_and_v1_annotations_are_rejected() {
+        let document = serde_json::from_str::<IrDocument>(EMPTY_GRAPH_DOCUMENT_V1).unwrap();
+        assert_eq!(document.schema_version(), IrSchemaVersion::V2);
+        assert!(document.annotations.is_empty());
+        assert_eq!(
+            serde_json::to_string(&document).unwrap(),
+            EMPTY_GRAPH_DOCUMENT_V2
+        );
+
+        let mut invalid: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V1).unwrap();
+        invalid["annotations"] = json!([]);
+        assert!(serde_json::from_value::<IrDocument>(invalid).is_err());
+    }
+
+    #[test]
+    fn v2_annotations_round_trip_in_declaration_order() {
+        let mut document = IrDocument::new(Diagram::Graph(GraphDiagram::new(Direction::Down)));
+        document.annotations = vec![
+            Annotation::new(
+                "note-2",
+                AnnotationTarget::Elements(vec!["b".into(), "a".into()]),
+                AnnotationKind::Note {
+                    text: "second".to_string(),
+                    placement: NotePlacement::Right,
+                },
+            ),
+            Annotation::new(
+                "link-1",
+                AnnotationTarget::Diagram,
+                AnnotationKind::Link {
+                    url: "https://example.com".to_string(),
+                },
+            ),
+            Annotation::new(
+                "tooltip-1",
+                AnnotationTarget::Element("a".into()),
+                AnnotationKind::Tooltip {
+                    text: "details".to_string(),
+                },
+            ),
+            Annotation::new(
+                "stereotype-1",
+                AnnotationTarget::Element("a".into()),
+                AnnotationKind::Stereotype {
+                    name: "service".to_string(),
+                },
+            ),
+            Annotation::new(
+                "tag-1",
+                AnnotationTarget::Diagram,
+                AnnotationKind::Tag {
+                    name: "owner".to_string(),
+                    value: Some("platform".to_string()),
+                },
+            ),
+        ];
+
+        let serialized = serde_json::to_string(&document).unwrap();
+        assert!(serialized.find("note-2").unwrap() < serialized.find("link-1").unwrap());
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            value["annotations"],
+            json!([
+                {
+                    "id": "note-2",
+                    "target": {"Elements": ["b", "a"]},
+                    "kind": {"Note": {"text": "second", "placement": "Right"}}
+                },
+                {
+                    "id": "link-1",
+                    "target": "Diagram",
+                    "kind": {"Link": {"url": "https://example.com"}}
+                },
+                {
+                    "id": "tooltip-1",
+                    "target": {"Element": "a"},
+                    "kind": {"Tooltip": {"text": "details"}}
+                },
+                {
+                    "id": "stereotype-1",
+                    "target": {"Element": "a"},
+                    "kind": {"Stereotype": {"name": "service"}}
+                },
+                {
+                    "id": "tag-1",
+                    "target": "Diagram",
+                    "kind": {"Tag": {"name": "owner", "value": "platform"}}
+                }
+            ])
+        );
+        assert_eq!(
+            serde_json::from_str::<IrDocument>(&serialized).unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn document_rejects_unknown_versions_and_missing_required_fields() {
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V2).unwrap();
+
+        for version in [0, 1, 3] {
+            let mut value = fixture.clone();
+            value["schema_version"] = json!(version);
+            assert!(serde_json::from_value::<IrDocument>(value).is_err());
+        }
+
+        for field in [
+            "schema_version",
+            "metadata",
+            "diagram",
+            "annotations",
+            "extensions",
+        ] {
+            let mut value = fixture.clone();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<IrDocument>(value).is_err(),
+                "missing document field `{field}` must be rejected"
+            );
+        }
+
+        for field in ["name", "title", "description", "accessibility"] {
+            let mut value = fixture.clone();
+            value["metadata"].as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<IrDocument>(value).is_err(),
+                "missing metadata field `{field}` must be rejected"
+            );
+        }
+
+        for field in ["title", "description"] {
+            let mut value = fixture.clone();
+            value["metadata"]["accessibility"]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                serde_json::from_value::<IrDocument>(value).is_err(),
+                "missing accessibility field `{field}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_rejects_nested_unknown_fields_and_missing_tag_value() {
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V2).unwrap();
+        let with_tag = |mut value: serde_json::Value| {
+            value["annotations"] = json!([{
+                "id": "tag-1",
+                "target": "Diagram",
+                "kind": {"Tag": {"name": "owner", "value": null}}
+            }]);
+            value
+        };
+        assert!(serde_json::from_value::<IrDocument>(with_tag(fixture.clone())).is_ok());
+
+        let mut missing_value = with_tag(fixture.clone());
+        missing_value["annotations"][0]["kind"]["Tag"]
+            .as_object_mut()
+            .unwrap()
+            .remove("value");
+        assert!(serde_json::from_value::<IrDocument>(missing_value).is_err());
+
+        let mut unknown_metadata = fixture.clone();
+        unknown_metadata["metadata"]["extra"] = json!(true);
+        assert!(serde_json::from_value::<IrDocument>(unknown_metadata).is_err());
+
+        let mut unknown_accessibility = fixture.clone();
+        unknown_accessibility["metadata"]["accessibility"]["extra"] = json!(true);
+        assert!(serde_json::from_value::<IrDocument>(unknown_accessibility).is_err());
+
+        let mut unknown_annotation = with_tag(fixture.clone());
+        unknown_annotation["annotations"][0]["extra"] = json!(true);
+        assert!(serde_json::from_value::<IrDocument>(unknown_annotation).is_err());
+
+        let mut unknown_kind_payload = with_tag(fixture);
+        unknown_kind_payload["annotations"][0]["kind"]["Tag"]["extra"] = json!(true);
+        assert!(serde_json::from_value::<IrDocument>(unknown_kind_payload).is_err());
+    }
+
+    #[test]
+    fn extensions_serialize_in_canonical_key_order() {
+        fn extensions(reverse: bool) -> Extensions {
+            let entries = [
+                (
+                    "alpha".to_string(),
+                    vec![
+                        ("z".to_string(), json!({"b": 2, "a": 1})),
+                        ("a".to_string(), json!([3, {"y": false, "x": null}])),
+                    ],
+                ),
+                (
+                    "zeta".to_string(),
+                    vec![("nested".to_string(), json!({"items": [2, 1]}))],
+                ),
+            ];
+
+            let mut namespaces = BTreeMap::new();
+            let indices: &[usize] = if reverse { &[1, 0] } else { &[0, 1] };
+            for &index in indices {
+                let (namespace, values) = &entries[index];
+                let mut fields = BTreeMap::new();
+                let field_indices: Vec<usize> = if reverse {
+                    (0..values.len()).rev().collect()
+                } else {
+                    (0..values.len()).collect()
+                };
+                for field_index in field_indices {
+                    let (key, value) = &values[field_index];
+                    fields.insert(key.clone(), value.clone());
+                }
+                namespaces.insert(namespace.clone(), fields);
+            }
+            Extensions(namespaces)
+        }
+
+        let first = serde_json::to_string(&extensions(false)).unwrap();
+        let second = serde_json::to_string(&extensions(true)).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            r#"{"alpha":{"a":[3,{"x":null,"y":false}],"z":{"a":1,"b":2}},"zeta":{"nested":{"items":[2,1]}}}"#
+        );
+    }
+
+    #[test]
+    fn named_diagram_wire_representations_are_unchanged() {
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph.nodes.insert("a".into(), Node::new("a", "A"));
+        graph.edges.push(Edge::new(
+            "a",
+            "a",
+            Some("loop".to_string()),
+            ArrowType::Triangle,
+        ));
+
+        let mut sequence = SequenceDiagram::new();
+        sequence
+            .participants
+            .insert("a".into(), Participant::new("a", "Alice"));
+        sequence.items.push(SequenceItem::Message(Message::new(
+            "a",
+            "a",
+            Some("call".to_string()),
+            LineStyle::Solid,
+            ArrowType::Triangle,
+        )));
+
+        let mut state = StateDiagram::new();
+        state
+            .states
+            .insert("idle".into(), State::new("idle", "Idle"));
+        state.transitions.push(Transition::new(
+            Endpoint::State("idle".into()),
+            Endpoint::State("idle".into()),
+            Some("stay".to_string()),
+        ));
+
+        let mut class = ClassDiagram::new(Direction::Down);
+        class
+            .classes
+            .insert("Order".into(), ClassNode::new("Order", "Order"));
+        class.relations.push(ClassRelation::new(
+            "Order",
+            "Order",
+            EndMarker::None,
+            EndMarker::OpenArrow,
+            LineStyle::Solid,
+            Some("self".to_string()),
+            None,
+            None,
+        ));
+
+        let mut er = ErDiagram::new();
+        er.entities
+            .insert("Order".into(), ErEntity::new("Order", "Order"));
+        er.relations.push(ErRelation::new(
+            "Order",
+            "Order",
+            EndMarker::ErOne,
+            EndMarker::ErZeroOrMany,
+            Some("contains".to_string()),
+            LineStyle::Solid,
+        ));
+
+        let fixtures = [
+            (
+                Diagram::Graph(graph),
+                r#"{"Graph":{"direction":"Down","nodes":{"a":{"id":"a","label":"A","kind":"Default"}},"edges":[{"from":"a","to":"a","label":"loop","arrow":"Triangle"}]}}"#,
+            ),
+            (
+                Diagram::Sequence(sequence),
+                r#"{"Sequence":{"participants":{"a":{"id":"a","label":"Alice"}},"items":[{"Message":{"from":"a","to":"a","label":"call","line":"Solid","arrow":"Triangle"}}]}}"#,
+            ),
+            (
+                Diagram::State(state),
+                r#"{"State":{"states":{"idle":{"id":"idle","label":"Idle"}},"transitions":[{"from":{"State":"idle"},"to":{"State":"idle"},"label":"stay"}]}}"#,
+            ),
+            (
+                Diagram::Class(class),
+                r#"{"Class":{"direction":"Down","classes":{"Order":{"id":"Order","name":"Order","stereotype":null,"attributes":[],"methods":[]}},"relations":[{"from":"Order","to":"Order","from_marker":"None","to_marker":"OpenArrow","line":"Solid","label":"self","from_mult":null,"to_mult":null}]}}"#,
+            ),
+            (
+                Diagram::Er(er),
+                r#"{"Er":{"entities":{"Order":{"id":"Order","name":"Order","attributes":[]}},"relations":[{"from":"Order","to":"Order","from_marker":"ErOne","to_marker":"ErZeroOrMany","label":"contains","line":"Solid"}]}}"#,
+            ),
+        ];
+
+        for (diagram, fixture) in fixtures {
+            assert_eq!(serde_json::to_string(&diagram).unwrap(), fixture);
+            assert_eq!(serde_json::from_str::<Diagram>(fixture).unwrap(), diagram);
+        }
+    }
 }

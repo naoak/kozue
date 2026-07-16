@@ -5,7 +5,7 @@
 //! and let downstream consumers (exchange exporters, hit-testing, etc.) know
 //! *which rectangle / polyline corresponds to which node / edge*.
 
-use kozue_ir::Rect;
+use kozue_ir::{ElementId, Rect};
 
 /// A 2-D point in scene coordinates (pixels, same coordinate space as
 /// [`Scene`](kozue_ir::Scene)).
@@ -31,7 +31,7 @@ impl Point {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeLayout {
     /// The node's stable string ID (from [`GraphDiagram::nodes`](kozue_ir::GraphDiagram)).
-    pub id: String,
+    pub id: ElementId,
     /// The display label text drawn in the node box (the same string emitted as
     /// the Scene Text item). This is the label, not the ID: for `a: "入力"` it is
     /// `"入力"`.
@@ -47,11 +47,11 @@ pub struct NodeLayout {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphEndpoint {
-    pub id: String,
+    pub id: ElementId,
 }
 
 impl GraphEndpoint {
-    pub fn new(id: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         GraphEndpoint { id: id.into() }
     }
 }
@@ -99,7 +99,7 @@ pub struct GraphLayout {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParticipantLayout {
     /// The participant's stable string ID.
-    pub id: String,
+    pub id: ElementId,
     /// The display label text drawn in the header box (the same string emitted as
     /// the Scene Text item). This is the label, not the ID: for `participant a: "Alice"`
     /// it is `"Alice"`.
@@ -121,9 +121,9 @@ pub struct MessageLayout {
     /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
     pub index: usize,
     /// Sender participant ID.
-    pub from: String,
+    pub from: ElementId,
     /// Receiver participant ID.
-    pub to: String,
+    pub to: ElementId,
     /// Routing points of the message arrow in scene coordinates (source to tip).
     pub route: Vec<Point>,
     /// Line style of the message (from [`Message::line`](kozue_ir::Message)). Exporters
@@ -156,7 +156,7 @@ pub struct SequenceLayout {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateEndpointId {
     /// A named state; holds the state's stable string ID.
-    State(String),
+    State(ElementId),
     /// The synthetic initial pseudostate (filled circle).
     Initial,
     /// The synthetic final pseudostate (ringed circle).
@@ -170,7 +170,7 @@ pub struct StateNodeLayout {
     /// The state's stable string ID. Includes both states declared explicitly in
     /// [`StateDiagram::states`](kozue_ir::StateDiagram) and states auto-declared by
     /// first appearance in a transition endpoint.
-    pub id: String,
+    pub id: ElementId,
     /// The display label text drawn in the state box (the same string emitted as
     /// the Scene Text item). For `state idle: "Idle"` it is `"Idle"`; for an
     /// auto-declared state the label defaults to the ID.
@@ -257,7 +257,7 @@ pub struct Compartment {
 pub struct CompartmentBox {
     /// The stable string ID (from [`ClassDiagram::classes`](kozue_ir::ClassDiagram)
     /// or [`ErDiagram::entities`](kozue_ir::ErDiagram)).
-    pub id: String,
+    pub id: ElementId,
     /// The bounding rectangle of the whole box (title + all compartments).
     pub rect: Rect,
     pub title: String,
@@ -273,9 +273,9 @@ pub struct RelationLayout {
     /// Index into the diagram's relation list (0-based, declaration order).
     pub index: usize,
     /// Source box ID.
-    pub from: String,
+    pub from: ElementId,
     /// Target box ID.
-    pub to: String,
+    pub to: ElementId,
     /// Routing points of the connecting line (from -> to order), in scene
     /// coordinates. Endpoints are clipped to the box borders but **not**
     /// shortened for the end markers: `points[0]` / `points[last]` sit exactly

@@ -212,7 +212,7 @@ fn parse_bytes(src: &str) -> Result<Diagram, Vec<CompileError>> {
     let ensure_entity = |diagram: &mut ErDiagram, id: &str| {
         if !diagram.entities.contains_key(id) {
             diagram.entities.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ErEntity::new(id.to_string(), id.to_string()),
             );
         }

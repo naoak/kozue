@@ -43,8 +43,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, Edge, EndMarker,
-    Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, LineStyle, Message, Node,
-    Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument, LineStyle,
+    Message, Node, Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -68,7 +68,7 @@ impl Diagnostic {
 /// Returns `Ok(diagram)` on success, or `Err(diagnostics)` where diagnostics
 /// is a non-empty list of errors (all errors from the whole source are
 /// collected before returning, following the same convention as `kozue-dsl`).
-pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
+fn parse_diagram(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
     let mut errors: Vec<Diagnostic> = Vec::new();
 
     // Strip UTF-8 BOM if present.
@@ -167,6 +167,19 @@ pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
         ));
         Err(errors)
     }
+}
+
+/// Parse Mermaid source text into a versioned semantic IR document.
+///
+/// Mermaid does not define a document name in the supported headers, so
+/// metadata uses the default empty value.
+pub fn parse_document(source: &str) -> Result<IrDocument, Vec<Diagnostic>> {
+    parse_diagram(source).map(IrDocument::new)
+}
+
+/// Parse Mermaid source text into a semantic [`Diagram`].
+pub fn parse(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
+    parse_document(source).map(IrDocument::into_diagram)
 }
 
 /// Render diagnostics to stderr using ariadne (matches the kozue-dsl convention).
@@ -322,7 +335,7 @@ fn parse_flowchart(
     for (id, label) in &node_labels {
         graph
             .nodes
-            .insert(id.clone(), Node::new(id.clone(), label.clone()));
+            .insert(id.clone().into(), Node::new(id.clone(), label.clone()));
     }
 
     for re in &raw_edges {
@@ -378,7 +391,7 @@ fn parse_sequence(
         if !seq.participants.contains_key(id) {
             let lbl = label.unwrap_or(id).to_string();
             seq.participants
-                .insert(id.to_string(), Participant::new(id.to_string(), lbl));
+                .insert(id.into(), Participant::new(id, lbl));
         }
     };
 
@@ -650,7 +663,7 @@ fn parse_state(
     for (id, (label, _span)) in &decls {
         diagram
             .states
-            .insert(id.clone(), State::new(id.clone(), label.clone()));
+            .insert(id.clone().into(), State::new(id.clone(), label.clone()));
     }
     for rt in &transitions {
         for ep in [&rt.from, &rt.to] {
@@ -658,7 +671,7 @@ fn parse_state(
                 if !diagram.states.contains_key(id) {
                     diagram
                         .states
-                        .insert(id.clone(), State::new(id.clone(), id.clone()));
+                        .insert(id.clone(), State::new(id.clone(), id.to_string()));
                 }
             }
         }
@@ -719,7 +732,7 @@ fn parse_state_endpoint(part: &str, is_source: bool) -> Result<Endpoint, String>
         });
     }
     match split_id(part) {
-        Some((id, rest)) if rest.trim().is_empty() => Ok(Endpoint::State(id)),
+        Some((id, rest)) if rest.trim().is_empty() => Ok(Endpoint::State(id.into())),
         _ => Err(format!(
             "syntax error: expected a state identifier or `[*]`, got `{}`",
             part.chars().take(40).collect::<String>()
@@ -1517,7 +1530,7 @@ fn parse_class(
     let ensure_class = |diagram: &mut ClassDiagram, id: &str| {
         if !diagram.classes.contains_key(id) {
             diagram.classes.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ClassNode::new(id.to_string(), id.to_string()),
             );
         }
@@ -1584,7 +1597,7 @@ fn parse_class(
                         ));
                     } else {
                         ensure_class(&mut diagram, &id);
-                        diagram.classes[&id].stereotype = Some(stereotype);
+                        diagram.classes[id.as_str()].stereotype = Some(stereotype);
                     }
                 } else {
                     errors.push(Diagnostic::new(
@@ -1912,7 +1925,7 @@ fn parse_er(
     let ensure_entity = |diagram: &mut ErDiagram, id: &str| {
         if !diagram.entities.contains_key(id) {
             diagram.entities.insert(
-                id.to_string(),
+                id.to_string().into(),
                 ErEntity::new(id.to_string(), id.to_string()),
             );
         }
@@ -1965,7 +1978,7 @@ fn parse_er(
                         continue;
                     }
                     match parse_er_attr_line(attr) {
-                        Ok(a) => diagram.entities[&id].attributes.push(a),
+                        Ok(a) => diagram.entities[id.as_str()].attributes.push(a),
                         Err(msg) => errors.push(Diagnostic::new(msg, span.clone())),
                     }
                 }
@@ -1988,7 +2001,7 @@ fn parse_er(
                     break;
                 }
                 match parse_er_attr_line(mtrim) {
-                    Ok(attr) => diagram.entities[&id].attributes.push(attr),
+                    Ok(attr) => diagram.entities[id.as_str()].attributes.push(attr),
                     Err(msg) => {
                         errors.push(Diagnostic::new(msg, moff..moff + mline.len()));
                     }
@@ -2050,6 +2063,17 @@ fn parse_er(
 mod tests {
     use super::*;
     use kozue_ir::{ArrowType, Direction, LineStyle};
+
+    #[test]
+    fn parse_document_has_no_mermaid_name() {
+        let document = parse_document("flowchart TD\n  A --> B\n").unwrap();
+        assert_eq!(document.metadata.name, None);
+        assert!(document.extensions.is_empty());
+        assert_eq!(
+            parse("flowchart TD\n  A --> B\n").unwrap(),
+            document.into_diagram()
+        );
+    }
 
     // -----------------------------------------------------------------------
     // Flowchart tests
@@ -2240,8 +2264,8 @@ mod tests {
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
-        assert_eq!(m.from, "A");
-        assert_eq!(m.to, "A");
+        assert_eq!(m.from.as_str(), "A");
+        assert_eq!(m.to.as_str(), "A");
     }
 
     #[test]
@@ -2321,10 +2345,10 @@ mod tests {
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes.len(), 3, "expected 3 nodes");
         assert_eq!(g.edges.len(), 2, "expected 2 edges from chain A-->B-->C");
-        assert_eq!(g.edges[0].from, "A");
-        assert_eq!(g.edges[0].to, "B");
-        assert_eq!(g.edges[1].from, "B");
-        assert_eq!(g.edges[1].to, "C");
+        assert_eq!(g.edges[0].from.as_str(), "A");
+        assert_eq!(g.edges[0].to.as_str(), "B");
+        assert_eq!(g.edges[1].from.as_str(), "B");
+        assert_eq!(g.edges[1].to.as_str(), "C");
     }
 
     #[test]
@@ -2333,8 +2357,8 @@ mod tests {
         let d = parse(src).expect("four-node chain should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.edges.len(), 3);
-        assert_eq!(g.edges[0].from, "A");
-        assert_eq!(g.edges[2].to, "D");
+        assert_eq!(g.edges[0].from.as_str(), "A");
+        assert_eq!(g.edges[2].to.as_str(), "D");
     }
 
     #[test]
@@ -2346,8 +2370,8 @@ mod tests {
         assert_eq!(g.edges.len(), 2);
         assert_eq!(g.edges[0].label.as_deref(), Some("x"));
         assert_eq!(g.edges[1].label, None);
-        assert_eq!(g.edges[1].from, "B");
-        assert_eq!(g.edges[1].to, "C");
+        assert_eq!(g.edges[1].from.as_str(), "B");
+        assert_eq!(g.edges[1].to.as_str(), "C");
     }
 
     // -----------------------------------------------------------------------
@@ -2371,7 +2395,8 @@ mod tests {
                 // If it somehow parsed, assert it didn't incorrectly set to="b".
                 for e in &g.edges {
                     assert_ne!(
-                        e.to, "b",
+                        e.to.as_str(),
+                        "b",
                         "pipe label bug: to-node was incorrectly set to `b`"
                     );
                 }
@@ -2605,8 +2630,8 @@ mod tests {
         assert!(c.classes["Animal"].attributes[0].contains("name"));
         assert_eq!(c.classes["Animal"].methods[0], "+makeSound(): void");
         assert_eq!(c.relations.len(), 1);
-        assert_eq!(c.relations[0].from, "Dog");
-        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from.as_str(), "Dog");
+        assert_eq!(c.relations[0].to.as_str(), "Animal");
         assert_eq!(c.relations[0].from_marker, EndMarker::HollowTriangle);
         assert_eq!(c.relations[0].to_marker, EndMarker::None);
     }
@@ -2616,8 +2641,8 @@ mod tests {
         let src = "classDiagram\n  Dog <|-- Animal\n";
         let d = parse(src).expect("should parse");
         let c = class_diagram(&d);
-        assert_eq!(c.relations[0].from, "Dog");
-        assert_eq!(c.relations[0].to, "Animal");
+        assert_eq!(c.relations[0].from.as_str(), "Dog");
+        assert_eq!(c.relations[0].to.as_str(), "Animal");
         assert_eq!(c.relations[0].from_marker, EndMarker::HollowTriangle);
         assert_eq!(c.relations[0].to_marker, EndMarker::None);
         assert_eq!(c.relations[0].line, LineStyle::Solid);
@@ -2719,8 +2744,8 @@ mod tests {
         ];
         for &(line, from_m, to_m, ls) in cases {
             let r = class_one_relation(line);
-            assert_eq!(r.from, "A", "`{line}` from");
-            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from.as_str(), "A", "`{line}` from");
+            assert_eq!(r.to.as_str(), "B", "`{line}` to");
             assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
             assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
             assert_eq!(r.line, ls, "`{line}` line");
@@ -2858,8 +2883,8 @@ mod tests {
         assert_eq!(e.entities.len(), 2);
         assert_eq!(e.relations.len(), 1);
         let r = &e.relations[0];
-        assert_eq!(r.from, "CUSTOMER");
-        assert_eq!(r.to, "ORDER");
+        assert_eq!(r.from.as_str(), "CUSTOMER");
+        assert_eq!(r.to.as_str(), "ORDER");
         assert_eq!(r.from_marker, EndMarker::ErOne);
         assert_eq!(r.to_marker, EndMarker::ErZeroOrMany);
         assert_eq!(r.line, LineStyle::Solid);

@@ -1,6 +1,6 @@
 //! State-diagram layout (M7a).
 
-use kozue_ir::{ArrowType, Path, Rect, Scene, SceneItem, StateDiagram, Text, TextAlign};
+use kozue_ir::{ArrowType, ElementId, Path, Rect, Scene, SceneItem, StateDiagram, Text, TextAlign};
 
 use super::{
     bounds, coords, cycle, layering, ordering, semantic, LayoutError, Placed, ARROW_HALF_W,
@@ -17,11 +17,11 @@ use super::circle_path;
 pub(crate) fn layout_state_full(
     diagram: &StateDiagram,
 ) -> Result<crate::LayoutOutput, LayoutError> {
-    let mut node_ids: Vec<String> = Vec::new();
+    let mut node_ids: Vec<ElementId> = Vec::new();
     let mut node_labels: Vec<String> = Vec::new();
 
     // Track seen IDs to avoid duplicates.
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: std::collections::BTreeSet<ElementId> = std::collections::BTreeSet::new();
 
     // Add explicitly declared states first (in insertion order).
     for (id, state) in &diagram.states {
@@ -38,13 +38,13 @@ pub(crate) fn layout_state_full(
         if let kozue_ir::Endpoint::State(id) = &t.from {
             if seen.insert(id.clone()) {
                 node_ids.push(id.clone());
-                node_labels.push(id.clone());
+                node_labels.push(id.to_string());
             }
         }
         if let kozue_ir::Endpoint::State(id) = &t.to {
             if seen.insert(id.clone()) {
                 node_ids.push(id.clone());
-                node_labels.push(id.clone());
+                node_labels.push(id.to_string());
             }
         }
         if matches!(t.from, kozue_ir::Endpoint::Initial) {
@@ -58,7 +58,7 @@ pub(crate) fn layout_state_full(
     // Synthetic pseudostate indices.
     let initial_idx = if has_initial {
         let idx = node_ids.len();
-        node_ids.push("__initial__".to_string());
+        node_ids.push("__initial__".into());
         node_labels.push(String::new());
         Some(idx)
     } else {
@@ -66,7 +66,7 @@ pub(crate) fn layout_state_full(
     };
     let final_idx = if has_final {
         let idx = node_ids.len();
-        node_ids.push("__final__".to_string());
+        node_ids.push("__final__".into());
         node_labels.push(String::new());
         Some(idx)
     } else {
@@ -95,7 +95,7 @@ pub(crate) fn layout_state_full(
     // this keeps a real state that happens to be named `__initial__`/`__final__`
     // from being overwritten or mis-routed. Roles are decided by index, not by
     // matching a magic id string, so such a state renders as a normal state.
-    let mut index_of: indexmap::IndexMap<String, usize> = indexmap::IndexMap::new();
+    let mut index_of: indexmap::IndexMap<ElementId, usize> = indexmap::IndexMap::new();
     for (i, id) in node_ids.iter().enumerate() {
         if Some(i) == initial_idx || Some(i) == final_idx {
             continue;

@@ -3,7 +3,9 @@
 //! lines carrying UML end markers.
 
 use indexmap::IndexMap;
-use kozue_ir::{ClassDiagram, Direction, LineStyle, Path, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{
+    ClassDiagram, Direction, ElementId, LineStyle, Path, Scene, SceneItem, Text, TextAlign,
+};
 
 use crate::boxes::{self, BoxSpec, ROW_FONT_SIZE};
 use crate::markers;
@@ -20,7 +22,7 @@ const MULT_ALONG_GAP: f64 = 6.0;
 const MULT_FONT_SIZE: f64 = ROW_FONT_SIZE;
 
 pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput, LayoutError> {
-    let ids: Vec<&String> = c.classes.keys().collect();
+    let ids: Vec<&ElementId> = c.classes.keys().collect();
     let index_of: IndexMap<&str, usize> = ids
         .iter()
         .enumerate()

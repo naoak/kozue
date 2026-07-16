@@ -10,7 +10,7 @@
 //! items and the matching [`CompartmentBox`] once the position is known. The
 //! two share the same per-block height accounting so they can never diverge.
 
-use kozue_ir::{Path, Rect, SceneItem, Text, TextAlign};
+use kozue_ir::{ElementId, Path, Rect, SceneItem, Text, TextAlign};
 
 use crate::semantic::{Compartment, CompartmentBox};
 use crate::{FONT_SIZE, PAD_X};
@@ -27,7 +27,7 @@ const STEREOTYPE_GAP: f64 = 2.0;
 
 /// A measured compartment box, ready to be placed at an (x, y) origin.
 pub(crate) struct BoxSpec {
-    pub(crate) id: String,
+    pub(crate) id: ElementId,
     pub(crate) title: String,
     pub(crate) stereotype: Option<String>,
     /// Non-empty sections only, top-to-bottom order.
@@ -44,7 +44,7 @@ pub(crate) struct BoxSpec {
 /// `sections` may contain empty inner `Vec`s; those are dropped (an empty
 /// section contributes no divider and no area).
 pub(crate) fn measure(
-    id: impl Into<String>,
+    id: impl Into<ElementId>,
     title: impl Into<String>,
     stereotype: Option<String>,
     sections: Vec<Vec<String>>,

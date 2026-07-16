@@ -29,7 +29,8 @@ mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, GraphDiagram, Path, Rect, Scene, SceneItem, Text, TextAlign,
+    ArrowType, Diagram, Direction, ElementId, GraphDiagram, Path, Rect, Scene, SceneItem, Text,
+    TextAlign,
 };
 
 pub use semantic::SemanticLayout;
@@ -244,7 +245,7 @@ pub(crate) fn push_edge_geom(
 
 fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     // Node index order = declaration order.
-    let ids: Vec<&String> = g.nodes.keys().collect();
+    let ids: Vec<&ElementId> = g.nodes.keys().collect();
     let index_of: IndexMap<&str, usize> = ids
         .iter()
         .enumerate()
@@ -1306,8 +1307,8 @@ mod tests {
         assert_eq!(sem.edges.len(), 1);
         let el = &sem.edges[0];
         assert_eq!(el.index, 0);
-        assert_eq!(el.from.id, "a");
-        assert_eq!(el.to.id, "b");
+        assert_eq!(el.from.id.as_str(), "a");
+        assert_eq!(el.to.id.as_str(), "b");
         assert!(el.route.len() >= 2);
         let anchor = el.label_anchor.as_ref().expect("labeled edge has anchor");
         let text = out
@@ -1390,8 +1391,8 @@ mod tests {
         }
         assert_eq!(sem.messages.len(), 2);
         assert_eq!(sem.messages[0].index, 0);
-        assert_eq!(sem.messages[0].from, "a");
-        assert_eq!(sem.messages[0].to, "b");
+        assert_eq!(sem.messages[0].from.as_str(), "a");
+        assert_eq!(sem.messages[0].to.as_str(), "b");
         assert!(sem.messages[0].label_anchor.is_some());
         assert_eq!(sem.messages[1].index, 1);
         assert!(sem.messages[1].label_anchor.is_none());
@@ -1574,8 +1575,8 @@ mod tests {
         };
         assert_eq!(sem.boxes.len(), 2);
         assert_eq!(sem.relations.len(), 1);
-        assert_eq!(sem.relations[0].from, "Customer");
-        assert_eq!(sem.relations[0].to, "Order");
+        assert_eq!(sem.relations[0].from.as_str(), "Customer");
+        assert_eq!(sem.relations[0].to.as_str(), "Order");
         assert_eq!(sem.boxes[0].compartments.len(), 1, "single column section");
 
         let svg = kozue_render_svg::render(&out.scene);

@@ -50,8 +50,8 @@ mod er_dsl;
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, Edge, Endpoint, GraphDiagram, LineStyle, Message, Node,
-    Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    ArrowType, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument, LineStyle,
+    Message, Node, Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -489,7 +489,7 @@ pub(crate) fn peek_header_keyword(src: &str) -> Option<(&str, std::ops::Range<us
 /// the diagram kind with no signal-based inference: `class`/`er` dispatch to
 /// their own dedicated parsers ([`class_dsl`]/[`er_dsl`]), while
 /// `graph`/`sequence`/`state` share the chumsky grammar below.
-pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
+fn parse_diagram(src: &str) -> Result<Diagram, Vec<CompileError>> {
     let Some((kw, kw_span)) = peek_header_keyword(src) else {
         return Err(vec![CompileError {
             message: "expected diagram kind keyword (graph|sequence|state|class|er)".to_string(),
@@ -521,6 +521,41 @@ pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
             secondary: None,
         }]),
     }
+}
+
+/// Parse source text into a versioned semantic IR document.
+pub fn parse_document(src: &str) -> Result<IrDocument, Vec<CompileError>> {
+    let diagram = parse_diagram(src)?;
+    let mut document = IrDocument::new(diagram);
+    document.metadata.name = header_name(src);
+    Ok(document)
+}
+
+/// Parse source text into a semantic [`Diagram`].
+///
+/// This compatibility API discards document metadata. Use [`parse_document`]
+/// when the native diagram name must be retained.
+pub fn parse(src: &str) -> Result<Diagram, Vec<CompileError>> {
+    parse_document(src).map(IrDocument::into_diagram)
+}
+
+fn header_name(src: &str) -> Option<String> {
+    let (_, keyword_span) = peek_header_keyword(src)?;
+    let mut rest = &src[keyword_span.end..];
+    loop {
+        rest = rest.trim_start();
+        if !rest.starts_with("//") {
+            break;
+        }
+        rest = &rest[rest.find('\n')? + 1..];
+    }
+
+    let end = rest
+        .char_indices()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map(|(offset, _)| offset)
+        .unwrap_or(rest.len());
+    (end != 0).then(|| rest[..end].to_string())
 }
 
 /// Dispatch to the appropriate builder for the AST's (already-determined)
@@ -562,7 +597,7 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 label,
                 label_lit_span,
             } => {
-                if graph.nodes.contains_key(id) {
+                if graph.nodes.contains_key(id.as_str()) {
                     errors.push(CompileError {
                         message: format!("duplicate node declaration `{}`", id),
                         span: id_span.clone(),
@@ -585,7 +620,7 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 first_decl_spans.insert(id.clone(), id_span.clone());
                 graph
                     .nodes
-                    .insert(id.clone(), Node::new(id.clone(), label_str));
+                    .insert(id.clone().into(), Node::new(id.clone(), label_str));
             }
             Stmt::DashedEdge(e) => {
                 errors.push(CompileError {
@@ -636,7 +671,7 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             }
 
             for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
-                if !graph.nodes.contains_key(endpoint) {
+                if !graph.nodes.contains_key(endpoint.as_str()) {
                     let mut message = format!("unknown node `{}`", endpoint);
                     if let Some(suggestion) = closest_name(endpoint, graph.nodes.keys()) {
                         message.push_str(&format!(", did you mean `{}`?", suggestion));
@@ -710,7 +745,7 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 label,
                 label_lit_span,
             } => {
-                if diagram.states.contains_key(id) {
+                if diagram.states.contains_key(id.as_str()) {
                     errors.push(CompileError {
                         message: format!("duplicate state declaration `{}`", id),
                         span: id_span.clone(),
@@ -733,7 +768,7 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 first_decl_spans.insert(id.clone(), id_span.clone());
                 diagram
                     .states
-                    .insert(id.clone(), State::new(id.clone(), label_str));
+                    .insert(id.clone().into(), State::new(id.clone(), label_str));
             }
             Stmt::Node { id_span, .. } => {
                 errors.push(CompileError {
@@ -773,11 +808,11 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
 
                 let from_ep = match &t.from {
                     RawEndpoint::Pseudo => Endpoint::Initial,
-                    RawEndpoint::Id(id) => Endpoint::State(id.clone()),
+                    RawEndpoint::Id(id) => Endpoint::State(id.clone().into()),
                 };
                 let to_ep = match &t.to {
                     RawEndpoint::Pseudo => Endpoint::Final,
-                    RawEndpoint::Id(id) => Endpoint::State(id.clone()),
+                    RawEndpoint::Id(id) => Endpoint::State(id.clone().into()),
                 };
 
                 // Validate: [*] -> [*] makes no sense.
@@ -795,14 +830,14 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     if !diagram.states.contains_key(id) {
                         diagram
                             .states
-                            .insert(id.clone(), State::new(id.clone(), id.clone()));
+                            .insert(id.clone(), State::new(id.clone(), id.to_string()));
                     }
                 }
                 if let Endpoint::State(id) = &to_ep {
                     if !diagram.states.contains_key(id) {
                         diagram
                             .states
-                            .insert(id.clone(), State::new(id.clone(), id.clone()));
+                            .insert(id.clone(), State::new(id.clone(), id.to_string()));
                     }
                 }
 
@@ -822,18 +857,19 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             }
             Stmt::Edge(e) => {
                 // In a state diagram, plain `id -> id` edges are treated as state transitions.
-                let from_ep = Endpoint::State(e.from.clone());
-                let to_ep = Endpoint::State(e.to.clone());
+                let from_ep = Endpoint::State(e.from.clone().into());
+                let to_ep = Endpoint::State(e.to.clone().into());
 
-                if !diagram.states.contains_key(&e.from) {
-                    diagram
-                        .states
-                        .insert(e.from.clone(), State::new(e.from.clone(), e.from.clone()));
+                if !diagram.states.contains_key(e.from.as_str()) {
+                    diagram.states.insert(
+                        e.from.clone().into(),
+                        State::new(e.from.clone(), e.from.clone()),
+                    );
                 }
-                if !diagram.states.contains_key(&e.to) {
+                if !diagram.states.contains_key(e.to.as_str()) {
                     diagram
                         .states
-                        .insert(e.to.clone(), State::new(e.to.clone(), e.to.clone()));
+                        .insert(e.to.clone().into(), State::new(e.to.clone(), e.to.clone()));
                 }
                 if let Some(lit_span) = &e.label_lit_span {
                     if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
@@ -919,7 +955,7 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             label_lit_span,
         } = stmt
         {
-            if seq.participants.contains_key(id) {
+            if seq.participants.contains_key(id.as_str()) {
                 errors.push(CompileError {
                     message: format!("duplicate participant `{}`", id),
                     span: id_span.clone(),
@@ -941,7 +977,7 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             }
             first_decl_spans.insert(id.clone(), id_span.clone());
             seq.participants
-                .insert(id.clone(), Participant::new(id.clone(), label_str));
+                .insert(id.clone().into(), Participant::new(id.clone(), label_str));
         }
     }
 
@@ -954,7 +990,7 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
 
         let mut valid = true;
         for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
-            if !seq.participants.contains_key(endpoint) {
+            if !seq.participants.contains_key(endpoint.as_str()) {
                 let mut message = format!("unknown participant `{}`", endpoint);
                 if let Some(suggestion) = closest_name(endpoint, seq.participants.keys()) {
                     message.push_str(&format!(", did you mean `{}`?", suggestion));
@@ -1035,10 +1071,10 @@ fn find_invalid_escape_in_span(
 /// Find the declared name closest to `target` (Levenshtein distance <= 2).
 fn closest_name<'a>(
     target: &str,
-    candidates: impl Iterator<Item = &'a String>,
-) -> Option<&'a String> {
+    candidates: impl Iterator<Item = &'a ElementId>,
+) -> Option<&'a ElementId> {
     candidates
-        .map(|c| (levenshtein(target, c), c))
+        .map(|c| (levenshtein(target, c.as_str()), c))
         .filter(|(d, _)| *d <= 2)
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| c)
@@ -1588,6 +1624,33 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_document_preserves_all_native_header_names() {
+        let cases = [
+            ("graph graph_name {}", "graph_name"),
+            ("sequence sequence_name {}", "sequence_name"),
+            ("state state_name {}", "state_name"),
+            ("class class_name {\n}\n", "class_name"),
+            ("er er_name {\n}\n", "er_name"),
+        ];
+
+        for (source, expected_name) in cases {
+            let document = parse_document(source)
+                .unwrap_or_else(|errors| panic!("failed to parse {expected_name}: {errors:?}"));
+            assert_eq!(document.metadata.name.as_deref(), Some(expected_name));
+            assert!(document.extensions.is_empty());
+        }
+    }
+
+    #[test]
+    fn legacy_parse_returns_the_same_diagram_as_parse_document() {
+        let source = "graph named { a }";
+        assert_eq!(
+            parse(source).unwrap(),
+            parse_document(source).unwrap().into_diagram()
+        );
+    }
 
     #[test]
     fn parses_basic_diagram() {
@@ -2222,8 +2285,8 @@ mod tests {
         let Diagram::State(sd) = d else { panic!() };
         assert_eq!(sd.transitions.len(), 2);
         let self_t = sd.transitions.iter().find(|t| {
-            matches!(&t.from, Endpoint::State(id) if id == "s")
-                && matches!(&t.to, Endpoint::State(id) if id == "s")
+            matches!(&t.from, Endpoint::State(id) if id.as_str() == "s")
+                && matches!(&t.to, Endpoint::State(id) if id.as_str() == "s")
         });
         assert!(self_t.is_some(), "self transition should be present");
     }
@@ -2402,8 +2465,8 @@ mod tests {
         );
         assert_eq!(c.relations.len(), 3);
         let places = &c.relations[0];
-        assert_eq!(places.from, "Customer");
-        assert_eq!(places.to, "Order");
+        assert_eq!(places.from.as_str(), "Customer");
+        assert_eq!(places.to.as_str(), "Order");
         assert_eq!(places.from_mult.as_deref(), Some("1"));
         assert_eq!(places.to_mult.as_deref(), Some("*"));
         assert_eq!(places.from_marker, kozue_ir::EndMarker::HollowDiamond);
@@ -2462,8 +2525,8 @@ mod tests {
         ];
         for &(line, from_m, to_m, ls) in cases {
             let r = dsl_class_one_relation(line);
-            assert_eq!(r.from, "A", "`{line}` from");
-            assert_eq!(r.to, "B", "`{line}` to");
+            assert_eq!(r.from.as_str(), "A", "`{line}` from");
+            assert_eq!(r.to.as_str(), "B", "`{line}` to");
             assert_eq!(r.from_marker, from_m, "`{line}` from_marker");
             assert_eq!(r.to_marker, to_m, "`{line}` to_marker");
             assert_eq!(r.line, ls, "`{line}` line");
@@ -2578,8 +2641,8 @@ mod tests {
         assert_eq!(customer.attributes[0].keys, vec!["PK".to_string()]);
         assert_eq!(customer.attributes[2].keys, vec!["UK".to_string()]);
         let rel = &e.relations[0];
-        assert_eq!(rel.from, "Customer");
-        assert_eq!(rel.to, "Order");
+        assert_eq!(rel.from.as_str(), "Customer");
+        assert_eq!(rel.to.as_str(), "Order");
         assert_eq!(rel.from_marker, kozue_ir::EndMarker::ErOne);
         assert_eq!(rel.to_marker, kozue_ir::EndMarker::ErZeroOrMany);
         assert_eq!(rel.label.as_deref(), Some("places"));

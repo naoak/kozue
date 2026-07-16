@@ -689,17 +689,20 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
     // Node id -> index lookup (Vec-based, deterministic). Returns
     // RenderError::DanglingEdge for unknown IDs instead of silently emitting
     // a binding to a nonexistent element.
-    let find_node_idx = |id: &str| -> Option<usize> { g.nodes.iter().position(|n| n.id == id) };
+    let find_node_idx =
+        |id: &str| -> Option<usize> { g.nodes.iter().position(|n| n.id.as_str() == id) };
 
     // Edges -- arrow bound to both endpoint rectangles, plus an optional
     // bound text label.
     for (i, edge) in g.edges.iter().enumerate() {
-        let src_idx = find_node_idx(&edge.from.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.from.id.clone(),
-        })?;
-        let tgt_idx = find_node_idx(&edge.to.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.to.id.clone(),
-        })?;
+        let src_idx =
+            find_node_idx(edge.from.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+                node_id: edge.from.id.to_string(),
+            })?;
+        let tgt_idx =
+            find_node_idx(edge.to.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+                node_id: edge.to.id.to_string(),
+            })?;
         let src_id = format!("n{src_idx}");
         let tgt_id = format!("n{tgt_idx}");
         let arrow_id = format!("e{i}");
@@ -1041,7 +1044,7 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
     // Participant id -> index lookup (Vec-based, deterministic). Returns
     // DanglingEdge for an unknown participant instead of dropping the message.
     let find_participant =
-        |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id == id) };
+        |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id.as_str() == id) };
 
     // Messages -- arrow with absolute `points` geometry. Unlike graph edges
     // and state transitions, a message can attach at any y along a lifeline
@@ -1049,11 +1052,11 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
     // meaningful here: both `startBinding`/`endBinding` stay `null` and the
     // arrow's own `points` remain authoritative (see module docs).
     for (i, m) in s.messages.iter().enumerate() {
-        find_participant(&m.from).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: m.from.clone(),
+        find_participant(m.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: m.from.to_string(),
         })?;
-        find_participant(&m.to).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: m.to.clone(),
+        find_participant(m.to.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: m.to.to_string(),
         })?;
 
         let arrow_id = format!("e{i}");
@@ -1224,16 +1227,17 @@ fn render_class(layout: &ClassLayout) -> Result<Vec<AnyElement>, RenderError> {
 
     // Box id -> index lookup (Vec-based, deterministic). Returns
     // RenderError::DanglingEdge for unknown IDs.
-    let find_box = |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id == id) };
+    let find_box =
+        |id: &str| -> Option<usize> { layout.boxes.iter().position(|b| b.id.as_str() == id) };
 
     // Relations -- arrow bound to both endpoint rectangles, with markers on
     // both ends and optional label / multiplicity texts.
     for (i, rel) in layout.relations.iter().enumerate() {
-        let src_idx = find_box(&rel.from).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: rel.from.clone(),
+        let src_idx = find_box(rel.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.from.to_string(),
         })?;
-        let tgt_idx = find_box(&rel.to).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: rel.to.clone(),
+        let tgt_idx = find_box(rel.to.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: rel.to.to_string(),
         })?;
         let src_id = format!("n{src_idx}");
         let tgt_id = format!("n{tgt_idx}");
@@ -1746,7 +1750,7 @@ mod tests {
         let SemanticLayout::Graph(mut gl) = layout else {
             panic!("expected graph layout");
         };
-        gl.edges[0].to.id = "does-not-exist".to_string();
+        gl.edges[0].to.id = "does-not-exist".into();
         let err = render(&SemanticLayout::Graph(gl)).unwrap_err();
         assert_eq!(
             err,
@@ -1762,7 +1766,7 @@ mod tests {
         let SemanticLayout::Sequence(mut sl) = layout else {
             panic!("expected sequence layout");
         };
-        sl.messages[0].to = "does-not-exist".to_string();
+        sl.messages[0].to = "does-not-exist".into();
         let err = render(&SemanticLayout::Sequence(sl)).unwrap_err();
         assert_eq!(
             err,
@@ -1934,7 +1938,7 @@ mod tests {
         let SemanticLayout::Class(mut cl) = layout else {
             panic!("expected class layout");
         };
-        cl.relations[0].to = "does-not-exist".to_string();
+        cl.relations[0].to = "does-not-exist".into();
         let err = render(&SemanticLayout::Class(cl)).unwrap_err();
         assert_eq!(
             err,

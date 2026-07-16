@@ -484,19 +484,19 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     }
 
     let find_node = |id: &str| -> Option<&kozue_layout::semantic::NodeLayout> {
-        g.nodes.iter().find(|n| n.id == id)
+        g.nodes.iter().find(|n| n.id.as_str() == id)
     };
 
     for (i, edge) in g.edges.iter().enumerate() {
-        find_node(&edge.from.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.from.id.clone(),
+        find_node(edge.from.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: edge.from.id.to_string(),
         })?;
-        find_node(&edge.to.id).ok_or_else(|| RenderError::DanglingEdge {
-            node_id: edge.to.id.clone(),
+        find_node(edge.to.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {
+            node_id: edge.to.id.to_string(),
         })?;
         if edge.route.is_empty() {
             return Err(RenderError::DanglingEdge {
-                node_id: edge.from.id.clone(),
+                node_id: edge.from.id.to_string(),
             });
         }
         shapes.push_str(&connector_shape(
@@ -684,22 +684,23 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
         ));
     }
 
-    let find_participant = |id: &str| -> bool { s.participants.iter().any(|p| p.id == id) };
+    let find_participant =
+        |id: &str| -> bool { s.participants.iter().any(|p| p.id.as_str() == id) };
 
     for (i, m) in s.messages.iter().enumerate() {
-        if !find_participant(&m.from) {
+        if !find_participant(m.from.as_str()) {
             return Err(RenderError::DanglingEdge {
-                node_id: m.from.clone(),
+                node_id: m.from.to_string(),
             });
         }
-        if !find_participant(&m.to) {
+        if !find_participant(m.to.as_str()) {
             return Err(RenderError::DanglingEdge {
-                node_id: m.to.clone(),
+                node_id: m.to.to_string(),
             });
         }
         if m.route.is_empty() {
             return Err(RenderError::DanglingEdge {
-                node_id: m.from.clone(),
+                node_id: m.from.to_string(),
             });
         }
         shapes.push_str(&connector_shape(
@@ -919,23 +920,23 @@ fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
         }
     }
 
-    let find_box = |id: &str| -> bool { layout.boxes.iter().any(|b| b.id == id) };
+    let find_box = |id: &str| -> bool { layout.boxes.iter().any(|b| b.id.as_str() == id) };
 
     for (i, rel) in layout.relations.iter().enumerate() {
-        if !find_box(&rel.from) {
+        if !find_box(rel.from.as_str()) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.from.clone(),
+                node_id: rel.from.to_string(),
             });
         }
-        if !find_box(&rel.to) {
+        if !find_box(rel.to.as_str()) {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.to.clone(),
+                node_id: rel.to.to_string(),
             });
         }
         let route: Vec<Point> = rel.points.iter().map(|&(x, y)| Point::new(x, y)).collect();
         if route.is_empty() {
             return Err(RenderError::DanglingEdge {
-                node_id: rel.from.clone(),
+                node_id: rel.from.to_string(),
             });
         }
         shapes.push_str(&connector_shape_ends(
@@ -1243,7 +1244,7 @@ mod tests {
         let SemanticLayout::Class(mut cl) = layout else {
             panic!("expected class layout");
         };
-        cl.relations[0].to = "does-not-exist".to_string();
+        cl.relations[0].to = "does-not-exist".into();
         let err = render(&SemanticLayout::Class(cl)).unwrap_err();
         assert_eq!(
             err,

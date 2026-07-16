@@ -2,7 +2,8 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    LineStyle, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem, Text, TextAlign,
+    ElementId, LineStyle, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem, Text,
+    TextAlign,
 };
 
 use crate::bounds;
@@ -25,7 +26,7 @@ const ARROW_HALF_W: f64 = 5.0;
 
 pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput {
     // Collect participant IDs in insertion order.
-    let ids: Vec<&String> = seq.participants.keys().collect();
+    let ids: Vec<&ElementId> = seq.participants.keys().collect();
     let n = ids.len();
 
     // Measure each header box.

@@ -7,7 +7,9 @@
 //! field, so entities are always laid out top-down.
 
 use indexmap::IndexMap;
-use kozue_ir::{ErAttribute, ErDiagram, LineStyle, Path, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{
+    ElementId, ErAttribute, ErDiagram, LineStyle, Path, Scene, SceneItem, Text, TextAlign,
+};
 
 use crate::boxes::{self, BoxSpec, ROW_FONT_SIZE};
 use crate::markers;
@@ -18,7 +20,7 @@ use crate::{
 };
 
 pub(crate) fn layout_er_full(e: &ErDiagram) -> Result<crate::LayoutOutput, LayoutError> {
-    let ids: Vec<&String> = e.entities.keys().collect();
+    let ids: Vec<&ElementId> = e.entities.keys().collect();
     let index_of: IndexMap<&str, usize> = ids
         .iter()
         .enumerate()
