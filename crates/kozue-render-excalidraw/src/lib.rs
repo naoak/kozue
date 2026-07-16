@@ -698,6 +698,39 @@ fn text_size(label: &str) -> (f64, f64) {
 fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
     let mut elements: Vec<AnyElement> = Vec::new();
 
+    // Containers -- dashed, unfilled backdrop rectangle + a free (unbound)
+    // top-left label text, in pre-order (matching `GraphLayout::containers`)
+    // so they draw behind the nodes/edges emitted below.
+    for (j, c) in g.containers.iter().enumerate() {
+        let r = &c.rect;
+        let rect_id = format!("c{j}");
+        let mut rect = make_rect_with_roundness(
+            &rect_id,
+            r.x + MARGIN,
+            r.y + MARGIN,
+            r.width,
+            r.height,
+            None,
+        );
+        rect.stroke_style = "dashed";
+        elements.push(AnyElement::Shape(rect));
+
+        if let Some(label) = &c.label {
+            let (tw, th) = text_size(label);
+            elements.push(AnyElement::Text(make_text_aligned(
+                &format!("{rect_id}-label"),
+                None,
+                label,
+                r.x + MARGIN + 6.0,
+                r.y + MARGIN + 4.0,
+                tw,
+                th,
+                "left",
+                "top",
+            )));
+        }
+    }
+
     // Nodes -- rounded rectangle + bound text label (display label, not id).
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
@@ -1783,6 +1816,66 @@ mod tests {
         assert!(arrow["startArrowhead"].is_null());
         assert_eq!(arrow["strokeStyle"], "solid");
         assert_eq!(arrow["strokeWidth"], 1.0);
+    }
+
+    // --- M3a3: containers ---
+
+    fn graph_with_container_layout() -> SemanticLayout {
+        use kozue_ir::{ArrowType, Container, Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "Alpha"));
+        g.nodes.insert("b".into(), Node::new("b", "Beta"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+        let mut container = Container::new("x", Some("Group".to_string()));
+        container.members.push("a".into());
+        g.containers.push(container);
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        out.semantic
+    }
+
+    #[test]
+    fn graph_with_no_containers_has_no_container_elements() {
+        let layout = graph_two_node_layout();
+        let json = render(&layout).expect("render");
+        let v = parse(&json);
+        assert!(
+            !v["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["id"] == "c0"),
+            "no container element expected: {json}"
+        );
+    }
+
+    #[test]
+    fn graph_container_emits_dashed_rectangle_and_label_before_nodes() {
+        let layout = graph_with_container_layout();
+        let json = render(&layout).expect("render");
+        let v = parse(&json);
+        let elements = v["elements"].as_array().unwrap();
+
+        let rect = elements
+            .iter()
+            .find(|e| e["id"] == "c0")
+            .expect("container rectangle element");
+        assert_eq!(rect["type"], "rectangle");
+        assert_eq!(rect["strokeStyle"], "dashed");
+        assert_eq!(rect["backgroundColor"], "transparent");
+
+        let label = elements
+            .iter()
+            .find(|e| e["id"] == "c0-label")
+            .expect("container label text element");
+        assert_eq!(label["type"], "text");
+        assert_eq!(label["text"], "Group");
+
+        let c0_index = elements.iter().position(|e| e["id"] == "c0").unwrap();
+        let n0_index = elements.iter().position(|e| e["id"] == "n0").unwrap();
+        assert!(
+            c0_index < n0_index,
+            "container element must be emitted before node elements"
+        );
     }
 
     // --- determinism ---

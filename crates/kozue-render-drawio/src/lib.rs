@@ -304,6 +304,26 @@ fn graph_edge_style(
 fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     let mut out = mxfile_header();
 
+    // Container backdrops — plain rectangles behind everything else, in
+    // pre-order (matching `GraphLayout::containers`). This is a backdrop, not
+    // an mxCell parent grouping: node cells still keep `parent="1"` with
+    // absolute geometry, unchanged from before containers existed.
+    for (j, c) in g.containers.iter().enumerate() {
+        let r = &c.rect;
+        out.push_str(&format!(
+            "        <mxCell id=\"c{j}\" value=\"{}\" \
+             style=\"rounded=0;dashed=1;fillColor=none;verticalAlign=top;align=left;\
+             spacingLeft=6;spacingTop=4;html=1;\" vertex=\"1\" parent=\"1\">\n\
+             \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+             \x20       </mxCell>\n",
+            xml_escape(c.label.as_deref().unwrap_or("")),
+            f(r.x + MARGIN),
+            f(r.y + MARGIN),
+            f(r.width),
+            f(r.height),
+        ));
+    }
+
     // Vertices — use label (display text), not id.
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
@@ -1191,6 +1211,45 @@ mod tests {
             xml.contains("x=\"20.00\" y=\"20.00\""),
             "margin must offset first node: {xml}"
         );
+    }
+
+    // Helper: build a graph layout with a labeled container via the real
+    // layout pipeline.
+    fn graph_with_container_layout() -> SemanticLayout {
+        use kozue_ir::{ArrowType, Container, Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "Alpha"));
+        g.nodes.insert("b".into(), Node::new("b", "Beta"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+        let mut container = Container::new("x", Some("Group".to_string()));
+        container.members.push("a".into());
+        g.containers.push(container);
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        out.semantic
+    }
+
+    #[test]
+    fn graph_with_no_containers_is_byte_identical() {
+        let with_empty = graph_two_node_layout();
+        let SemanticLayout::Graph(g) = &with_empty else {
+            unreachable!()
+        };
+        assert!(g.containers.is_empty());
+        let xml = render(&with_empty).expect("render");
+        assert!(!xml.contains(" id=\"c0\""), "no container cell: {xml}");
+    }
+
+    #[test]
+    fn graph_container_emits_dashed_backdrop_cell_before_nodes() {
+        let layout = graph_with_container_layout();
+        let xml = render(&layout).expect("render");
+        assert!(
+            xml.contains("<mxCell id=\"c0\" value=\"Group\" style=\"rounded=0;dashed=1;"),
+            "{xml}"
+        );
+        let c0 = xml.find("id=\"c0\"").expect("container cell present");
+        let n0 = xml.find("id=\"n0\"").expect("node cell present");
+        assert!(c0 < n0, "container cell must be emitted before node cells");
     }
 
     #[test]

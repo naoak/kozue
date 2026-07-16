@@ -45,8 +45,8 @@
 //!   crow's-foot markers.
 
 use kozue_ir::{
-    ArrowType, ClassDiagram, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErDiagram,
-    ErRelation, GraphDiagram, LineStyle, LineWeight, NodeKind, StateDiagram, Transition,
+    ArrowType, ClassDiagram, ClassRelation, Container, Diagram, Direction, EndMarker, Endpoint,
+    ErDiagram, ErRelation, GraphDiagram, LineStyle, LineWeight, NodeKind, StateDiagram, Transition,
 };
 
 // ---------------------------------------------------------------------------
@@ -158,26 +158,23 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
     out.push_str(&format!("  rankdir={rankdir};\n"));
     out.push_str("  node [shape=box style=rounded];\n");
 
-    // Node statements, in declaration order.
+    // Node ids that belong to some container (at any depth) are emitted
+    // inside their innermost cluster instead, further down.
+    let mut contained: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    mark_contained_members(&g.containers, &mut contained);
+
+    // Top-level node statements (not in any container), in declaration order.
     for node in g.nodes.values() {
-        let shape_attrs = match &node.kind {
-            NodeKind::Default => "",
-            NodeKind::Rectangle => " shape=box style=\"\"",
-            NodeKind::RoundedRectangle => " shape=box style=rounded",
-            NodeKind::Circle => " shape=circle style=\"\"",
-            NodeKind::Diamond => " shape=diamond style=\"\"",
-            kind => {
-                return Err(RenderError::UnknownNodeKind {
-                    kind: format!("{kind:?}"),
-                })
-            }
-        };
-        out.push_str(&format!(
-            "  {} [label={}{}];\n",
-            quote(node.id.as_str()),
-            quote(&node.label),
-            shape_attrs,
-        ));
+        if contained.contains(node.id.as_str()) {
+            continue;
+        }
+        out.push_str(&node_stmt(node, 1)?);
+    }
+
+    // Container (subgraph cluster) statements, in declaration/pre-order.
+    let mut cluster_counter = 0usize;
+    for root in &g.containers {
+        out.push_str(&container_stmt(root, g, 1, &mut cluster_counter)?);
     }
 
     // Edge statements, in declaration order.
@@ -204,6 +201,79 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
     }
 
     out.push_str("}\n");
+    Ok(out)
+}
+
+/// Format a single node statement at the given indent level (2 spaces per level).
+fn node_stmt(node: &kozue_ir::Node, indent: usize) -> Result<String, RenderError> {
+    let shape_attrs = match &node.kind {
+        NodeKind::Default => "",
+        NodeKind::Rectangle => " shape=box style=\"\"",
+        NodeKind::RoundedRectangle => " shape=box style=rounded",
+        NodeKind::Circle => " shape=circle style=\"\"",
+        NodeKind::Diamond => " shape=diamond style=\"\"",
+        kind => {
+            return Err(RenderError::UnknownNodeKind {
+                kind: format!("{kind:?}"),
+            })
+        }
+    };
+    Ok(format!(
+        "{}{} [label={}{}];\n",
+        "  ".repeat(indent),
+        quote(node.id.as_str()),
+        quote(&node.label),
+        shape_attrs,
+    ))
+}
+
+/// Recursively collect every node id that belongs to any container (direct
+/// member of it or one of its nested children).
+fn mark_contained_members<'a>(
+    containers: &'a [kozue_ir::Container],
+    out: &mut std::collections::HashSet<&'a str>,
+) {
+    for c in containers {
+        for m in &c.members {
+            out.insert(m.as_str());
+        }
+        mark_contained_members(&c.children, out);
+    }
+}
+
+/// Emit one container as a Graphviz `subgraph cluster_N { ... }` block at the
+/// given indent level, recursing into nested containers. `cluster_counter` is
+/// a shared pre-order counter so cluster names (`cluster_0`, `cluster_1`, ...)
+/// are deterministic and independent of the user-supplied container id.
+fn container_stmt(
+    container: &Container,
+    g: &GraphDiagram,
+    indent: usize,
+    cluster_counter: &mut usize,
+) -> Result<String, RenderError> {
+    let name = format!("cluster_{cluster_counter}");
+    *cluster_counter += 1;
+    let pad = "  ".repeat(indent);
+    let inner_indent = indent + 1;
+    let inner_pad = "  ".repeat(inner_indent);
+
+    let mut out = format!("{pad}subgraph {name} {{\n");
+    if let Some(label) = &container.label {
+        out.push_str(&format!("{inner_pad}label={};\n", quote(label)));
+    }
+    for member_id in &container.members {
+        let node = g
+            .nodes
+            .get(member_id)
+            .ok_or_else(|| RenderError::DanglingEdge {
+                node_id: member_id.to_string(),
+            })?;
+        out.push_str(&node_stmt(node, inner_indent)?);
+    }
+    for child in &container.children {
+        out.push_str(&container_stmt(child, g, inner_indent, cluster_counter)?);
+    }
+    out.push_str(&format!("{pad}}}\n"));
     Ok(out)
 }
 
@@ -1143,6 +1213,63 @@ mod tests {
     #[test]
     fn quoting_escapes_specials() {
         assert_eq!(quote(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn graph_with_no_containers_emits_no_clusters() {
+        let mut g = graph(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "Start"));
+        g.nodes.insert("b".into(), Node::new("b", "End"));
+        g.edges
+            .push(Edge::new("a", "b", Some("go".into()), ArrowType::Triangle));
+        // Byte-compat for flat graphs is guarded by the committed goldens;
+        // here we only pin that an empty container list emits no clusters.
+        let plain = render(&Diagram::Graph(g)).unwrap();
+        assert!(!plain.contains("cluster_"));
+        assert!(!plain.contains("subgraph"));
+    }
+
+    #[test]
+    fn graph_container_becomes_labeled_cluster() {
+        let mut g = graph(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+
+        let mut container = kozue_ir::Container::new("x", Some("My Group".to_string()));
+        container.members.push("a".into());
+        g.containers.push(container);
+
+        let dot = render(&Diagram::Graph(g)).unwrap();
+        assert!(dot.contains("subgraph cluster_0 {"), "{dot}");
+        assert!(dot.contains("label=\"My Group\";"), "{dot}");
+        // The contained node moves inside the cluster; the uncontained node
+        // stays at top level.
+        assert!(dot.contains("    \"a\" [label=\"A\"];\n"), "{dot}");
+        assert!(dot.contains("  \"b\" [label=\"B\"];\n"), "{dot}");
+    }
+
+    #[test]
+    fn graph_nested_containers_produce_nested_clusters_with_counter_names() {
+        let mut g = graph(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+
+        let mut inner = kozue_ir::Container::new("inner", None);
+        inner.members.push("b".into());
+        let mut outer = kozue_ir::Container::new("outer", Some("Outer".to_string()));
+        outer.members.push("a".into());
+        outer.children.push(inner);
+        g.containers.push(outer);
+
+        let dot = render(&Diagram::Graph(g)).unwrap();
+        assert!(dot.contains("subgraph cluster_0 {"), "{dot}");
+        assert!(dot.contains("subgraph cluster_1 {"), "{dot}");
+        // No label statement immediately inside the unlabeled inner cluster
+        // (its member node's own `label=` node attribute is unrelated).
+        assert!(!dot.contains("subgraph cluster_1 {\n      label="), "{dot}");
+        // Nested cluster is indented one level deeper than its parent.
+        assert!(dot.contains("    subgraph cluster_1 {"), "{dot}");
     }
 
     #[test]

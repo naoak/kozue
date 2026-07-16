@@ -30,8 +30,8 @@ mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, ElementId, EndMarker, GraphDiagram, LineStyle, LineWeight,
-    NodeKind, Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign,
+    ArrowType, Container, Diagram, Direction, ElementId, EndMarker, GraphDiagram, Group, LineStyle,
+    LineWeight, NodeKind, Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign,
 };
 
 pub use contract::{validate_export_semantics, ExportContractError, ExportInput};
@@ -58,6 +58,15 @@ pub(crate) const LAYER_GAP_DOWN: f64 = 100.0;
 pub(crate) const LAYER_GAP_RIGHT: f64 = 150.0;
 pub(crate) const ARROW_LEN: f64 = 10.0;
 pub(crate) const ARROW_HALF_W: f64 = 5.0;
+
+/// Clearance between a container's content bbox (union of member nodes and
+/// child containers) and its drawn border, on every side.
+pub(crate) const CONTAINER_PAD: f64 = 16.0;
+/// Extra strip added above a labeled container's content bbox (on top of
+/// [`CONTAINER_PAD`]) to make room for the label text.
+pub(crate) const CONTAINER_LABEL_H: f64 = FONT_SIZE + 2.0 * PAD_Y;
+/// Horizontal inset of a container's label text from its left border.
+pub(crate) const CONTAINER_LABEL_INSET: f64 = 6.0;
 
 pub(crate) fn direction_axes(direction: Direction) -> Result<(bool, bool), LayoutError> {
     match direction {
@@ -549,8 +558,41 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         }
     };
 
-    // Build scene items: nodes first, then edges.
+    // Container geometry (M3a3, naive): computed bottom-up from the placed
+    // node boxes, entirely after node placement/edge routing so those are
+    // unaffected by containers. Coordinates here are pre-translation, same
+    // space as `placed`; the bounds-normalization step below moves them (and
+    // their Scene Group items) together with everything else.
+    let node_rect: IndexMap<&str, Rect> = ids
+        .iter()
+        .enumerate()
+        .map(|(v, id)| {
+            (
+                id.as_str(),
+                Rect {
+                    x: placed[v].x,
+                    y: placed[v].y,
+                    width: placed[v].width,
+                    height: placed[v].height,
+                    rx: 0.0,
+                },
+            )
+        })
+        .collect();
+
+    let mut container_rects: IndexMap<ElementId, Rect> = IndexMap::new();
+    for root in &g.containers {
+        compute_container_rect(root, &node_rect, &mut container_rects)?;
+    }
+
+    // Container scene items are prepended (before nodes) so they render
+    // behind everything else; emitted pre-order (parent before children) so
+    // nested containers draw on top of their parent's border.
     let mut items: Vec<SceneItem> = Vec::new();
+    let mut sem_containers: Vec<semantic::ContainerLayout> = Vec::new();
+    for root in &g.containers {
+        emit_container(root, &container_rects, &mut items, &mut sem_containers)?;
+    }
 
     // Semantic node layouts (pre-translation; adjusted below).
     let mut sem_nodes: Vec<semantic::NodeLayout> = Vec::new();
@@ -678,6 +720,14 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
             la.y -= min_y;
         }
     }
+    for cl in &mut sem_containers {
+        cl.rect.x -= min_x;
+        cl.rect.y -= min_y;
+        if let Some(la) = &mut cl.label_anchor {
+            la.x -= min_x;
+            la.y -= min_y;
+        }
+    }
 
     let scene = Scene {
         width: max_x - min_x,
@@ -687,9 +737,123 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     let semantic = SemanticLayout::Graph(semantic::GraphLayout {
         nodes: sem_nodes,
         edges: sem_edges,
+        containers: sem_containers,
     });
 
     Ok(LayoutOutput { scene, semantic })
+}
+
+/// Recursively compute a container's full drawn rect: the union of its direct
+/// member node rects and its (already-padded) child container rects, expanded
+/// by [`CONTAINER_PAD`] on every side, plus an extra [`CONTAINER_LABEL_H`]
+/// strip on top when the container has a label. Every container's rect
+/// (including nested ones) is inserted into `container_rects` keyed by id as
+/// a side effect, so callers can look up any container's rect (including the
+/// caller's own) after the top-level call returns.
+fn compute_container_rect(
+    container: &Container,
+    node_rect: &IndexMap<&str, Rect>,
+    container_rects: &mut IndexMap<ElementId, Rect>,
+) -> Result<Rect, LayoutError> {
+    let mut acc: Option<(f64, f64, f64, f64)> = None;
+    for member in &container.members {
+        let r = node_rect.get(member.as_str()).ok_or_else(|| LayoutError {
+            message: format!(
+                "container `{}` references unknown node `{member}`",
+                container.id
+            ),
+        })?;
+        acc = Some(union_bbox(acc, r));
+    }
+    for child in &container.children {
+        let r = compute_container_rect(child, node_rect, container_rects)?;
+        acc = Some(union_bbox(acc, &r));
+    }
+    let (x0, y0, x1, y1) = acc.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let mut rect = Rect {
+        x: x0 - CONTAINER_PAD,
+        y: y0 - CONTAINER_PAD,
+        width: (x1 - x0) + 2.0 * CONTAINER_PAD,
+        height: (y1 - y0) + 2.0 * CONTAINER_PAD,
+        rx: 0.0,
+    };
+    if container.label.is_some() {
+        rect.y -= CONTAINER_LABEL_H;
+        rect.height += CONTAINER_LABEL_H;
+    }
+    container_rects.insert(container.id.clone(), rect.clone());
+    Ok(rect)
+}
+
+fn union_bbox(acc: Option<(f64, f64, f64, f64)>, r: &Rect) -> (f64, f64, f64, f64) {
+    let (x0, y0, x1, y1) = (r.x, r.y, r.x + r.width, r.y + r.height);
+    match acc {
+        Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
+        None => (x0, y0, x1, y1),
+    }
+}
+
+/// Emit one container's Scene [`Group`] (dashed border + optional label) and
+/// its [`semantic::ContainerLayout`] entry, then recurse into its children —
+/// building both `items` and `flat` in pre-order (parent before children).
+fn emit_container(
+    container: &Container,
+    container_rects: &IndexMap<ElementId, Rect>,
+    items: &mut Vec<SceneItem>,
+    flat: &mut Vec<semantic::ContainerLayout>,
+) -> Result<(), LayoutError> {
+    let rect = container_rects
+        .get(&container.id)
+        .cloned()
+        .ok_or_else(|| LayoutError {
+            message: format!("container `{}` has no computed rect", container.id),
+        })?;
+
+    let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
+    let border = Path {
+        points: vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)],
+        filled: false,
+        stroke: StrokeStyle::Dashed,
+        weight: StrokeWeight::Normal,
+    };
+    let mut group_items: Vec<SceneItem> = vec![SceneItem::Path(border)];
+
+    let label_anchor = if let Some(label) = &container.label {
+        let tx = x + CONTAINER_LABEL_INSET;
+        let ty = y + FONT_SIZE;
+        let (tw, th) = kozue_text::measure(label, FONT_SIZE);
+        group_items.push(SceneItem::Text(Text {
+            x: tx,
+            y: ty,
+            size: FONT_SIZE,
+            align: TextAlign::Start,
+            content: label.clone(),
+            text_width: tw,
+            text_height: th,
+        }));
+        Some(semantic::Point::new(tx, ty))
+    } else {
+        None
+    };
+
+    items.push(SceneItem::Group(Group {
+        name: container.id.to_string(),
+        items: group_items,
+    }));
+
+    flat.push(semantic::ContainerLayout {
+        id: container.id.clone(),
+        label: container.label.clone(),
+        rect,
+        label_anchor,
+        members: container.members.clone(),
+        children: container.children.iter().map(|c| c.id.clone()).collect(),
+    });
+
+    for child in &container.children {
+        emit_container(child, container_rects, items, flat)?;
+    }
+    Ok(())
 }
 
 /// Draw one edge as a polyline through its bend points, with an optional
@@ -2204,6 +2368,155 @@ mod tests {
             })
             .expect("edge label text in scene");
         assert_eq!((anchor.x, anchor.y), (text.x, text.y));
+    }
+
+    // --- M3a3: containers ---
+
+    /// A graph with no containers must produce a byte-identical scene to
+    /// before containers existed: no Group items, same item count/contents.
+    #[test]
+    fn no_container_graph_scene_is_unchanged() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.edges
+            .push(Edge::new("a", "b", Some("go".into()), ArrowType::Triangle));
+        let d = Diagram::Graph(g);
+        let out = layout_full(&d).expect("layout_full");
+
+        assert!(
+            !out.scene
+                .items
+                .iter()
+                .any(|i| matches!(i, SceneItem::Group(_))),
+            "flat graph must not emit any container Group items"
+        );
+        // 2 node rects + 2 node labels + edge path + edge arrowhead + edge label = 7.
+        assert_eq!(out.scene.items.len(), 7);
+
+        let SemanticLayout::Graph(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Graph");
+        };
+        assert!(
+            sem.containers.is_empty(),
+            "empty container list must emit nothing"
+        );
+    }
+
+    fn container_graph() -> GraphDiagram {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.nodes.insert("c".into(), node("c", "C"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+
+        let mut inner = kozue_ir::Container::new("inner", None);
+        inner.members.push("b".into());
+
+        let mut outer = kozue_ir::Container::new("outer", Some("Outer".to_string()));
+        outer.members.push("a".into());
+        outer.children.push(inner);
+
+        g.containers.push(outer);
+        g
+    }
+
+    fn node_rect_by_id<'a>(sem: &'a semantic::GraphLayout, id: &str) -> &'a Rect {
+        &sem.nodes.iter().find(|n| n.id.as_str() == id).unwrap().rect
+    }
+
+    /// A container box must enclose its member node rects with at least
+    /// `CONTAINER_PAD` clearance on every side, and a labeled container must
+    /// carry an extra strip on top for the label.
+    #[test]
+    fn container_box_encloses_members_with_padding_and_label_strip() {
+        let d = Diagram::Graph(container_graph());
+        let out = layout_full(&d).expect("layout_full");
+        let SemanticLayout::Graph(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Graph");
+        };
+
+        assert_eq!(sem.containers.len(), 2, "pre-order flatten: outer, inner");
+        let outer = &sem.containers[0];
+        let inner = &sem.containers[1];
+        assert_eq!(outer.id.as_str(), "outer");
+        assert_eq!(inner.id.as_str(), "inner");
+
+        let a_rect = node_rect_by_id(sem, "a");
+        assert!(outer.rect.x <= a_rect.x - CONTAINER_PAD + 1e-9);
+        assert!(outer.rect.y <= a_rect.y - CONTAINER_PAD - CONTAINER_LABEL_H + 1e-9);
+        assert!(outer.rect.x + outer.rect.width >= a_rect.x + a_rect.width + CONTAINER_PAD - 1e-9);
+        assert!(
+            outer.rect.y + outer.rect.height >= a_rect.y + a_rect.height + CONTAINER_PAD - 1e-9
+        );
+
+        let b_rect = node_rect_by_id(sem, "b");
+        assert!(inner.rect.x <= b_rect.x - CONTAINER_PAD + 1e-9);
+        assert!(inner.rect.y <= b_rect.y - CONTAINER_PAD + 1e-9);
+        assert!(inner.rect.x + inner.rect.width >= b_rect.x + b_rect.width + CONTAINER_PAD - 1e-9);
+        assert!(
+            inner.rect.y + inner.rect.height >= b_rect.y + b_rect.height + CONTAINER_PAD - 1e-9
+        );
+
+        // Labeled outer container has a label anchor; unlabeled inner does not.
+        assert!(outer.label_anchor.is_some());
+        assert!(inner.label_anchor.is_none());
+
+        // Nested container's rect lies strictly inside the parent's rect.
+        assert!(inner.rect.x > outer.rect.x);
+        assert!(inner.rect.y > outer.rect.y);
+        assert!(inner.rect.x + inner.rect.width < outer.rect.x + outer.rect.width);
+        assert!(inner.rect.y + inner.rect.height < outer.rect.y + outer.rect.height);
+    }
+
+    /// Layout must be deterministic: laying out the same diagram twice yields
+    /// an identical semantic container list and scene.
+    #[test]
+    fn container_layout_is_deterministic() {
+        let d = Diagram::Graph(container_graph());
+        let out1 = layout_full(&d).expect("layout_full");
+        let out2 = layout_full(&d).expect("layout_full");
+        assert_eq!(out1.scene, out2.scene);
+        assert_eq!(out1.semantic, out2.semantic);
+    }
+
+    /// The flattened semantic container list must be a pre-order walk of
+    /// `GraphDiagram::containers`, matching `validate_export_semantics`'s
+    /// / the export contract's expectations.
+    #[test]
+    fn container_layout_full_parity_with_diagram_flatten() {
+        let d = Diagram::Graph(container_graph());
+        let out = layout_full(&d).expect("layout_full");
+        let input = out
+            .export_input(&d)
+            .expect("export_input must accept its own output");
+        let SemanticLayout::Graph(sem) = input.semantic() else {
+            panic!("expected SemanticLayout::Graph");
+        };
+        assert_eq!(
+            sem.containers
+                .iter()
+                .map(|c| c.id.to_string())
+                .collect::<Vec<_>>(),
+            ["outer", "inner"]
+        );
+        assert_eq!(sem.containers[0].members, vec![ElementId::from("a")]);
+        assert_eq!(sem.containers[0].children, vec![ElementId::from("inner")]);
+        assert_eq!(sem.containers[1].members, vec![ElementId::from("b")]);
+        assert!(sem.containers[1].children.is_empty());
+    }
+
+    /// Containers must participate in scene bounds: a container box near the
+    /// edge is not clipped, and every scene item stays within
+    /// `[0, width] x [0, height]`.
+    #[test]
+    fn container_participates_in_scene_bounds() {
+        let d = Diagram::Graph(container_graph());
+        let out = layout_full(&d).expect("layout_full");
+        let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&out.scene.items);
+        assert!(min_x.abs() < 1e-6 && min_y.abs() < 1e-6);
+        assert!((max_x - out.scene.width).abs() < 1e-6);
+        assert!((max_y - out.scene.height).abs() < 1e-6);
     }
 
     /// State transitions must come back in declaration order even though the

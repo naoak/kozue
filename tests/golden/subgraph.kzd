@@ -1,0 +1,17 @@
+graph subgraphs {
+  entry: "Entry"
+  subgraph left: "Left Side" {
+    a: "A"
+    b: "B"
+  }
+  subgraph right {
+    c: "C"
+    subgraph inner: "Inner" {
+      d: "D"
+    }
+  }
+  entry -> a
+  a -> b
+  b -> c
+  c -> d
+}

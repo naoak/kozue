@@ -50,9 +50,9 @@ mod er_dsl;
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument, LineStyle,
-    LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State,
-    StateDiagram, Transition,
+    ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
+    LineStyle, LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem,
+    State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -88,6 +88,19 @@ enum Stmt {
         label_lit_span: Option<std::ops::Range<usize>>,
     },
     StateTransition(StateTransStmt),
+    /// `subgraph <id> [: "label"] { <body> }` — a graph-only container/subgraph
+    /// block. `body` holds node declarations and nested subgraph blocks (any
+    /// other statement kind inside is a semantic error raised in
+    /// `build_graph_diagram`). `span` covers the whole block, from the
+    /// `subgraph` keyword through the closing `}`.
+    Subgraph {
+        id: String,
+        id_span: std::ops::Range<usize>,
+        label: Option<String>,
+        label_lit_span: Option<std::ops::Range<usize>>,
+        body: Vec<Stmt>,
+        span: std::ops::Range<usize>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -311,323 +324,359 @@ fn string_lit_spanned(
 }
 
 fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
-    // direction statement: `direction down|right|up|left`
-    let direction_kw = text::keyword("direction").padded_by(kzd_ws());
-    let direction_val = text::keyword("down")
-        .to(Direction::Down)
-        .or(text::keyword("right").to(Direction::Right))
-        .or(text::keyword("up").to(Direction::Up))
-        .or(text::keyword("left").to(Direction::Left));
+    // `stmt` is recursive because `subgraph <id> { <body> } ` bodies contain
+    // nested statements (node declarations and further nested subgraphs).
+    let stmt = recursive(|stmt| {
+        // direction statement: `direction down|right|up|left`
+        let direction_kw = text::keyword("direction").padded_by(kzd_ws());
+        let direction_val = text::keyword("down")
+            .to(Direction::Down)
+            .or(text::keyword("right").to(Direction::Right))
+            .or(text::keyword("up").to(Direction::Up))
+            .or(text::keyword("left").to(Direction::Left));
 
-    let direction = direction_kw
-        .ignore_then(
-            direction_val
-                .map_with_span(Stmt::Direction)
-                .or(text::ident()
+        let direction = direction_kw
+            .ignore_then(
+                direction_val
+                    .map_with_span(Stmt::Direction)
+                    .or(text::ident()
+                        .padded_by(kzd_ws())
+                        .map_with_span(|_, span| Stmt::DirectionError(span)))
+                    .or(empty().map_with_span(|_, span| Stmt::DirectionError(span))),
+            )
+            .map_with_span(|s, _span| s);
+
+        // participant: `participant id` or `participant id: "label"`
+        let participant = text::keyword("participant")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .then(
+                just(':')
                     .padded_by(kzd_ws())
-                    .map_with_span(|_, span| Stmt::DirectionError(span)))
-                .or(empty().map_with_span(|_, span| Stmt::DirectionError(span))),
-        )
-        .map_with_span(|s, _span| s);
-
-    // participant: `participant id` or `participant id: "label"`
-    let participant = text::keyword("participant")
-        .padded_by(kzd_ws())
-        .ignore_then(ident_spanned())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(|((id, id_span), label_opt)| {
-            let (label, label_lit_span) = match label_opt {
-                Some((l, s)) => (Some(l), Some(s)),
-                None => (None, None),
-            };
-            Stmt::Participant {
-                id,
-                id_span,
-                label,
-                label_lit_span,
-            }
-        });
-
-    // state declaration: `state id` or `state id: "label"`
-    let state_decl = text::keyword("state")
-        .padded_by(kzd_ws())
-        .ignore_then(ident_spanned())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(|((id, id_span), label_opt)| {
-            let (label, label_lit_span) = match label_opt {
-                Some((l, s)) => (Some(l), Some(s)),
-                None => (None, None),
-            };
-            Stmt::StateDecl {
-                id,
-                id_span,
-                label,
-                label_lit_span,
-            }
-        });
-
-    // [*] pseudostate token parser — captures span before padding.
-    let pseudo_inner = just('[')
-        .then(just('*'))
-        .then(just(']'))
-        .map_with_span(|_, span| (RawEndpoint::Pseudo, span));
-    let pseudo = pseudo_inner.padded_by(kzd_ws());
-
-    let id_endpoint = ident_spanned().map(|(id, span)| (RawEndpoint::Id(id), span));
-
-    // Arrow between pseudostate endpoints: solid `->` or dashed `-->`. We accept
-    // the dashed form so a wrong `[*] --> s` yields an explicit "dashed edges are
-    // not supported" diagnostic rather than a generic syntax error. `-->` must be
-    // tried first since it shares the `->` suffix.
-    let state_arrow = just("-->")
-        .to(true)
-        .or(just("->").to(false))
-        .map_with_span(|dashed, span| (dashed, span))
-        .padded_by(kzd_ws());
-
-    // Transitions with [*] on the left: `[*] -> id` or `[*] -> [*]`
-    let pseudo_clone = pseudo.clone();
-    let id_ep_clone = id_endpoint.clone();
-    let state_trans_pseudo_left = pseudo
-        .clone()
-        .then(state_arrow.clone())
-        .then(pseudo_clone.or(id_ep_clone))
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(
-            |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .map(|((id, id_span), label_opt)| {
                 let (label, label_lit_span) = match label_opt {
                     Some((l, s)) => (Some(l), Some(s)),
                     None => (None, None),
                 };
-                Stmt::StateTransition(StateTransStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
+                Stmt::Participant {
+                    id,
+                    id_span,
                     label,
                     label_lit_span,
-                    dashed,
-                    arrow_span,
-                })
-            },
-        );
+                }
+            });
 
-    // Transitions with [*] on the right: `id -> [*]`
-    let state_trans_pseudo_right = id_endpoint
-        .clone()
-        .then(state_arrow.clone())
-        .then(pseudo.clone())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(
-            |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+        // state declaration: `state id` or `state id: "label"`
+        let state_decl = text::keyword("state")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .map(|((id, id_span), label_opt)| {
                 let (label, label_lit_span) = match label_opt {
                     Some((l, s)) => (Some(l), Some(s)),
                     None => (None, None),
                 };
-                Stmt::StateTransition(StateTransStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
+                Stmt::StateDecl {
+                    id,
+                    id_span,
                     label,
                     label_lit_span,
-                    dashed,
-                    arrow_span,
+                }
+            });
+
+        // [*] pseudostate token parser — captures span before padding.
+        let pseudo_inner = just('[')
+            .then(just('*'))
+            .then(just(']'))
+            .map_with_span(|_, span| (RawEndpoint::Pseudo, span));
+        let pseudo = pseudo_inner.padded_by(kzd_ws());
+
+        let id_endpoint = ident_spanned().map(|(id, span)| (RawEndpoint::Id(id), span));
+
+        // Arrow between pseudostate endpoints: solid `->` or dashed `-->`. We accept
+        // the dashed form so a wrong `[*] --> s` yields an explicit "dashed edges are
+        // not supported" diagnostic rather than a generic syntax error. `-->` must be
+        // tried first since it shares the `->` suffix.
+        let state_arrow = just("-->")
+            .to(true)
+            .or(just("->").to(false))
+            .map_with_span(|dashed, span| (dashed, span))
+            .padded_by(kzd_ws());
+
+        // Transitions with [*] on the left: `[*] -> id` or `[*] -> [*]`
+        let pseudo_clone = pseudo.clone();
+        let id_ep_clone = id_endpoint.clone();
+        let state_trans_pseudo_left = pseudo
+            .clone()
+            .then(state_arrow.clone())
+            .then(pseudo_clone.or(id_ep_clone))
+            .then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .map(
+                |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::StateTransition(StateTransStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        dashed,
+                        arrow_span,
+                    })
+                },
+            );
+
+        // Transitions with [*] on the right: `id -> [*]`
+        let state_trans_pseudo_right = id_endpoint
+            .clone()
+            .then(state_arrow.clone())
+            .then(pseudo.clone())
+            .then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .map(
+                |((((from, from_span), (dashed, arrow_span)), (to, to_span)), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::StateTransition(StateTransStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        dashed,
+                        arrow_span,
+                    })
+                },
+            );
+
+        // Edge presentation modifiers: `line solid|dashed|dotted` and
+        // `weight normal|thick`, order-independent, last-wins (resolved later in
+        // the build functions / formatter). Only meaningful for graph diagrams;
+        // state/sequence diagrams reject a non-empty modifier list outright.
+        let line_mod = text::keyword("line")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .map(|(name, span)| {
+                EdgeModifier::Line(match name.as_str() {
+                    "solid" => ParsedLineMod::Known(LineStyle::Solid, span),
+                    "dashed" => ParsedLineMod::Known(LineStyle::Dashed, span),
+                    "dotted" => ParsedLineMod::Known(LineStyle::Dotted, span),
+                    _ => ParsedLineMod::Unknown(name, span),
                 })
-            },
-        );
+            });
+        let weight_mod = text::keyword("weight")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .map(|(name, span)| {
+                EdgeModifier::Weight(match name.as_str() {
+                    "normal" => ParsedWeightMod::Known(LineWeight::Normal, span),
+                    "thick" => ParsedWeightMod::Known(LineWeight::Thick, span),
+                    _ => ParsedWeightMod::Unknown(name, span),
+                })
+            });
+        let edge_modifiers = line_mod.or(weight_mod).repeated();
 
-    // Edge presentation modifiers: `line solid|dashed|dotted` and
-    // `weight normal|thick`, order-independent, last-wins (resolved later in
-    // the build functions / formatter). Only meaningful for graph diagrams;
-    // state/sequence diagrams reject a non-empty modifier list outright.
-    let line_mod = text::keyword("line")
-        .padded_by(kzd_ws())
-        .ignore_then(ident_spanned())
-        .map(|(name, span)| {
-            EdgeModifier::Line(match name.as_str() {
-                "solid" => ParsedLineMod::Known(LineStyle::Solid, span),
-                "dashed" => ParsedLineMod::Known(LineStyle::Dashed, span),
-                "dotted" => ParsedLineMod::Known(LineStyle::Dotted, span),
-                _ => ParsedLineMod::Unknown(name, span),
-            })
-        });
-    let weight_mod = text::keyword("weight")
-        .padded_by(kzd_ws())
-        .ignore_then(ident_spanned())
-        .map(|(name, span)| {
-            EdgeModifier::Weight(match name.as_str() {
-                "normal" => ParsedWeightMod::Known(LineWeight::Normal, span),
-                "thick" => ParsedWeightMod::Known(LineWeight::Thick, span),
-                _ => ParsedWeightMod::Unknown(name, span),
-            })
-        });
-    let edge_modifiers = line_mod.or(weight_mod).repeated();
+        let label_suffix = just(':')
+            .padded_by(kzd_ws())
+            .ignore_then(string_lit_spanned())
+            .or_not();
 
-    let label_suffix = just(':')
-        .padded_by(kzd_ws())
-        .ignore_then(string_lit_spanned())
-        .or_not();
+        // Dashed edge: `a --> b` optionally `: "label"`
+        let dashed_edge = ident_spanned()
+            .then_ignore(just("-->").padded_by(kzd_ws()))
+            .then(ident_spanned())
+            .then(edge_modifiers.clone())
+            .then(label_suffix.clone())
+            .map(
+                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::DashedEdge(EdgeStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        modifiers,
+                    })
+                },
+            );
 
-    // Dashed edge: `a --> b` optionally `: "label"`
-    let dashed_edge = ident_spanned()
-        .then_ignore(just("-->").padded_by(kzd_ws()))
-        .then(ident_spanned())
-        .then(edge_modifiers.clone())
-        .then(label_suffix.clone())
-        .map(
-            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+        // Solid edge: `a -> b` optionally `(line ... | weight ...)*` and `: "label"`.
+        let edge = ident_spanned()
+            .then_ignore(just("->").padded_by(kzd_ws()))
+            .then(ident_spanned())
+            .then(edge_modifiers.clone())
+            .then(label_suffix.clone())
+            .map(
+                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::Edge(EdgeStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        modifiers,
+                    })
+                },
+            );
+
+        // Undirected edge: `a --- b` optionally `(line ... | weight ...)*` and `: "label"`.
+        let undirected_edge = ident_spanned()
+            .then_ignore(just("---").padded_by(kzd_ws()))
+            .then(ident_spanned())
+            .then(edge_modifiers.clone())
+            .then(label_suffix.clone())
+            .map(
+                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::UndirectedEdge(EdgeStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        modifiers,
+                    })
+                },
+            );
+
+        // Bidirectional edge: `a <-> b` optionally `(line ... | weight ...)*` and `: "label"`.
+        let bidirectional_edge = ident_spanned()
+            .then_ignore(just("<->").padded_by(kzd_ws()))
+            .then(ident_spanned())
+            .then(edge_modifiers.clone())
+            .then(label_suffix.clone())
+            .map(
+                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                    let (label, label_lit_span) = match label_opt {
+                        Some((l, s)) => (Some(l), Some(s)),
+                        None => (None, None),
+                    };
+                    Stmt::BidirectionalEdge(EdgeStmt {
+                        from,
+                        from_span,
+                        to,
+                        to_span,
+                        label,
+                        label_lit_span,
+                        modifiers,
+                    })
+                },
+            );
+
+        // Node: `id`, `id: "label"`, or `id shape rectangle|rounded: "label"`.
+        let node_shape = text::keyword("shape")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .map(|(name, span)| match name.as_str() {
+                "rectangle" => ParsedNodeShape::Known(NodeKind::Rectangle, span),
+                "rounded" => ParsedNodeShape::Known(NodeKind::RoundedRectangle, span),
+                "circle" => ParsedNodeShape::Known(NodeKind::Circle, span),
+                "diamond" => ParsedNodeShape::Known(NodeKind::Diamond, span),
+                _ => ParsedNodeShape::Unknown(name, span),
+            });
+        let node = ident_spanned()
+            .then(node_shape.or_not())
+            .then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .map(|(((id, id_span), shape), label_opt)| {
                 let (label, label_lit_span) = match label_opt {
                     Some((l, s)) => (Some(l), Some(s)),
                     None => (None, None),
                 };
-                Stmt::DashedEdge(EdgeStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
+                Stmt::Node {
+                    id,
+                    id_span,
+                    shape,
                     label,
                     label_lit_span,
-                    modifiers,
-                })
-            },
-        );
+                }
+            });
 
-    // Solid edge: `a -> b` optionally `(line ... | weight ...)*` and `: "label"`.
-    let edge = ident_spanned()
-        .then_ignore(just("->").padded_by(kzd_ws()))
-        .then(ident_spanned())
-        .then(edge_modifiers.clone())
-        .then(label_suffix.clone())
-        .map(
-            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+        // subgraph block: `subgraph <id> [: "label"] { <body> }`. Must be tried
+        // before the bare-node alternative below, since a bare node id parser
+        // would otherwise happily consume the `subgraph` keyword itself as a
+        // plain node id.
+        let subgraph = text::keyword("subgraph")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .or_not(),
+            )
+            .then_ignore(just('{').padded_by(kzd_ws()))
+            .then(stmt.clone().repeated())
+            .then_ignore(just('}').padded_by(kzd_ws()))
+            .map_with_span(|(((id, id_span), label_opt), body), span| {
                 let (label, label_lit_span) = match label_opt {
                     Some((l, s)) => (Some(l), Some(s)),
                     None => (None, None),
                 };
-                Stmt::Edge(EdgeStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
+                Stmt::Subgraph {
+                    id,
+                    id_span,
                     label,
                     label_lit_span,
-                    modifiers,
-                })
-            },
-        );
+                    body,
+                    span,
+                }
+            });
 
-    // Undirected edge: `a --- b` optionally `(line ... | weight ...)*` and `: "label"`.
-    let undirected_edge = ident_spanned()
-        .then_ignore(just("---").padded_by(kzd_ws()))
-        .then(ident_spanned())
-        .then(edge_modifiers.clone())
-        .then(label_suffix.clone())
-        .map(
-            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                let (label, label_lit_span) = match label_opt {
-                    Some((l, s)) => (Some(l), Some(s)),
-                    None => (None, None),
-                };
-                Stmt::UndirectedEdge(EdgeStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
-                    label,
-                    label_lit_span,
-                    modifiers,
-                })
-            },
-        );
-
-    // Bidirectional edge: `a <-> b` optionally `(line ... | weight ...)*` and `: "label"`.
-    let bidirectional_edge = ident_spanned()
-        .then_ignore(just("<->").padded_by(kzd_ws()))
-        .then(ident_spanned())
-        .then(edge_modifiers.clone())
-        .then(label_suffix.clone())
-        .map(
-            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                let (label, label_lit_span) = match label_opt {
-                    Some((l, s)) => (Some(l), Some(s)),
-                    None => (None, None),
-                };
-                Stmt::BidirectionalEdge(EdgeStmt {
-                    from,
-                    from_span,
-                    to,
-                    to_span,
-                    label,
-                    label_lit_span,
-                    modifiers,
-                })
-            },
-        );
-
-    // Node: `id`, `id: "label"`, or `id shape rectangle|rounded: "label"`.
-    let node_shape = text::keyword("shape")
-        .padded_by(kzd_ws())
-        .ignore_then(ident_spanned())
-        .map(|(name, span)| match name.as_str() {
-            "rectangle" => ParsedNodeShape::Known(NodeKind::Rectangle, span),
-            "rounded" => ParsedNodeShape::Known(NodeKind::RoundedRectangle, span),
-            "circle" => ParsedNodeShape::Known(NodeKind::Circle, span),
-            "diamond" => ParsedNodeShape::Known(NodeKind::Diamond, span),
-            _ => ParsedNodeShape::Unknown(name, span),
-        });
-    let node = ident_spanned()
-        .then(node_shape.or_not())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(|(((id, id_span), shape), label_opt)| {
-            let (label, label_lit_span) = match label_opt {
-                Some((l, s)) => (Some(l), Some(s)),
-                None => (None, None),
-            };
-            Stmt::Node {
-                id,
-                id_span,
-                shape,
-                label,
-                label_lit_span,
-            }
-        });
-
-    let stmt = direction
-        .or(participant)
-        .or(state_decl)
-        .or(state_trans_pseudo_left)
-        .or(state_trans_pseudo_right)
-        .or(dashed_edge)
-        .or(bidirectional_edge)
-        .or(undirected_edge)
-        .or(edge)
-        .or(node);
+        direction
+            .or(participant)
+            .or(state_decl)
+            .or(state_trans_pseudo_left)
+            .or(state_trans_pseudo_right)
+            .or(dashed_edge)
+            .or(bidirectional_edge)
+            .or(undirected_edge)
+            .or(edge)
+            .or(subgraph)
+            .or(node)
+    });
     let body = stmt.repeated().padded_by(kzd_ws());
 
     // The header keyword selects the diagram kind; there is no signal-based
@@ -773,18 +822,42 @@ fn build_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
 }
 
 /// Build a [`GraphDiagram`] from the AST.
-fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
-    let mut direction = Direction::Down;
-    let mut graph = GraphDiagram::new(direction);
-    let mut errors: Vec<CompileError> = Vec::new();
-    // First-declaration spans, for "first declared here" secondary labels.
-    let mut first_decl_spans: std::collections::BTreeMap<String, std::ops::Range<usize>> =
-        std::collections::BTreeMap::new();
+/// Pre-order walk of a statement list (either the top-level graph body, or a
+/// subgraph's body), collecting nodes into the flat `graph.nodes` map and
+/// building the `Container` tree. Returns the containers declared directly at
+/// this level (in declaration order) and the member node ids declared
+/// directly at this level (i.e. not inside a nested subgraph) — the latter is
+/// only meaningful to the caller when `stmts` is itself a subgraph body.
+///
+/// `depth` is 0 for the top-level graph body and increases for each nested
+/// subgraph; `direction` is only honoured at depth 0 (a `direction` statement
+/// nested inside a subgraph is a semantic error).
+#[allow(clippy::too_many_arguments)]
+fn collect_containers(
+    stmts: &[Stmt],
+    depth: usize,
+    graph: &mut GraphDiagram,
+    direction: &mut Direction,
+    errors: &mut Vec<CompileError>,
+    node_first_decl: &mut std::collections::BTreeMap<String, std::ops::Range<usize>>,
+    container_first_decl: &mut std::collections::BTreeMap<String, std::ops::Range<usize>>,
+    src: &str,
+) -> (Vec<Container>, Vec<ElementId>) {
+    let mut children: Vec<Container> = Vec::new();
+    let mut direct_members: Vec<ElementId> = Vec::new();
 
-    for stmt in &ast.stmts {
+    for stmt in stmts {
         match stmt {
-            Stmt::Direction(d, _span) => {
-                direction = *d;
+            Stmt::Direction(d, span) => {
+                if depth == 0 {
+                    *direction = *d;
+                } else {
+                    errors.push(CompileError {
+                        message: "`direction` must be declared at the top level of the graph, not inside a subgraph".to_string(),
+                        span: span.clone(),
+                        secondary: None,
+                    });
+                }
             }
             Stmt::DirectionError(span) => {
                 errors.push(CompileError {
@@ -805,9 +878,20 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     errors.push(CompileError {
                         message: format!("duplicate node declaration `{}`", id),
                         span: id_span.clone(),
-                        secondary: first_decl_spans
+                        secondary: node_first_decl
                             .get(id)
                             .map(|s| (s.clone(), "first declared here".to_string())),
+                    });
+                    continue;
+                }
+                if let Some(span) = container_first_decl.get(id) {
+                    errors.push(CompileError {
+                        message: format!(
+                            "node `{}` collides with a subgraph id of the same name",
+                            id
+                        ),
+                        span: id_span.clone(),
+                        secondary: Some((span.clone(), "first declared here".to_string())),
                     });
                     continue;
                 }
@@ -835,11 +919,74 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                         });
                     }
                 }
-                first_decl_spans.insert(id.clone(), id_span.clone());
+                node_first_decl.insert(id.clone(), id_span.clone());
                 graph.nodes.insert(
                     id.clone().into(),
                     Node::with_kind(id.clone(), label_str, kind),
                 );
+                direct_members.push(id.clone().into());
+            }
+            Stmt::Subgraph {
+                id,
+                id_span,
+                label,
+                label_lit_span,
+                body,
+                ..
+            } => {
+                let mut collided = false;
+                if let Some(span) = node_first_decl.get(id) {
+                    errors.push(CompileError {
+                        message: format!(
+                            "subgraph `{}` collides with a node id of the same name",
+                            id
+                        ),
+                        span: id_span.clone(),
+                        secondary: Some((span.clone(), "first declared here".to_string())),
+                    });
+                    collided = true;
+                }
+                if let Some(span) = container_first_decl.get(id) {
+                    errors.push(CompileError {
+                        message: format!("duplicate subgraph declaration `{}`", id),
+                        span: id_span.clone(),
+                        secondary: Some((span.clone(), "first declared here".to_string())),
+                    });
+                    collided = true;
+                }
+                if !collided {
+                    container_first_decl.insert(id.clone(), id_span.clone());
+                }
+                if let Some(lit_span) = label_lit_span {
+                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+                        errors.push(CompileError {
+                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                            span: err_span,
+                            secondary: None,
+                        });
+                    }
+                }
+                let (nested_children, nested_members) = collect_containers(
+                    body,
+                    depth + 1,
+                    graph,
+                    direction,
+                    errors,
+                    node_first_decl,
+                    container_first_decl,
+                    src,
+                );
+                if nested_members.is_empty() && nested_children.is_empty() {
+                    errors.push(CompileError {
+                        message: format!("subgraph `{}` has no members", id),
+                        span: id_span.clone(),
+                        secondary: None,
+                    });
+                }
+                let mut container = Container::new(id.clone(), label.clone());
+                container.members = nested_members;
+                container.children = nested_children;
+                children.push(container);
             }
             Stmt::DashedEdge(e) => {
                 errors.push(CompileError {
@@ -870,10 +1017,43 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     secondary: None,
                 });
             }
-            Stmt::Edge(_) | Stmt::UndirectedEdge(_) | Stmt::BidirectionalEdge(_) => {}
+            Stmt::Edge(e) | Stmt::UndirectedEdge(e) | Stmt::BidirectionalEdge(e) => {
+                if depth > 0 {
+                    errors.push(CompileError {
+                        message: "edge statements are not valid inside a subgraph; declare edges at the graph top level".to_string(),
+                        span: e.from_span.start..e.to_span.end,
+                        secondary: None,
+                    });
+                }
+            }
         }
     }
+
+    (children, direct_members)
+}
+
+fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
+    let mut direction = Direction::Down;
+    let mut graph = GraphDiagram::new(direction);
+    let mut errors: Vec<CompileError> = Vec::new();
+    // First-declaration spans, for "first declared here" secondary labels.
+    let mut node_first_decl: std::collections::BTreeMap<String, std::ops::Range<usize>> =
+        std::collections::BTreeMap::new();
+    let mut container_first_decl: std::collections::BTreeMap<String, std::ops::Range<usize>> =
+        std::collections::BTreeMap::new();
+
+    let (root_containers, _root_members) = collect_containers(
+        &ast.stmts,
+        0,
+        &mut graph,
+        &mut direction,
+        &mut errors,
+        &mut node_first_decl,
+        &mut container_first_decl,
+        src,
+    );
     graph.direction = direction;
+    graph.containers = root_containers;
 
     for stmt in &ast.stmts {
         let (e, arrow, from_arrow) = match stmt {
@@ -985,6 +1165,13 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     message: "expected `down`, `right`, `up`, or `left` after `direction`"
                         .to_string(),
                     span: span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::Subgraph { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`subgraph` blocks are only valid in graph diagrams".to_string(),
+                    span: id_span.clone(),
                     secondary: None,
                 });
             }
@@ -1253,6 +1440,14 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 errors.push(CompileError {
                     message: "bidirectional edges (`<->`) are only valid in graph diagrams; use `->` or `-->` for sequence diagrams".to_string(),
                     span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+                continue;
+            }
+            Stmt::Subgraph { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`subgraph` blocks are only valid in graph diagrams".to_string(),
+                    span: id_span.clone(),
                     secondary: None,
                 });
                 continue;
@@ -1648,7 +1843,29 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
     let mut stmt_leading: Vec<Vec<String>> = vec![Vec::new(); ast.stmts.len()];
     let mut trailing_body_comments: Vec<String> = Vec::new();
 
-    for comment in &comments {
+    // Top-level `subgraph { ... }` blocks own their interior comments; those
+    // are handled recursively by `format_subgraph_body` below and must be
+    // excluded here so they aren't double-counted (or misattached) at the
+    // top level.
+    let subgraph_spans: Vec<(usize, usize)> = ast
+        .stmts
+        .iter()
+        .filter_map(|s| {
+            if matches!(s, Stmt::Subgraph { .. }) {
+                let (start_off, end_off) = stmt_span(s);
+                Some((
+                    char_idx_to_line(src, start_off),
+                    char_idx_to_line(src, end_off),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let is_inside_a_subgraph =
+        |line: usize| subgraph_spans.iter().any(|&(s, e)| line > s && line < e);
+
+    for comment in comments.iter().filter(|c| !is_inside_a_subgraph(c.line)) {
         // Skip header comments (already collected).
         if !comment.is_trailing && comment.line < diagram_kw_line {
             continue;
@@ -1706,7 +1923,10 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         .filter_map(|(i, s)| {
             if matches!(
                 s,
-                Stmt::Node { .. } | Stmt::Participant { .. } | Stmt::StateDecl { .. }
+                Stmt::Node { .. }
+                    | Stmt::Participant { .. }
+                    | Stmt::StateDecl { .. }
+                    | Stmt::Subgraph { .. }
             ) {
                 Some(i)
             } else {
@@ -1789,6 +2009,34 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
             out.push_str("  ");
             out.push_str(lc);
             out.push('\n');
+        }
+        if let Stmt::Subgraph {
+            id, label, body, ..
+        } = &ast.stmts[idx]
+        {
+            let mut header = format!("subgraph {}", id);
+            if let Some(l) = label {
+                header.push_str(": ");
+                header.push_str(&format_string_lit(l));
+            }
+            header.push_str(" {");
+            let mut fl = FormattedLine::new(format!("  {}", header));
+            fl.trailing_comment = stmt_trailing[idx].clone();
+            out.push_str(&fl.render());
+            out.push('\n');
+
+            let (start_off, end_off) = stmt_span(&ast.stmts[idx]);
+            let start_line = char_idx_to_line(src, start_off);
+            let end_line = char_idx_to_line(src, end_off);
+            let inner_comments: Vec<RawComment> = comments
+                .iter()
+                .filter(|c| c.line > start_line && c.line < end_line)
+                .cloned()
+                .collect();
+            out.push_str(&format_subgraph_body(body, src, &inner_comments, 2));
+
+            out.push_str("  }\n");
+            continue;
         }
         let code = format_decl_stmt(&ast.stmts[idx]);
         let mut fl = FormattedLine::new(format!("  {}", code));
@@ -1888,7 +2136,121 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
             let start = t.from_span.start.min(t.to_span.start);
             (start, end)
         }
+        Stmt::Subgraph { span, .. } => (span.start, span.end),
     }
+}
+
+/// Recursively render the body of a `subgraph { ... }` block: node
+/// declarations and nested subgraph blocks, 2-space-indented per nesting
+/// depth (`indent` counts the number of 2-space units for direct children of
+/// this body).
+///
+/// Comment association is best-effort at this level (matching the
+/// leading/trailing scheme used at the top level, but scoped to `comments`,
+/// which the caller has already restricted to this block's own interior —
+/// excluding any comments claimed by a nested subgraph, which are handled by
+/// this function's own recursive call).
+fn format_subgraph_body(
+    stmts: &[Stmt],
+    src: &str,
+    comments: &[RawComment],
+    indent: usize,
+) -> String {
+    struct Item<'a> {
+        stmt: &'a Stmt,
+        start_line: usize,
+        end_line: usize,
+    }
+    let items: Vec<Item> = stmts
+        .iter()
+        .map(|stmt| {
+            let (s, e) = stmt_span(stmt);
+            Item {
+                stmt,
+                start_line: char_idx_to_line(src, s),
+                end_line: char_idx_to_line(src, e),
+            }
+        })
+        .collect();
+
+    // Comments strictly inside a nested subgraph child's own block are
+    // deferred to the recursive call for that child.
+    let is_inside_nested_subgraph = |line: usize| {
+        items.iter().any(|it| {
+            matches!(it.stmt, Stmt::Subgraph { .. }) && line > it.start_line && line < it.end_line
+        })
+    };
+
+    let mut stmt_trailing: Vec<Option<String>> = vec![None; items.len()];
+    let mut stmt_leading: Vec<Vec<String>> = vec![Vec::new(); items.len()];
+    let mut trailing_body: Vec<String> = Vec::new();
+
+    for comment in comments
+        .iter()
+        .filter(|c| !is_inside_nested_subgraph(c.line))
+    {
+        if comment.is_trailing {
+            if let Some(idx) = items.iter().position(|it| it.end_line == comment.line) {
+                stmt_trailing[idx] = Some(comment.text.clone());
+            }
+        } else if let Some(idx) = items.iter().position(|it| it.start_line > comment.line) {
+            stmt_leading[idx].push(comment.text.clone());
+        } else {
+            trailing_body.push(comment.text.clone());
+        }
+    }
+
+    let pad = "  ".repeat(indent);
+    let mut out = String::new();
+    for (idx, item) in items.iter().enumerate() {
+        for lc in &stmt_leading[idx] {
+            out.push_str(&pad);
+            out.push_str(lc);
+            out.push('\n');
+        }
+        if let Stmt::Subgraph {
+            id, label, body, ..
+        } = item.stmt
+        {
+            let mut header = format!("subgraph {}", id);
+            if let Some(l) = label {
+                header.push_str(": ");
+                header.push_str(&format_string_lit(l));
+            }
+            header.push_str(" {");
+            let mut fl = FormattedLine::new(format!("{pad}{header}"));
+            fl.trailing_comment = stmt_trailing[idx].clone();
+            out.push_str(&fl.render());
+            out.push('\n');
+
+            let inner_comments: Vec<RawComment> = comments
+                .iter()
+                .filter(|c| c.line > item.start_line && c.line < item.end_line)
+                .cloned()
+                .collect();
+            out.push_str(&format_subgraph_body(
+                body,
+                src,
+                &inner_comments,
+                indent + 1,
+            ));
+
+            out.push_str(&pad);
+            out.push_str("}\n");
+        } else {
+            let code = format_decl_stmt(item.stmt);
+            let mut fl = FormattedLine::new(format!("{pad}{code}"));
+            fl.trailing_comment = stmt_trailing[idx].clone();
+            out.push_str(&fl.render());
+            out.push('\n');
+        }
+    }
+    for c in &trailing_body {
+        out.push_str(&pad);
+        out.push_str(c);
+        out.push('\n');
+    }
+    out
 }
 
 /// Format a declaration statement (Node or Participant).
@@ -3315,5 +3677,166 @@ mod tests {
             Some("interface")
         );
         assert_eq!(c.classes["Payable"].methods[0], "+pay(): void");
+    }
+
+    // -----------------------------------------------------------------
+    // M3a3 Phase 2.1: subgraph / container (native DSL)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn subgraph_single_level_builds_container_and_flat_nodes() {
+        let src = "graph d {\n  a\n  subgraph x: \"X\" {\n    b\n    c\n  }\n  a -> b\n}";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        // Nodes declared inside the subgraph still land in the flat node map.
+        assert_eq!(g.nodes.len(), 3);
+        assert!(g.nodes.contains_key("a"));
+        assert!(g.nodes.contains_key("b"));
+        assert!(g.nodes.contains_key("c"));
+        assert_eq!(g.containers.len(), 1);
+        let container = &g.containers[0];
+        assert_eq!(container.id.as_str(), "x");
+        assert_eq!(container.label.as_deref(), Some("X"));
+        assert_eq!(
+            container
+                .members
+                .iter()
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        assert!(container.children.is_empty());
+    }
+
+    #[test]
+    fn subgraph_nested_builds_full_container_tree() {
+        let src = "graph d {\n  a\n  subgraph x: \"X\" {\n    b\n    subgraph y {\n      c\n    }\n  }\n  a -> b\n  b -> c\n}";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(g.containers.len(), 1);
+        let outer = &g.containers[0];
+        assert_eq!(outer.id.as_str(), "x");
+        assert_eq!(
+            outer.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+            vec!["b"]
+        );
+        assert_eq!(outer.children.len(), 1);
+        let inner = &outer.children[0];
+        assert_eq!(inner.id.as_str(), "y");
+        assert_eq!(inner.label, None);
+        assert_eq!(
+            inner.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+            vec!["c"]
+        );
+        assert!(inner.children.is_empty());
+    }
+
+    #[test]
+    fn subgraph_membership_is_declaration_site() {
+        // A node declared inside a subgraph is a member of that subgraph
+        // regardless of where edges later reference it from.
+        let src = "graph d {\n  subgraph x {\n    a\n  }\n  b\n  b -> a\n}";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g.containers[0].members[0].as_str(), "a");
+        assert!(!g
+            .containers
+            .iter()
+            .any(|c| c.members.iter().any(|m| m.as_str() == "b")));
+    }
+
+    #[test]
+    fn subgraph_id_colliding_with_node_id_is_error() {
+        let src = "graph d {\n  a\n  subgraph a { b }\n}";
+        let errors = parse(src).expect_err("collision should fail");
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("collides with a node id")));
+
+        let src2 = "graph d {\n  subgraph a { b }\n  a\n}";
+        let errors2 = parse(src2).expect_err("collision should fail");
+        assert!(errors2
+            .iter()
+            .any(|e| e.message.contains("collides with a subgraph id")));
+    }
+
+    #[test]
+    fn subgraph_id_colliding_with_container_id_is_error() {
+        let src = "graph d {\n  subgraph a { b }\n  subgraph a { c }\n}";
+        let errors = parse(src).expect_err("duplicate subgraph id should fail");
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("duplicate subgraph declaration")));
+    }
+
+    #[test]
+    fn empty_subgraph_is_error() {
+        let src = "graph d {\n  subgraph x {\n  }\n  a\n}";
+        let errors = parse(src).expect_err("empty subgraph should fail");
+        assert!(errors.iter().any(|e| e.message.contains("has no members")));
+    }
+
+    #[test]
+    fn edge_inside_subgraph_is_error() {
+        let src = "graph d {\n  subgraph a {\n    x\n    y\n    x -> y\n  }\n}";
+        let errors = parse(src).expect_err("edge inside subgraph should fail");
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("not valid inside a subgraph")));
+    }
+
+    #[test]
+    fn edge_to_container_id_is_unknown_node_error() {
+        let src = "graph d {\n  a\n  subgraph x { b }\n  a -> x\n}";
+        let errors = parse(src).expect_err("edge to a container id should fail");
+        assert!(errors.iter().any(|e| e.message.contains("unknown node")));
+    }
+
+    #[test]
+    fn direction_inside_subgraph_is_error() {
+        let src = "graph d {\n  subgraph a {\n    direction right\n    b\n  }\n}";
+        let errors = parse(src).expect_err("direction inside subgraph should fail");
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("not inside a subgraph")));
+    }
+
+    #[test]
+    fn subgraph_is_graph_only() {
+        for source in [
+            "state d {\n  subgraph a { b }\n}",
+            "sequence d {\n  subgraph a { b }\n}",
+        ] {
+            let errors = parse(source).expect_err("subgraph must be graph-only");
+            assert!(errors
+                .iter()
+                .any(|e| e.message.contains("only valid in graph diagrams")));
+        }
+    }
+
+    #[test]
+    fn fmt_subgraph_canonical_nested_output() {
+        let src = "graph d {\n  a\n  subgraph x: \"X\" {\n    b\n    subgraph y {\n      c\n    }\n  }\n  a -> b\n  b -> c\n}";
+        let formatted = format_kzd(src).expect("should format");
+        assert_eq!(
+            formatted,
+            "graph d {\n  a\n  subgraph x: \"X\" {\n    b\n    subgraph y {\n      c\n    }\n  }\n\n  a -> b\n  b -> c\n}\n"
+        );
+    }
+
+    #[test]
+    fn fmt_subgraph_is_idempotent() {
+        let src = "graph d {\n  a\n  // note before subgraph\n  subgraph x: \"X\" {\n    b // trailing on b\n    // leading before nested\n    subgraph y {\n      c\n    }\n  }\n  a -> b\n  b -> c\n}";
+        let f1 = format_kzd(src).expect("should format");
+        let f2 = format_kzd(&f1).expect("re-format should succeed");
+        assert_eq!(f1, f2);
+        // And the semantic content is preserved across the round trip.
+        let d1 = parse(&f1).expect("f1 should parse");
+        let d2 = parse(&f2).expect("f2 should parse");
+        assert_eq!(d1, d2);
     }
 }

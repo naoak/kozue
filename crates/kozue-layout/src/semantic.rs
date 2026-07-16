@@ -88,6 +88,28 @@ pub struct EdgeLayout {
     pub label_anchor: Option<Point>,
 }
 
+/// Layout information for a single container (subgraph) box.
+///
+/// Naive M3a3 layout: a container is drawn as a bounding box behind its
+/// members, computed *after* node placement (node placement and edge routing
+/// are unaffected by containers). Real containment-aware layout is M4.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerLayout {
+    /// The container's stable string ID (from
+    /// [`Container::id`](kozue_ir::Container)).
+    pub id: ElementId,
+    pub label: Option<String>,
+    /// The bounding rectangle of the container box in scene coordinates.
+    pub rect: Rect,
+    /// Top-left anchor of the label text, if the container has a label.
+    pub label_anchor: Option<Point>,
+    /// Direct member node ids (not nested-container members), in declaration order.
+    pub members: Vec<ElementId>,
+    /// Direct child container ids, in declaration order.
+    pub children: Vec<ElementId>,
+}
+
 /// Semantic layout for a graph diagram.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +119,10 @@ pub struct GraphLayout {
     pub nodes: Vec<NodeLayout>,
     /// Edges in declaration order (matches [`GraphDiagram::edges`](kozue_ir::GraphDiagram)).
     pub edges: Vec<EdgeLayout>,
+    /// Containers, pre-order flattened (root, then each child recursively, in
+    /// declaration order) so exchange exporters can iterate a flat list while
+    /// still recovering the tree via `children`. Empty for a flat graph.
+    pub containers: Vec<ContainerLayout>,
 }
 
 // ---------------------------------------------------------------------------

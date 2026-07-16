@@ -45,10 +45,10 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, Edge, EndMarker,
-    Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument, LineStyle,
-    LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State,
-    StateDiagram, Transition,
+    ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction, Edge,
+    EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument,
+    LineStyle, LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem,
+    State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -218,23 +218,57 @@ fn parse_flowchart(
     let mut raw_edges: Vec<RawEdge> = Vec::new();
 
     // Bare references preserve an explicit declaration; later explicit forms update in place.
-    let mut ensure_node = |id: &str, label: Option<&str>, kind: NodeKind| {
-        let explicit = kind != NodeKind::Default;
-        if let Some(existing) = node_specs.get_mut(id) {
-            if explicit {
-                existing.label = label.unwrap_or(id).to_string();
-                existing.kind = kind;
+    // `container_stack`/`membership_resolved` are passed explicitly (rather than
+    // captured) so the loop below can also mutate `container_stack` directly
+    // for `subgraph`/`end` handling without a borrow conflict.
+    let mut ensure_node =
+        |id: &str,
+         label: Option<&str>,
+         kind: NodeKind,
+         container_stack: &mut Vec<ContainerBuilder>,
+         membership_resolved: &mut std::collections::HashSet<String>| {
+            let explicit = kind != NodeKind::Default;
+            if let Some(existing) = node_specs.get_mut(id) {
+                if explicit {
+                    existing.label = label.unwrap_or(id).to_string();
+                    existing.kind = kind;
+                }
+            } else {
+                node_specs.insert(
+                    id.to_string(),
+                    NodeSpec {
+                        label: label.unwrap_or(id).to_string(),
+                        kind,
+                    },
+                );
             }
-        } else {
-            node_specs.insert(
-                id.to_string(),
-                NodeSpec {
-                    label: label.unwrap_or(id).to_string(),
-                    kind,
-                },
-            );
-        }
-    };
+            // First mention wins: a node is a member of the innermost open
+            // subgraph at the moment it is first introduced (declared or
+            // referenced); later mentions — inside the same, a different, or no
+            // subgraph — never reassign it.
+            if membership_resolved.insert(id.to_string()) {
+                if let Some(top) = container_stack.last_mut() {
+                    top.members.push(id.to_string());
+                }
+            }
+        };
+
+    // In-progress subgraph builders, innermost last.
+    struct ContainerBuilder {
+        id: String,
+        label: Option<String>,
+        members: Vec<String>,
+        children: Vec<Container>,
+        span: Range<usize>,
+    }
+    let mut container_stack: Vec<ContainerBuilder> = Vec::new();
+    let mut root_containers: Vec<Container> = Vec::new();
+    let mut membership_resolved: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    // (id, span) for every `subgraph` declaration encountered, in source
+    // order, for the post-scan duplicate/collision diagnostics.
+    let mut all_container_decls: Vec<(String, Range<usize>)> = Vec::new();
+    let mut anon_subgraph_counter = 0usize;
 
     for &(offset, line) in lines {
         let trimmed = line.trim();
@@ -242,17 +276,72 @@ fn parse_flowchart(
         let line_end = offset + line.len();
         let span = offset..line_end;
 
-        // Skip subgraph / end blocks (unsupported).
-        if trimmed.starts_with("subgraph") {
-            errors.push(Diagnostic::new(
-                "unsupported: subgraph (kozue does not support this yet)",
-                span,
-            ));
+        // `subgraph <id>`, `subgraph <id> [Title]`, or `subgraph <Title with spaces>`.
+        if let Some(rest) = strip_keyword_ci(trimmed, "subgraph") {
+            let rest = rest.trim();
+            let (id, label) = if rest.is_empty() {
+                let id = format!("subGraph{anon_subgraph_counter}");
+                anon_subgraph_counter += 1;
+                (id, None)
+            } else {
+                parse_subgraph_header(rest)
+            };
+            all_container_decls.push((id.clone(), span.clone()));
+            container_stack.push(ContainerBuilder {
+                id,
+                label,
+                members: Vec::new(),
+                children: Vec::new(),
+                span: span.clone(),
+            });
             continue;
         }
         if trimmed == "end" {
-            // silently skip — it closes an unsupported subgraph
+            match container_stack.pop() {
+                Some(builder) => {
+                    if builder.members.is_empty() && builder.children.is_empty() {
+                        errors.push(Diagnostic::new(
+                            format!("subgraph `{}` has no members", builder.id),
+                            builder.span.clone(),
+                        ));
+                    }
+                    let mut container = Container::new(builder.id.clone(), builder.label.clone());
+                    container.members = builder.members.iter().map(|m| m.clone().into()).collect();
+                    container.children = builder.children;
+                    match container_stack.last_mut() {
+                        Some(parent) => parent.children.push(container),
+                        None => root_containers.push(container),
+                    }
+                }
+                None => {
+                    errors.push(Diagnostic::new(
+                        "unmatched `end` (no open subgraph to close)",
+                        span,
+                    ));
+                }
+            }
             continue;
+        }
+
+        // `direction <dir>` as the sole content of a subgraph body is a
+        // per-subgraph direction override, which kozue does not support. Only
+        // a recognized direction token is treated as an override; anything
+        // else falls through to normal node / edge parsing so a node that
+        // happens to be named `direction` behaves the same in and out of a
+        // subgraph.
+        if !container_stack.is_empty() {
+            if let Some(rest) = strip_keyword_ci(trimmed, "direction") {
+                if matches!(
+                    rest.trim().to_ascii_uppercase().as_str(),
+                    "LR" | "RL" | "TB" | "BT" | "TD"
+                ) {
+                    errors.push(Diagnostic::new(
+                        "unsupported: direction (inside subgraph) (kozue does not support this yet)",
+                        span,
+                    ));
+                    continue;
+                }
+            }
         }
 
         // Check for classDef / class / style / linkStyle (unsupported styling).
@@ -301,8 +390,20 @@ fn parse_flowchart(
             match chain {
                 Ok(edges) => {
                     for edge in edges {
-                        ensure_node(&edge.from_id, edge.from_label.as_deref(), edge.from_kind);
-                        ensure_node(&edge.to_id, edge.to_label.as_deref(), edge.to_kind);
+                        ensure_node(
+                            &edge.from_id,
+                            edge.from_label.as_deref(),
+                            edge.from_kind,
+                            &mut container_stack,
+                            &mut membership_resolved,
+                        );
+                        ensure_node(
+                            &edge.to_id,
+                            edge.to_label.as_deref(),
+                            edge.to_kind,
+                            &mut container_stack,
+                            &mut membership_resolved,
+                        );
                         raw_edges.push(RawEdge {
                             from: edge.from_id,
                             to: edge.to_id,
@@ -322,7 +423,13 @@ fn parse_flowchart(
 
         // Try to parse as a standalone node declaration: `A[label]`, `A(label)`, or bare `A`.
         if let Some((id, label, kind)) = try_parse_node_decl(trimmed) {
-            ensure_node(&id, label.as_deref(), kind);
+            ensure_node(
+                &id,
+                label.as_deref(),
+                kind,
+                &mut container_stack,
+                &mut membership_resolved,
+            );
             continue;
         }
 
@@ -336,6 +443,36 @@ fn parse_flowchart(
         ));
     }
 
+    // Any subgraph left open at EOF is missing its closing `end`.
+    for builder in &container_stack {
+        errors.push(Diagnostic::new(
+            format!("subgraph `{}` is missing a closing `end`", builder.id),
+            builder.span.clone(),
+        ));
+    }
+
+    // Duplicate subgraph ids, and subgraph ids colliding with a node id.
+    // Checked as a whole-document pass (mirroring the native DSL), since a
+    // node or subgraph may be declared either before or after the colliding
+    // declaration.
+    let mut seen_container_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (id, decl_span) in &all_container_decls {
+        if !seen_container_ids.insert(id.as_str()) {
+            errors.push(Diagnostic::new(
+                format!("duplicate subgraph id `{id}`"),
+                decl_span.clone(),
+            ));
+        }
+    }
+    for (id, decl_span) in &all_container_decls {
+        if node_specs.contains_key(id.as_str()) {
+            errors.push(Diagnostic::new(
+                format!("subgraph id `{id}` collides with a node of the same name"),
+                decl_span.clone(),
+            ));
+        }
+    }
+
     // Build GraphDiagram.
     let mut graph = GraphDiagram::new(direction);
     for (id, spec) in &node_specs {
@@ -344,6 +481,7 @@ fn parse_flowchart(
             Node::with_kind(id.clone(), spec.label.clone(), spec.kind.clone()),
         );
     }
+    graph.containers = root_containers;
 
     for re in &raw_edges {
         // Self-loop check.
@@ -935,6 +1073,30 @@ fn starts_with_edge_operator(s: &str) -> bool {
         .iter()
         .any(|(token, ..)| s.starts_with(token))
         || s.starts_with("-- ")
+}
+
+/// Parse the text following the `subgraph` keyword into `(id, label)`.
+///
+/// Mermaid accepts three forms:
+/// - `id [Title]` — explicit id with a bracketed display title.
+/// - `id` (a single token, no spaces) — the token is both id and (implicit) title.
+/// - `Title with spaces` (no brackets) — the whole text becomes the id, with
+///   no separate label (mirroring the bare-node convention elsewhere in this
+///   frontend, where the id doubles as the label when no explicit title is
+///   given).
+///
+/// `rest` is assumed non-empty and already trimmed.
+fn parse_subgraph_header(rest: &str) -> (String, Option<String>) {
+    if let Some(bracket_start) = rest.find('[') {
+        if rest.ends_with(']') {
+            let id_part = rest[..bracket_start].trim();
+            let title = rest[bracket_start + 1..rest.len() - 1].trim();
+            if !id_part.is_empty() {
+                return (id_part.to_string(), Some(title.to_string()));
+            }
+        }
+    }
+    (rest.to_string(), None)
 }
 
 /// Try to parse a node identifier possibly followed by a shape label: `A[label]`, `A(label)`, or `A`.
@@ -2718,7 +2880,7 @@ mod tests {
 
     #[test]
     fn multiple_errors_collected() {
-        let src = "flowchart TD\n  subgraph foo\n    A --> B\n  end\n  style A fill:red\n";
+        let src = "flowchart TD\n  classDef foo fill:red\n  A --> B\n  end\n  style A fill:red\n";
         let errs = parse(src).expect_err("should have errors");
         assert!(errs.len() >= 2, "expected multiple errors, got: {errs:?}");
     }
@@ -3362,5 +3524,192 @@ mod tests {
             errs.iter().any(|e| e.message.contains("self relations")),
             "got: {errs:?}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // M3a3 Phase 2.2: subgraph / container (Mermaid)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn subgraph_basic_builds_container() {
+        // `B` is first mentioned at the top level (in `A --> B`), so it is
+        // *not* a member of `one` despite being re-mentioned inside it —
+        // only `C`, first mentioned inside the subgraph, is a member.
+        let src = "flowchart TD\n  A --> B\n  subgraph one\n    B --> C\n  end\n";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g.nodes.len(), 3);
+        assert_eq!(g.containers.len(), 1);
+        let c = &g.containers[0];
+        assert_eq!(c.id.as_str(), "one");
+        assert_eq!(c.label, None);
+        assert_eq!(
+            c.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+            vec!["C"]
+        );
+        assert!(c.children.is_empty());
+    }
+
+    #[test]
+    fn subgraph_nested_builds_container_tree() {
+        let src = "flowchart TD\n  subgraph outer\n    A --> B\n    subgraph inner\n      B --> C\n    end\n  end\n";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g.containers.len(), 1);
+        let outer = &g.containers[0];
+        assert_eq!(outer.id.as_str(), "outer");
+        assert_eq!(
+            outer.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
+        assert_eq!(outer.children.len(), 1);
+        let inner = &outer.children[0];
+        assert_eq!(inner.id.as_str(), "inner");
+        assert_eq!(
+            inner.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+            vec!["C"]
+        );
+    }
+
+    #[test]
+    fn subgraph_title_forms() {
+        // `id [Title]`
+        let src = "flowchart TD\n  subgraph one [My Title]\n    A\n  end\n";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g.containers[0].id.as_str(), "one");
+        assert_eq!(g.containers[0].label.as_deref(), Some("My Title"));
+
+        // bare single-token id (no brackets).
+        let src2 = "flowchart TD\n  subgraph one\n    A\n  end\n";
+        let Diagram::Graph(g2) = parse(src2).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g2.containers[0].id.as_str(), "one");
+        assert_eq!(g2.containers[0].label, None);
+
+        // bare multiword title (no brackets) — the whole text becomes the id.
+        let src3 = "flowchart TD\n  subgraph Multi Word Title\n    A\n  end\n";
+        let Diagram::Graph(g3) = parse(src3).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(g3.containers[0].id.as_str(), "Multi Word Title");
+        assert_eq!(g3.containers[0].label, None);
+    }
+
+    #[test]
+    fn subgraph_first_mention_wins_membership() {
+        // `A` is first mentioned at the top level, before any subgraph opens;
+        // its later re-mention inside `one` must not reassign it.
+        let src = "flowchart TD\n  A --> B\n  subgraph one\n    A --> C\n  end\n";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(
+            g.containers[0]
+                .members
+                .iter()
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C"]
+        );
+    }
+
+    #[test]
+    fn subgraph_remention_in_another_subgraph_does_not_reassign() {
+        // `B` is first mentioned inside `one`; a later mention inside `two`
+        // must not move it, and must not be an error.
+        let src = "flowchart TD\n  subgraph one\n    A --> B\n  end\n  subgraph two\n    B --> C\n  end\n";
+        let Diagram::Graph(g) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        let one = g
+            .containers
+            .iter()
+            .find(|c| c.id.as_str() == "one")
+            .unwrap();
+        let two = g
+            .containers
+            .iter()
+            .find(|c| c.id.as_str() == "two")
+            .unwrap();
+        assert!(one.members.iter().any(|m| m.as_str() == "B"));
+        assert!(!two.members.iter().any(|m| m.as_str() == "B"));
+        assert!(two.members.iter().any(|m| m.as_str() == "C"));
+    }
+
+    #[test]
+    fn subgraph_unmatched_end_is_error() {
+        let src = "flowchart TD\n  A --> B\n  end\n";
+        let errs = parse(src).expect_err("unmatched end should fail");
+        assert!(errs.iter().any(|e| e.message.contains("unmatched `end`")));
+    }
+
+    #[test]
+    fn subgraph_unclosed_at_eof_is_error() {
+        let src = "flowchart TD\n  subgraph one\n    A --> B\n";
+        let errs = parse(src).expect_err("unclosed subgraph should fail");
+        assert!(errs
+            .iter()
+            .any(|e| e.message.contains("missing a closing `end`")));
+    }
+
+    #[test]
+    fn subgraph_empty_is_error() {
+        let src = "flowchart TD\n  A\n  subgraph one\n  end\n";
+        let errs = parse(src).expect_err("empty subgraph should fail");
+        assert!(errs.iter().any(|e| e.message.contains("has no members")));
+    }
+
+    #[test]
+    fn subgraph_direction_inside_is_unsupported() {
+        let src = "flowchart TD\n  subgraph one\n    direction LR\n    A --> B\n  end\n";
+        let errs = parse(src).expect_err("direction inside subgraph should be unsupported");
+        assert!(errs
+            .iter()
+            .any(|e| e.message.contains("unsupported") && e.message.contains("direction")));
+    }
+
+    #[test]
+    fn subgraph_node_named_direction_is_not_a_direction_override() {
+        // Only `direction <LR|RL|TB|BT|TD>` is the per-subgraph override; a
+        // node that happens to be named `direction` parses the same in and
+        // out of a subgraph.
+        let src = "flowchart TD\n  subgraph one\n    direction --> B\n  end\n";
+        let Diagram::Graph(graph) = parse(src).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert!(graph
+            .nodes
+            .contains_key(&kozue_ir::ElementId::from("direction")));
+        assert_eq!(graph.containers.len(), 1);
+        assert_eq!(
+            graph.containers[0]
+                .members
+                .iter()
+                .map(|m| m.as_str())
+                .collect::<Vec<_>>(),
+            vec!["direction", "B"]
+        );
+    }
+
+    #[test]
+    fn subgraph_collision_diagnostics() {
+        // duplicate subgraph id.
+        let src = "flowchart TD\n  subgraph one\n    A\n  end\n  subgraph one\n    B\n  end\n";
+        let errs = parse(src).expect_err("duplicate subgraph id should fail");
+        assert!(errs
+            .iter()
+            .any(|e| e.message.contains("duplicate subgraph id")));
+
+        // subgraph id colliding with a node id.
+        let src2 = "flowchart TD\n  one --> B\n  subgraph one\n    C\n  end\n";
+        let errs2 = parse(src2).expect_err("subgraph/node collision should fail");
+        assert!(errs2
+            .iter()
+            .any(|e| e.message.contains("collides with a node")));
     }
 }

@@ -307,8 +307,8 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "subgraph",
-        support: Support::Unsupported,
-        note: "reports an unsupported error",
+        support: Support::Partial,
+        note: "nested `subgraph`/`end` blocks build a container tree (first-mention membership); per-subgraph `direction` and edges targeting a subgraph id directly are not supported",
     },
     Feature {
         name: "classDef / class / style / linkStyle",

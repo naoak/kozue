@@ -493,6 +493,32 @@ fn connector_shape_ends(
     }
 }
 
+/// A dashed, unfilled rectangle used as a container backdrop, with an
+/// optional top-left-anchored label.
+fn container_shape(
+    id: u32,
+    name: &str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    label: Option<&str>,
+) -> String {
+    let name = xml_escape(name);
+    let run = match label {
+        Some(l) if !l.is_empty() => format!("<a:r><a:t>{}</a:t></a:r>", xml_escape(l)),
+        _ => String::new(),
+    };
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>\
+         <p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm>\
+         <a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>\
+         <a:noFill/>\
+         <a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill><a:prstDash val=\"dash\"/></a:ln></p:spPr>\
+         <p:txBody><a:bodyPr anchor=\"t\" lIns=\"0\" tIns=\"0\"/><a:lstStyle/><a:p><a:pPr algn=\"l\"/>{run}</a:p></p:txBody></p:sp>",
+    )
+}
+
 /// A borderless, white-filled text box centered on `anchor`, used to place a
 /// connector's label (edge / transition / message) on top of the line so it
 /// stays readable. Text is a single non-wrapping 12 pt line; the white fill
@@ -544,6 +570,22 @@ fn slide_xml(shapes: &str) -> String {
 fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     let mut ids = IdAlloc::new();
     let mut shapes = String::new();
+
+    // Containers -- dashed, unfilled backdrop shapes, in pre-order (matching
+    // `GraphLayout::containers`), emitted before nodes so they sit behind
+    // everything else in the shape-tree z-order.
+    for (j, c) in g.containers.iter().enumerate() {
+        let r = &c.rect;
+        shapes.push_str(&container_shape(
+            ids.next(),
+            &format!("Container {j}"),
+            emu_pos(r.x),
+            emu_pos(r.y),
+            emu_len(r.width),
+            emu_len(r.height),
+            c.label.as_deref(),
+        ));
+    }
 
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
@@ -1462,6 +1504,48 @@ mod tests {
         assert!(
             text.contains("Beta"),
             "node label must appear in slide1.xml"
+        );
+    }
+
+    // Helper: graph layout with a labeled container.
+    fn graph_with_container_layout() -> SemanticLayout {
+        use kozue_ir::{ArrowType, Container, Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "Alpha"));
+        g.nodes.insert("b".into(), Node::new("b", "Beta"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+        let mut container = Container::new("x", Some("Group".to_string()));
+        container.members.push("a".into());
+        g.containers.push(container);
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        out.semantic
+    }
+
+    #[test]
+    fn graph_with_no_containers_has_no_dashed_shape() {
+        let layout = graph_two_node_layout();
+        let bytes = render(&layout).expect("render");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("prstDash"), "no container in this graph");
+    }
+
+    #[test]
+    fn graph_container_emits_dashed_backdrop_shape_before_nodes() {
+        let layout = graph_with_container_layout();
+        let bytes = render(&layout).expect("render");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("<a:prstDash val=\"dash\"/>"),
+            "container border must be dashed"
+        );
+        assert!(text.contains("Container 0"), "container shape name");
+        assert!(text.contains("Group"), "container label text");
+
+        let container_pos = text.find("Container 0").expect("container shape present");
+        let node_pos = text.find("Alpha").expect("node shape present");
+        assert!(
+            container_pos < node_pos,
+            "container shape must be emitted before node shapes"
         );
     }
 

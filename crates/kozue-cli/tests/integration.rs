@@ -62,6 +62,32 @@ fn native_and_mermaid_node_shapes_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_mermaid_subgraphs_produce_equivalent_ir() {
+    // `b` is given an explicit rectangle shape in native (`shape rectangle`)
+    // to converge with Mermaid's `b[B]`, which always maps to
+    // `NodeKind::Rectangle` — see `native_and_mermaid_node_shapes_produce_equivalent_ir`
+    // above for the same convention.
+    let native =
+        "graph d {\n  a\n  subgraph x: \"X\" {\n    b shape rectangle: \"B\"\n  }\n  a -> b\n}";
+    let mermaid = "flowchart TD\n  a\n  subgraph x [X]\n    b[B]\n  end\n  a --> b\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
+fn native_and_mermaid_nested_subgraphs_produce_equivalent_ir() {
+    let native = "graph d {\n  subgraph outer: \"Outer\" {\n    a shape rectangle: \"A\"\n    subgraph inner {\n      b shape rectangle: \"B\"\n    }\n  }\n  a -> b\n}";
+    let mermaid =
+        "flowchart TD\n  subgraph outer [Outer]\n    a[A]\n    subgraph inner\n      b[B]\n    end\n  end\n  a --> b\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
 fn native_and_mermaid_edge_presentation_produce_equivalent_ir() {
     // Mermaid has no plain "dashed graph edge" token (dashed line style is
     // only reachable via sequence-diagram `-->>`), so dashed edges are
@@ -208,6 +234,53 @@ fn edge_presentation_maps_across_all_backends() {
 }
 
 #[test]
+fn subgraphs_map_across_all_backends() {
+    let source = "graph subgraphs {\n  entry: \"Entry\"\n  subgraph left: \"Left Side\" {\n    a: \"A\"\n    b: \"B\"\n  }\n  subgraph right {\n    c: \"C\"\n    subgraph inner: \"Inner\" {\n      d: \"D\"\n    }\n  }\n  entry -> a\n  a -> b\n  b -> c\n  c -> d\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    let svg = kozue_render_svg::render(&output.scene);
+    assert!(svg.contains("stroke-dasharray=\"6 4\""));
+    assert!(svg.contains(">Left Side<"));
+    assert!(svg.contains(">Inner<"));
+
+    let term = kozue_render_term::render(&output.scene);
+    assert!(term.contains("Left Side"));
+    assert!(term.contains("Inner"));
+
+    let dot = kozue_render_dot::render(&diagram).unwrap();
+    assert!(dot.contains("subgraph cluster_"));
+    assert!(dot.contains("label=\"Left Side\""));
+    assert!(dot.contains("label=\"Inner\""));
+
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("dashed=1;"));
+    assert!(drawio.contains("value=\"Left Side\""));
+
+    let excalidraw: serde_json::Value =
+        serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
+    let elements = excalidraw["elements"].as_array().unwrap();
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "rectangle" && e["strokeStyle"] == "dashed"));
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "text" && e["text"] == "Left Side"));
+
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let pptx_text = String::from_utf8_lossy(&pptx);
+    assert!(pptx_text.contains("prstDash val=\"dash\""));
+    assert!(pptx_text.contains("Container"));
+
+    let png_with_subgraphs = kozue_render_png::render(&output.scene).unwrap();
+    let flat_source = "graph subgraphs {\n  entry: \"Entry\"\n  a: \"A\"\n  b: \"B\"\n  c: \"C\"\n  d: \"D\"\n  entry -> a\n  a -> b\n  b -> c\n  c -> d\n}";
+    let flat_diagram = kozue_dsl::parse(flat_source).unwrap();
+    let flat_scene = kozue_layout::layout(&flat_diagram).unwrap();
+    let png_without_subgraphs = kozue_render_png::render(&flat_scene).unwrap();
+    assert_ne!(png_with_subgraphs, png_without_subgraphs);
+}
+
+#[test]
 fn strict_exchange_export_matches_legacy_bytes_for_all_domains_and_is_deterministic() {
     for name in [
         "chain",
@@ -253,6 +326,7 @@ const GOLDEN_CASES: &[&str] = &[
     "wide_right",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 
 const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
@@ -595,6 +669,7 @@ const MERMAID_GOLDEN_CASES: &[&str] = &[
     "mermaid_state",
     "mermaid_class",
     "mermaid_er",
+    "mermaid_subgraph",
 ];
 
 fn compile_mermaid(src: &str) -> String {
@@ -1032,6 +1107,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "seq_basic",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 const TERM_GOLDEN_MMD_CASES: &[&str] = &["mermaid_flow"];
 
@@ -1139,6 +1215,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "seq_basic",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 
 #[test]
@@ -1492,6 +1569,7 @@ const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &[
     "skip",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
@@ -1790,6 +1868,7 @@ const DOT_GRAPH_GOLDEN_CASES: &[&str] = &[
     "wide_right",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DOT_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1891,6 +1970,7 @@ const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &[
     "skip",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
@@ -2097,6 +2177,7 @@ const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &[
     "skip",
     "node_shapes",
     "edge_presentation",
+    "subgraph",
 ];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];

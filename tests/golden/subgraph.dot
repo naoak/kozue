@@ -1,0 +1,21 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "entry" [label="Entry"];
+  subgraph cluster_0 {
+    label="Left Side";
+    "a" [label="A"];
+    "b" [label="B"];
+  }
+  subgraph cluster_1 {
+    "c" [label="C"];
+    subgraph cluster_2 {
+      label="Inner";
+      "d" [label="D"];
+    }
+  }
+  "entry" -> "a";
+  "a" -> "b";
+  "b" -> "c";
+  "c" -> "d";
+}

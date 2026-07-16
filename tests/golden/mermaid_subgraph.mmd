@@ -1,0 +1,16 @@
+flowchart TD
+  entry
+  subgraph left [Left Side]
+    a
+    b
+  end
+  subgraph right
+    c
+    subgraph inner [Inner]
+      d
+    end
+  end
+  entry --> a
+  a --> b
+  b --> c
+  c --> d

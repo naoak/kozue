@@ -168,6 +168,24 @@ fn validate_contract(
                     return mismatch("graph edge index/semantics mismatch");
                 }
             }
+            let expected_containers = flatten_containers(&diagram.containers);
+            if expected_containers.len() != layout.containers.len() {
+                return mismatch("graph container identity/order/membership mismatch");
+            }
+            for (expected, placed) in expected_containers.iter().zip(&layout.containers) {
+                let expected_children: Vec<kozue_ir::ElementId> = expected
+                    .children
+                    .iter()
+                    .map(|child| child.id.clone())
+                    .collect();
+                if expected.id != placed.id
+                    || expected.label != placed.label
+                    || expected.members != placed.members
+                    || expected_children != placed.children
+                {
+                    return mismatch("graph container identity/order/membership mismatch");
+                }
+            }
         }
         (Diagram::Sequence(diagram), SemanticLayout::Sequence(layout)) => {
             if diagram.participants.len() != layout.participants.len() {
@@ -339,6 +357,27 @@ fn validate_contract(
     Ok(())
 }
 
+/// Flatten a container tree into pre-order (root, then each child
+/// recursively, in declaration order) — matching the order
+/// [`crate::layout_graph_full`] builds `GraphLayout::containers` in.
+fn flatten_containers(containers: &[kozue_ir::Container]) -> Vec<&kozue_ir::Container> {
+    let mut out = Vec::new();
+    for c in containers {
+        flatten_containers_into(c, &mut out);
+    }
+    out
+}
+
+fn flatten_containers_into<'a>(
+    container: &'a kozue_ir::Container,
+    out: &mut Vec<&'a kozue_ir::Container>,
+) {
+    out.push(container);
+    for child in &container.children {
+        flatten_containers_into(child, out);
+    }
+}
+
 fn format_attr(attribute: &kozue_ir::ErAttribute) -> String {
     let mut formatted = String::new();
     if !attribute.keys.is_empty() {
@@ -446,6 +485,10 @@ fn validate_semantic_geometry(layout: &SemanticLayout) -> Result<(), ExportContr
             for edge in &graph.edges {
                 points(&edge.route)?;
                 label_anchor(&edge.label, &edge.label_anchor)?;
+            }
+            for container in &graph.containers {
+                validate_rect(&container.rect)?;
+                label_anchor(&container.label, &container.label_anchor)?;
             }
         }
         SemanticLayout::Sequence(sequence) => {
@@ -852,5 +895,66 @@ mod tests {
         };
         layout.edges[0].weight = LineWeight::Thick;
         assert!(weight.export_input(&graph).is_err());
+    }
+
+    fn graph_with_container() -> Diagram {
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph.nodes.insert("a".into(), Node::new("a", "A"));
+        let mut container = kozue_ir::Container::new("x", Some("X".to_string()));
+        container.members.push("a".into());
+        graph.containers.push(container);
+        Diagram::Graph(graph)
+    }
+
+    #[test]
+    fn export_input_rejects_container_count_mismatch() {
+        let graph = graph_with_container();
+        let mut output = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut output.semantic else {
+            unreachable!()
+        };
+        layout.containers.clear();
+        assert!(output.export_input(&graph).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_container_id_mismatch() {
+        let graph = graph_with_container();
+        let mut output = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut output.semantic else {
+            unreachable!()
+        };
+        layout.containers[0].id = "wrong".into();
+        assert!(output.export_input(&graph).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_container_nan_rect() {
+        let graph = graph_with_container();
+        let mut output = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut output.semantic else {
+            unreachable!()
+        };
+        layout.containers[0].rect.x = f64::NAN;
+        assert!(output.export_input(&graph).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_container_label_anchor_parity_violation() {
+        let graph = graph_with_container();
+
+        let mut missing_anchor = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut missing_anchor.semantic else {
+            unreachable!()
+        };
+        layout.containers[0].label_anchor = None;
+        assert!(missing_anchor.export_input(&graph).is_err());
+
+        let mut stray_anchor = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut stray_anchor.semantic else {
+            unreachable!()
+        };
+        layout.containers[0].label = None;
+        assert!(stray_anchor.export_input(&graph).is_err());
     }
 }
