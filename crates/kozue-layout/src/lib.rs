@@ -31,7 +31,8 @@ mod state;
 use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, Container, Diagram, Direction, ElementId, EndMarker, GraphDiagram, Group, LineStyle,
-    LineWeight, NodeKind, Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign,
+    LineWeight, NodeKind, Path, Port, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text,
+    TextAlign,
 };
 
 pub use contract::{validate_export_semantics, ExportContractError, ExportInput};
@@ -247,13 +248,49 @@ pub(crate) fn compute_edge_geom(
     mut pts: Vec<(f64, f64)>,
     from: &Placed,
     to: &Placed,
+    from_port: Option<Port>,
+    to_port: Option<Port>,
 ) -> Result<EdgeGeom, LayoutError> {
     let last = pts.len() - 1;
-    pts[0] = clip_to_shape(from, pts[1].0, pts[1].1)?;
-    let end = clip_to_shape(to, pts[last - 1].0, pts[last - 1].1)?;
+    pts[0] = match from_port {
+        Some(port) => port_attachment(from, port)?,
+        None => clip_to_shape(from, pts[1].0, pts[1].1)?,
+    };
+    let end = match to_port {
+        Some(port) => port_attachment(to, port)?,
+        None => clip_to_shape(to, pts[last - 1].0, pts[last - 1].1)?,
+    };
     pts[last] = end;
 
     Ok(EdgeGeom { route: pts })
+}
+
+/// Unit ray direction (from a node's center) for a cardinal compass [`Port`].
+///
+/// `Port` is `#[non_exhaustive]`: any future variant must be rejected with a
+/// [`LayoutError`] rather than silently falling back to a default direction
+/// (same convention as [`node_rx`] for future `NodeKind` variants).
+fn port_unit(port: Port) -> Result<(f64, f64), LayoutError> {
+    match port {
+        Port::North => Ok((0.0, -1.0)),
+        Port::East => Ok((1.0, 0.0)),
+        Port::South => Ok((0.0, 1.0)),
+        Port::West => Ok((-1.0, 0.0)),
+        _ => Err(LayoutError {
+            message: format!("unsupported port: {port:?}"),
+        }),
+    }
+}
+
+/// Attachment point on `p`'s shape border for a cardinal [`Port`].
+///
+/// Reuses [`clip_to_shape`] with an axis-aligned unit ray cast from the
+/// node's center, which lands exactly on the side's midpoint (or vertex, for
+/// [`NodeKind::Diamond`]) for every existing shape.
+fn port_attachment(p: &Placed, port: Port) -> Result<(f64, f64), LayoutError> {
+    let (cx, cy) = p.center();
+    let (ux, uy) = port_unit(port)?;
+    clip_to_shape(p, cx + ux, cy + uy)
 }
 
 /// Compute the anchor (text center) for an edge/transition label.
@@ -662,7 +699,13 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         let edge = &g.edges[edge_ids[k]];
 
         // Compute geometry once; emit scene items and build SemanticLayout from it.
-        let geom = compute_edge_geom(pts, &placed[from], &placed[to])?;
+        let geom = compute_edge_geom(
+            pts,
+            &placed[from],
+            &placed[to],
+            edge.from_port,
+            edge.to_port,
+        )?;
         // Label anchor from the shared helper (same value as the Scene text).
         let sem_label_anchor = edge.label.as_deref().map(|lbl| {
             let (tw, th) = kozue_text::measure(lbl, FONT_SIZE * 0.85);
@@ -689,6 +732,8 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
             from_arrow: edge.from_arrow,
             line: edge.line,
             weight: edge.weight,
+            from_port: edge.from_port,
+            to_port: edge.to_port,
             route: geom
                 .route
                 .iter()
@@ -1033,7 +1078,7 @@ fn diamond_path(p: &Placed) -> Path {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{ArrowType, Edge, Node};
+    use kozue_ir::{ArrowType, Edge, LineStyle, LineWeight, Node, Port};
 
     fn node(id: &str, label: &str) -> Node {
         Node::new(id, label)
@@ -2820,5 +2865,105 @@ mod tests {
         ));
         let result = layout_full(&Diagram::Class(cd));
         assert!(result.is_err(), "self relations must be rejected");
+    }
+
+    #[test]
+    fn cardinal_port_snaps_endpoint_to_side_midpoint() {
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph.nodes.insert("a".into(), node("a", "A"));
+        graph.nodes.insert("b".into(), node("b", "B"));
+        graph.edges.push(Edge::with_ports(
+            "a",
+            "b",
+            None,
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            Some(Port::East),
+            Some(Port::West),
+        ));
+
+        let out = layout_full(&Diagram::Graph(graph)).unwrap();
+        let SemanticLayout::Graph(sem) = &out.semantic else {
+            panic!("expected graph")
+        };
+        let a = sem.nodes.iter().find(|n| n.id.as_str() == "a").unwrap();
+        let b = sem.nodes.iter().find(|n| n.id.as_str() == "b").unwrap();
+        let route = &sem.edges[0].route;
+
+        let a_east = (a.rect.x + a.rect.width, a.rect.y + a.rect.height / 2.0);
+        let b_west = (b.rect.x, b.rect.y + b.rect.height / 2.0);
+        assert_approx(route.first().unwrap().x, a_east.0);
+        assert_approx(route.first().unwrap().y, a_east.1);
+        assert_approx(route.last().unwrap().x, b_west.0);
+        assert_approx(route.last().unwrap().y, b_west.1);
+    }
+
+    #[test]
+    fn port_attachment_on_circle_and_diamond() {
+        for kind in [NodeKind::Circle, NodeKind::Diamond] {
+            let placed = Placed {
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 40.0,
+                label: "shape".into(),
+                kind: kind.clone(),
+            };
+            let (cx, cy) = placed.center();
+            let hw = placed.width / 2.0;
+            let hh = placed.height / 2.0;
+
+            let north = port_attachment(&placed, Port::North).unwrap();
+            assert_approx(north.0, cx);
+            assert_approx(north.1, cy - hh);
+
+            let south = port_attachment(&placed, Port::South).unwrap();
+            assert_approx(south.0, cx);
+            assert_approx(south.1, cy + hh);
+
+            let east = port_attachment(&placed, Port::East).unwrap();
+            assert_approx(east.0, cx + hw);
+            assert_approx(east.1, cy);
+
+            let west = port_attachment(&placed, Port::West).unwrap();
+            assert_approx(west.0, cx - hw);
+            assert_approx(west.1, cy);
+        }
+    }
+
+    #[test]
+    fn default_edge_geom_is_byte_identical() {
+        // Regression guard for §8 risk 2: the `None`/`None` branch of
+        // `compute_edge_geom` must remain byte-identical to the pre-port
+        // `clip_to_shape`-only computation, never routed through
+        // `port_attachment`.
+        let from = Placed {
+            x: 0.0,
+            y: 0.0,
+            width: 60.0,
+            height: 30.0,
+            label: "a".into(),
+            kind: NodeKind::Rectangle,
+        };
+        let to = Placed {
+            x: 0.0,
+            y: 100.0,
+            width: 60.0,
+            height: 30.0,
+            label: "b".into(),
+            kind: NodeKind::Diamond,
+        };
+        let pts = vec![from.center(), to.center()];
+
+        let geom = compute_edge_geom(pts.clone(), &from, &to, None, None).unwrap();
+
+        let last = pts.len() - 1;
+        let expected_first = clip_to_shape(&from, pts[1].0, pts[1].1).unwrap();
+        let expected_last = clip_to_shape(&to, pts[last - 1].0, pts[last - 1].1).unwrap();
+
+        assert_eq!(geom.route[0], expected_first);
+        assert_eq!(geom.route[last], expected_last);
     }
 }

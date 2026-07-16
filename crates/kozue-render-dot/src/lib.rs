@@ -46,7 +46,8 @@
 
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassRelation, Container, Diagram, Direction, EndMarker, Endpoint,
-    ErDiagram, ErRelation, GraphDiagram, LineStyle, LineWeight, NodeKind, StateDiagram, Transition,
+    ErDiagram, ErRelation, GraphDiagram, LineStyle, LineWeight, NodeKind, Port, StateDiagram,
+    Transition,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,8 @@ pub enum RenderError {
     UnknownLineWeight { weight: String },
     /// A future relation end marker has no defined DOT mapping.
     UnknownEndMarker { marker: String },
+    /// A future compass [`Port`] variant has no defined DOT mapping.
+    UnknownPort { port: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -122,6 +125,9 @@ impl std::fmt::Display for RenderError {
             }
             RenderError::UnknownEndMarker { marker } => {
                 write!(f, "unsupported DOT end marker: {marker}")
+            }
+            RenderError::UnknownPort { port } => {
+                write!(f, "unsupported DOT compass port: {port}")
             }
         }
     }
@@ -192,6 +198,8 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
         out.push_str(&edge_stmt(
             edge.from.as_str(),
             edge.to.as_str(),
+            edge.from_port,
+            edge.to_port,
             edge.label.as_deref(),
             edge.arrow,
             edge.from_arrow,
@@ -303,9 +311,12 @@ fn rankdir(direction: Direction) -> Result<&'static str, RenderError> {
 /// - neither end drawn: `dir=none` (unchanged from before `from_arrow` existed)
 /// - only the target end drawn (the common case): no `dir` attr, matching the
 ///   Graphviz default.
+#[allow(clippy::too_many_arguments)]
 fn edge_stmt(
     from: &str,
     to: &str,
+    from_port: Option<Port>,
+    to_port: Option<Port>,
     label: Option<&str>,
     arrow: ArrowType,
     from_arrow: ArrowType,
@@ -361,15 +372,41 @@ fn edge_stmt(
         _ => attrs.push(format!("style={}", quote(&style_tokens.join(",")))),
     }
 
+    let from_tok = endpoint_token(from, from_port)?;
+    let to_tok = endpoint_token(to, to_port)?;
+
     if attrs.is_empty() {
-        Ok(format!("  {} -> {};\n", quote(from), quote(to)))
+        Ok(format!("  {from_tok} -> {to_tok};\n"))
     } else {
-        Ok(format!(
-            "  {} -> {} [{}];\n",
-            quote(from),
-            quote(to),
-            attrs.join(" ")
-        ))
+        Ok(format!("  {from_tok} -> {to_tok} [{}];\n", attrs.join(" ")))
+    }
+}
+
+/// Map a compass [`Port`] to its Graphviz compass-point suffix letter.
+///
+/// Future `#[non_exhaustive]` variants are explicit errors rather than a
+/// silent default (see [`RenderError::UnknownPort`]).
+fn compass(port: Port) -> Result<&'static str, RenderError> {
+    Ok(match port {
+        Port::North => "n",
+        Port::East => "e",
+        Port::South => "s",
+        Port::West => "w",
+        other => {
+            return Err(RenderError::UnknownPort {
+                port: format!("{other:?}"),
+            })
+        }
+    })
+}
+
+/// Build a DOT node-endpoint token: a quoted node id, plus a `:compass`
+/// suffix when a port is present. `None` produces exactly the plain
+/// `quote(id)` token (byte-identical to pre-port output).
+fn endpoint_token(id: &str, port: Option<Port>) -> Result<String, RenderError> {
+    match port {
+        Some(p) => Ok(format!("{}:{}", quote(id), compass(p)?)),
+        None => Ok(quote(id)),
     }
 }
 
@@ -435,6 +472,8 @@ fn transition_stmt(s: &StateDiagram, t: &Transition) -> Result<String, RenderErr
     edge_stmt(
         &from,
         &to,
+        None,
+        None,
         t.label.as_deref(),
         ArrowType::Triangle,
         ArrowType::None,
@@ -789,6 +828,8 @@ mod tests {
                 "a",
                 "b",
                 None,
+                None,
+                None,
                 ArrowType::Triangle,
                 ArrowType::None,
                 LineStyle::Solid,
@@ -800,6 +841,8 @@ mod tests {
         assert!(edge_stmt(
             "a",
             "b",
+            None,
+            None,
             None,
             ArrowType::None,
             ArrowType::None,
@@ -1075,6 +1118,8 @@ mod tests {
                 "a",
                 "b",
                 None,
+                None,
+                None,
                 ArrowType::Triangle,
                 ArrowType::None,
                 LineStyle::Solid,
@@ -1093,6 +1138,8 @@ mod tests {
                 "a",
                 "b",
                 None,
+                None,
+                None,
                 ArrowType::Triangle,
                 ArrowType::Triangle,
                 LineStyle::Solid,
@@ -1106,6 +1153,8 @@ mod tests {
             edge_stmt(
                 "a",
                 "b",
+                None,
+                None,
                 None,
                 ArrowType::None,
                 ArrowType::Triangle,
@@ -1124,6 +1173,8 @@ mod tests {
                 "a",
                 "b",
                 None,
+                None,
+                None,
                 ArrowType::Triangle,
                 ArrowType::None,
                 LineStyle::Dotted,
@@ -1141,6 +1192,8 @@ mod tests {
                 "a",
                 "b",
                 None,
+                None,
+                None,
                 ArrowType::Triangle,
                 ArrowType::None,
                 LineStyle::Solid,
@@ -1157,6 +1210,8 @@ mod tests {
             edge_stmt(
                 "a",
                 "b",
+                None,
+                None,
                 None,
                 ArrowType::Triangle,
                 ArrowType::None,
@@ -1281,5 +1336,56 @@ mod tests {
             .push(Edge::new("a", "b", Some("x".into()), ArrowType::Triangle));
         let d = Diagram::Graph(g);
         assert_eq!(render(&d).unwrap(), render(&d).unwrap());
+    }
+
+    #[test]
+    fn ported_edge_emits_native_compass_suffix() {
+        let mut g = graph(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        g.edges.push(Edge::with_ports(
+            "a",
+            "b",
+            None,
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            Some(Port::East),
+            Some(Port::West),
+        ));
+        let dot = render(&Diagram::Graph(g)).unwrap();
+        assert!(dot.contains("  \"a\":e -> \"b\":w;\n"), "{dot}");
+    }
+
+    #[test]
+    fn portless_edge_is_byte_identical_to_pre_port_output() {
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                None,
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\";\n"
+        );
+    }
+
+    #[test]
+    fn compass_maps_all_four_cardinal_ports() {
+        for (port, letter) in [
+            (Port::North, "n"),
+            (Port::East, "e"),
+            (Port::South, "s"),
+            (Port::West, "w"),
+        ] {
+            assert_eq!(compass(port).unwrap(), letter);
+        }
     }
 }

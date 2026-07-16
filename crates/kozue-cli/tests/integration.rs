@@ -281,6 +281,49 @@ fn subgraphs_map_across_all_backends() {
 }
 
 #[test]
+fn ports_map_across_all_backends() {
+    let source = "graph ports {\n  a: \"A\"\n  b shape circle: \"B\"\n  c shape diamond: \"C\"\n  a.east -> b.west : \"x\"\n  b.south -> c.north\n  a -> c line dashed\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    let dot = kozue_render_dot::render(&diagram).unwrap();
+    assert!(dot.contains("\"a\":e ->"));
+    assert!(dot.contains(":w"));
+    assert!(dot.contains("\"b\":s ->"));
+    assert!(dot.contains(":n"));
+
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("exitX=1"));
+    assert!(drawio.contains("entryX=0"));
+    assert!(drawio.contains("exitX=0.5;exitY=1"));
+    assert!(drawio.contains("entryX=0.5;entryY=0"));
+
+    let flat_source = "graph ports {\n  a: \"A\"\n  b shape circle: \"B\"\n  c shape diamond: \"C\"\n  a -> b : \"x\"\n  b -> c\n  a -> c line dashed\n}";
+    let flat_diagram = kozue_dsl::parse(flat_source).unwrap();
+    let flat_output = kozue_layout::layout_full(&flat_diagram).unwrap();
+
+    let svg = kozue_render_svg::render(&output.scene);
+    let flat_svg = kozue_render_svg::render(&flat_output.scene);
+    assert_ne!(svg, flat_svg);
+
+    let excalidraw = kozue_render_excalidraw::render(&output.semantic).unwrap();
+    let flat_excalidraw = kozue_render_excalidraw::render(&flat_output.semantic).unwrap();
+    assert_ne!(excalidraw, flat_excalidraw);
+
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let flat_pptx = kozue_render_pptx::render(&flat_output.semantic).unwrap();
+    assert_ne!(pptx, flat_pptx);
+
+    let png = kozue_render_png::render(&output.scene).unwrap();
+    let flat_png = kozue_render_png::render(&flat_output.scene).unwrap();
+    assert_ne!(png, flat_png);
+
+    let term = kozue_render_term::render(&output.scene);
+    let flat_term = kozue_render_term::render(&flat_output.scene);
+    assert_ne!(term, flat_term);
+}
+
+#[test]
 fn strict_exchange_export_matches_legacy_bytes_for_all_domains_and_is_deterministic() {
     for name in [
         "chain",
@@ -317,6 +360,39 @@ fn strict_exchange_export_matches_legacy_bytes_for_all_domains_and_is_determinis
     }
 }
 
+#[test]
+fn strict_exchange_export_matches_legacy_bytes_for_ports() {
+    // Dedicated coverage for the strict export path with cardinal ports:
+    // the existing 5-case loop above stays byte-invariant, and this
+    // asserts render_export == render (including exit/entry and compass
+    // suffixes carried through the strict contract) for the ports input.
+    let source = std::fs::read_to_string(golden_dir().join("ports.kzd")).unwrap();
+    let diagram = kozue_dsl::parse(&source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+    let input = output.export_input(&diagram).unwrap();
+
+    let drawio = kozue_render_drawio::render_export(&input).unwrap();
+    assert_eq!(
+        drawio,
+        kozue_render_drawio::render(&output.semantic).unwrap()
+    );
+    assert_eq!(drawio, kozue_render_drawio::render_export(&input).unwrap());
+
+    let excalidraw = kozue_render_excalidraw::render_export(&input).unwrap();
+    assert_eq!(
+        excalidraw,
+        kozue_render_excalidraw::render(&output.semantic).unwrap()
+    );
+    assert_eq!(
+        excalidraw,
+        kozue_render_excalidraw::render_export(&input).unwrap()
+    );
+
+    let pptx = kozue_render_pptx::render_export(&input).unwrap();
+    assert_eq!(pptx, kozue_render_pptx::render(&output.semantic).unwrap());
+    assert_eq!(pptx, kozue_render_pptx::render_export(&input).unwrap());
+}
+
 const GOLDEN_CASES: &[&str] = &[
     "chain",
     "branch",
@@ -327,6 +403,7 @@ const GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 
 const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
@@ -1108,6 +1185,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 const TERM_GOLDEN_MMD_CASES: &[&str] = &["mermaid_flow"];
 
@@ -1216,6 +1294,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 
 #[test]
@@ -1570,6 +1649,7 @@ const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
@@ -1869,6 +1949,7 @@ const DOT_GRAPH_GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DOT_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1971,6 +2052,7 @@ const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
@@ -2178,6 +2260,7 @@ const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &[
     "node_shapes",
     "edge_presentation",
     "subgraph",
+    "ports",
 ];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];

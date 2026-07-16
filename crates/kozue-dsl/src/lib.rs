@@ -51,8 +51,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem,
-    State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, Node, NodeKind, Participant, Port, SequenceDiagram,
+    SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -117,12 +117,33 @@ impl ParsedNodeShape {
     }
 }
 
+/// A parsed `.north`/`.east`/`.south`/`.west` port suffix on an edge endpoint.
+#[derive(Debug, Clone)]
+enum ParsedPort {
+    Known(Port, std::ops::Range<usize>),
+    Unknown(String, std::ops::Range<usize>),
+}
+
+impl ParsedPort {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            ParsedPort::Known(_, span) | ParsedPort::Unknown(_, span) => span,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct EdgeStmt {
     from: String,
     from_span: std::ops::Range<usize>,
+    /// Compass port suffix on the `from` endpoint (`a.north -> ...`), if any.
+    /// Only meaningful for graph diagrams; state/sequence diagrams reject any
+    /// edge statement that carries a port.
+    from_port: Option<ParsedPort>,
     to: String,
     to_span: std::ops::Range<usize>,
+    /// Compass port suffix on the `to` endpoint, if any. See `from_port`.
+    to_port: Option<ParsedPort>,
     label: Option<String>,
     /// Span of the label string literal (including quotes), if present.
     label_lit_span: Option<std::ops::Range<usize>>,
@@ -130,6 +151,24 @@ struct EdgeStmt {
     /// meaningful for graph diagrams; state/sequence diagrams reject any
     /// non-empty modifier list. Order-independent, last-wins per kind.
     modifiers: Vec<EdgeModifier>,
+}
+
+/// Byte span covering both port suffixes attached to an edge statement, for
+/// diagnostics that reject a port outright (e.g. in state/sequence diagrams).
+/// Falls back to the whole `from -> to` span if neither endpoint has a port
+/// (callers should only invoke this when at least one port is present).
+fn edge_port_span(e: &EdgeStmt) -> std::ops::Range<usize> {
+    let spans: Vec<&std::ops::Range<usize>> = [&e.from_port, &e.to_port]
+        .into_iter()
+        .filter_map(|p| p.as_ref().map(ParsedPort::span))
+        .collect();
+    match (
+        spans.iter().map(|s| s.start).min(),
+        spans.iter().map(|s| s.end).max(),
+    ) {
+        (Some(start), Some(end)) => start..end,
+        _ => e.from_span.start..e.to_span.end,
+    }
 }
 
 /// A parsed `line <style>` edge modifier value.
@@ -299,6 +338,17 @@ fn ident_spanned(
     text::ident()
         .map_with_span(|s, span| (s, span))
         .padded_by(kzd_ws())
+}
+
+/// Like [`ident_spanned`] but consumes no surrounding whitespace/comments of
+/// its own. Used to build edge endpoint parsers where a `.` port suffix must
+/// bind tightly (`a.north`, not `a . north` or `a. north`): wrapping the
+/// *whole* `ident (. port)?` sequence in a single `padded_by` (rather than
+/// padding the identifier and the `.` independently) is what makes the `.`
+/// require no adjacent whitespace on either side.
+fn raw_ident() -> impl Parser<char, (String, std::ops::Range<usize>), Error = Simple<char>> + Clone
+{
+    text::ident().map_with_span(|s, span| (s, span))
 }
 
 /// Parse a string literal with escape sequences: `\"` and `\\`.
@@ -505,101 +555,132 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             .ignore_then(string_lit_spanned())
             .or_not();
 
+        // Port suffix on an edge endpoint: `.north`/`.east`/`.south`/`.west`.
+        // Port words are not reserved — they only mean a port when they
+        // directly follow a `.`. The `.` is deliberately unpadded (see
+        // `raw_ident`) so `a . north` and `a. north` are syntax errors; only
+        // `a.north` (no surrounding whitespace around the `.`) is a port.
+        let port_ref = just('.')
+            .ignore_then(raw_ident())
+            .map(|(name, span)| match name.as_str() {
+                "north" => ParsedPort::Known(Port::North, span),
+                "east" => ParsedPort::Known(Port::East, span),
+                "south" => ParsedPort::Known(Port::South, span),
+                "west" => ParsedPort::Known(Port::West, span),
+                _ => ParsedPort::Unknown(name, span),
+            });
+
+        // An edge endpoint: an identifier with an optional tightly-bound port
+        // suffix, surrounded by ordinary whitespace/comment padding.
+        let endpoint_ref = raw_ident().then(port_ref.or_not()).padded_by(kzd_ws());
+
         // Dashed edge: `a --> b` optionally `: "label"`
-        let dashed_edge = ident_spanned()
+        let dashed_edge = endpoint_ref
+            .clone()
             .then_ignore(just("-->").padded_by(kzd_ws()))
-            .then(ident_spanned())
+            .then(endpoint_ref.clone())
             .then(edge_modifiers.clone())
             .then(label_suffix.clone())
-            .map(
-                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                    let (label, label_lit_span) = match label_opt {
-                        Some((l, s)) => (Some(l), Some(s)),
-                        None => (None, None),
-                    };
-                    Stmt::DashedEdge(EdgeStmt {
-                        from,
-                        from_span,
-                        to,
-                        to_span,
-                        label,
-                        label_lit_span,
-                        modifiers,
-                    })
-                },
-            );
+            .map(|(((from_endpoint, to_endpoint), modifiers), label_opt)| {
+                let ((from, from_span), from_port) = from_endpoint;
+                let ((to, to_span), to_port) = to_endpoint;
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::DashedEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    from_port,
+                    to,
+                    to_span,
+                    to_port,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            });
 
         // Solid edge: `a -> b` optionally `(line ... | weight ...)*` and `: "label"`.
-        let edge = ident_spanned()
+        let edge = endpoint_ref
+            .clone()
             .then_ignore(just("->").padded_by(kzd_ws()))
-            .then(ident_spanned())
+            .then(endpoint_ref.clone())
             .then(edge_modifiers.clone())
             .then(label_suffix.clone())
-            .map(
-                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                    let (label, label_lit_span) = match label_opt {
-                        Some((l, s)) => (Some(l), Some(s)),
-                        None => (None, None),
-                    };
-                    Stmt::Edge(EdgeStmt {
-                        from,
-                        from_span,
-                        to,
-                        to_span,
-                        label,
-                        label_lit_span,
-                        modifiers,
-                    })
-                },
-            );
+            .map(|(((from_endpoint, to_endpoint), modifiers), label_opt)| {
+                let ((from, from_span), from_port) = from_endpoint;
+                let ((to, to_span), to_port) = to_endpoint;
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::Edge(EdgeStmt {
+                    from,
+                    from_span,
+                    from_port,
+                    to,
+                    to_span,
+                    to_port,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            });
 
         // Undirected edge: `a --- b` optionally `(line ... | weight ...)*` and `: "label"`.
-        let undirected_edge = ident_spanned()
+        let undirected_edge = endpoint_ref
+            .clone()
             .then_ignore(just("---").padded_by(kzd_ws()))
-            .then(ident_spanned())
+            .then(endpoint_ref.clone())
             .then(edge_modifiers.clone())
             .then(label_suffix.clone())
-            .map(
-                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                    let (label, label_lit_span) = match label_opt {
-                        Some((l, s)) => (Some(l), Some(s)),
-                        None => (None, None),
-                    };
-                    Stmt::UndirectedEdge(EdgeStmt {
-                        from,
-                        from_span,
-                        to,
-                        to_span,
-                        label,
-                        label_lit_span,
-                        modifiers,
-                    })
-                },
-            );
+            .map(|(((from_endpoint, to_endpoint), modifiers), label_opt)| {
+                let ((from, from_span), from_port) = from_endpoint;
+                let ((to, to_span), to_port) = to_endpoint;
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::UndirectedEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    from_port,
+                    to,
+                    to_span,
+                    to_port,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            });
 
         // Bidirectional edge: `a <-> b` optionally `(line ... | weight ...)*` and `: "label"`.
-        let bidirectional_edge = ident_spanned()
+        let bidirectional_edge = endpoint_ref
+            .clone()
             .then_ignore(just("<->").padded_by(kzd_ws()))
-            .then(ident_spanned())
+            .then(endpoint_ref.clone())
             .then(edge_modifiers.clone())
             .then(label_suffix.clone())
-            .map(
-                |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
-                    let (label, label_lit_span) = match label_opt {
-                        Some((l, s)) => (Some(l), Some(s)),
-                        None => (None, None),
-                    };
-                    Stmt::BidirectionalEdge(EdgeStmt {
-                        from,
-                        from_span,
-                        to,
-                        to_span,
-                        label,
-                        label_lit_span,
-                        modifiers,
-                    })
-                },
-            );
+            .map(|(((from_endpoint, to_endpoint), modifiers), label_opt)| {
+                let ((from, from_span), from_port) = from_endpoint;
+                let ((to, to_span), to_port) = to_endpoint;
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::BidirectionalEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    from_port,
+                    to,
+                    to_span,
+                    to_port,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            });
 
         // Node: `id`, `id: "label"`, or `id shape rectangle|rounded: "label"`.
         let node_shape = text::keyword("shape")
@@ -1032,6 +1113,27 @@ fn collect_containers(
     (children, direct_members)
 }
 
+/// Resolve a parsed edge-endpoint port to an IR [`Port`], pushing a
+/// `CompileError` for an unrecognized port word (`Unknown`). `None` (no port
+/// suffix at all) resolves to `None` silently — the default pre-V8 boundary
+/// clipping behavior.
+fn resolve_port(port: &Option<ParsedPort>, errors: &mut Vec<CompileError>) -> Option<Port> {
+    match port {
+        None => None,
+        Some(ParsedPort::Known(p, _)) => Some(*p),
+        Some(ParsedPort::Unknown(name, span)) => {
+            errors.push(CompileError {
+                message: format!(
+                    "unknown port `{name}`; expected `north`, `east`, `south`, or `west`"
+                ),
+                span: span.clone(),
+                secondary: None,
+            });
+            None
+        }
+    }
+}
+
 fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
     let mut direction = Direction::Down;
     let mut graph = GraphDiagram::new(direction);
@@ -1125,7 +1227,10 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             }
         }
 
-        graph.edges.push(Edge::with_presentation(
+        let from_port = resolve_port(&e.from_port, &mut errors);
+        let to_port = resolve_port(&e.to_port, &mut errors);
+
+        graph.edges.push(Edge::with_ports(
             e.from.clone(),
             e.to.clone(),
             e.label.clone(),
@@ -1133,6 +1238,8 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             from_arrow,
             line,
             weight,
+            from_port,
+            to_port,
         ));
     }
 
@@ -1257,6 +1364,14 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                             "`line`/`weight` edge modifiers are not supported in state diagrams"
                                 .to_string(),
                         span: edge_modifiers_span(e),
+                        secondary: None,
+                    });
+                }
+                if e.from_port.is_some() || e.to_port.is_some() {
+                    errors.push(CompileError {
+                        message: "ports (`.north` etc.) are only valid in graph diagrams"
+                            .to_string(),
+                        span: edge_port_span(e),
                         secondary: None,
                     });
                 }
@@ -1499,6 +1614,14 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 message: "`line`/`weight` edge modifiers are not supported in sequence diagrams"
                     .to_string(),
                 span: edge_modifiers_span(e),
+                secondary: None,
+            });
+            continue;
+        }
+        if e.from_port.is_some() || e.to_port.is_some() {
+            errors.push(CompileError {
+                message: "ports (`.north` etc.) are only valid in graph diagrams".to_string(),
+                span: edge_port_span(e),
                 secondary: None,
             });
             continue;
@@ -2108,12 +2231,17 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
         | Stmt::DashedEdge(e)
         | Stmt::UndirectedEdge(e)
         | Stmt::BidirectionalEdge(e) => {
+            let to_end = e
+                .to_port
+                .as_ref()
+                .map(|p| p.span().end)
+                .unwrap_or(e.to_span.end);
             let end = e
                 .label_lit_span
                 .as_ref()
                 .map(|s| s.end)
                 .or_else(|| e.modifiers.iter().map(|m| m.span().end).max())
-                .unwrap_or(e.to_span.end);
+                .unwrap_or(to_end);
             (e.from_span.start, end)
         }
         Stmt::StateDecl {
@@ -2313,11 +2441,37 @@ fn line_weight_token(weight: LineWeight) -> &'static str {
     }
 }
 
-/// Format the canonical `a <op> b [line ...] [weight ...] [: "label"]` body
-/// shared by the three graph edge arrow tokens.
+/// Canonical full-name token for a resolved port suffix (`.north`, etc.), or
+/// the empty string when there is no port. Assumes the port, if present, is
+/// `Known` (callers run after successful semantic validation, e.g.
+/// `format_kzd` calls `build_diagram` first, so an `Unknown` port would
+/// already have failed the build and never reach the formatter).
+fn port_token(port: &Option<ParsedPort>) -> &'static str {
+    match port {
+        None => "",
+        Some(ParsedPort::Known(p, _)) => match p {
+            Port::North => ".north",
+            Port::East => ".east",
+            Port::South => ".south",
+            Port::West => ".west",
+            _ => "",
+        },
+        Some(ParsedPort::Unknown(_, _)) => "",
+    }
+}
+
+/// Format the canonical `a[.port] <op> b[.port] [line ...] [weight ...] [: "label"]`
+/// body shared by the three graph edge arrow tokens.
 fn format_graph_edge(e: &EdgeStmt, op: &str) -> String {
     let (line, weight) = resolve_edge_modifiers(&e.modifiers);
-    let mut out = format!("{} {} {}", e.from, op, e.to);
+    let mut out = format!(
+        "{}{} {} {}{}",
+        e.from,
+        port_token(&e.from_port),
+        op,
+        e.to,
+        port_token(&e.to_port)
+    );
     if line != LineStyle::Solid {
         out.push_str(" line ");
         out.push_str(line_style_token(line));
@@ -2560,6 +2714,119 @@ mod tests {
     }
 
     #[test]
+    fn ports_parse_on_all_arrow_tokens() {
+        let source = "graph d {\n a\n b\n c\n d\n a.north -> b.south\n b.east --- c.west\n c.north <-> d.south\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges.len(), 3);
+        assert_eq!(graph.edges[0].from_port, Some(Port::North));
+        assert_eq!(graph.edges[0].to_port, Some(Port::South));
+        assert_eq!(graph.edges[1].from_port, Some(Port::East));
+        assert_eq!(graph.edges[1].to_port, Some(Port::West));
+        assert_eq!(graph.edges[2].from_port, Some(Port::North));
+        assert_eq!(graph.edges[2].to_port, Some(Port::South));
+
+        // A node named `north` (etc.) is still a valid plain identifier when
+        // it is not preceded by a `.`.
+        let unreserved = "graph d {\n north\n b\n north -> b\n}";
+        let Diagram::Graph(graph) = parse(unreserved).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges[0].from_port, None);
+        assert_eq!(graph.edges[0].to_port, None);
+    }
+
+    #[test]
+    fn port_and_edge_modifiers_and_label_combine() {
+        let source = "graph d {\n a\n b\n a.east -> b.west line dashed weight thick : \"x\"\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        let edge = &graph.edges[0];
+        assert_eq!(edge.from_port, Some(Port::East));
+        assert_eq!(edge.to_port, Some(Port::West));
+        assert_eq!(edge.line, LineStyle::Dashed);
+        assert_eq!(edge.weight, kozue_ir::LineWeight::Thick);
+        assert_eq!(edge.label.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn unknown_port_is_reported() {
+        let src = "graph d { a\n b\n a.up -> b }";
+        let errors = parse(src).expect_err("unknown port must fail");
+        let error = errors
+            .iter()
+            .find(|e| e.message.contains("unknown port"))
+            .unwrap();
+        assert!(error
+            .message
+            .contains("unknown port `up`; expected `north`, `east`, `south`, or `west`"));
+        let start = src.find("up").unwrap();
+        assert_eq!(error.span, start..start + "up".len());
+    }
+
+    #[test]
+    fn port_requires_no_space_before_ident() {
+        for src in [
+            "graph d { a\n b\n a . north -> b }",
+            "graph d { a\n b\n a. north -> b }",
+        ] {
+            assert!(
+                parse(src).is_err(),
+                "expected syntax error for {src:?}, but it parsed"
+            );
+        }
+        // The tight form still parses fine (sanity check the negative cases
+        // above are actually testing the space, not something else).
+        assert!(parse("graph d { a\n b\n a.north -> b }").is_ok());
+    }
+
+    #[test]
+    fn ports_rejected_in_state_diagram() {
+        let src = "state s { state a\n state b\n a.north -> b }";
+        let errors = parse(src).expect_err("ports must be rejected in state diagrams");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only valid in graph diagrams")),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn ports_rejected_in_sequence_diagram() {
+        let src = "sequence d { participant a\n participant b\n a.north -> b }";
+        let errors = parse(src).expect_err("ports must be rejected in sequence diagrams");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only valid in graph diagrams")),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn native_ports_build_expected_ir() {
+        let source =
+            "graph ports {\n a\n b\n c\n a.east -> b.west : \"x\"\n b.south -> c.north\n a -> c line dashed\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges.len(), 3);
+        assert_eq!(graph.edges[0].from, ElementId::from("a"));
+        assert_eq!(graph.edges[0].to, ElementId::from("b"));
+        assert_eq!(graph.edges[0].from_port, Some(Port::East));
+        assert_eq!(graph.edges[0].to_port, Some(Port::West));
+        assert_eq!(graph.edges[1].from_port, Some(Port::South));
+        assert_eq!(graph.edges[1].to_port, Some(Port::North));
+        // Default (port-less) edges keep working alongside ported ones.
+        assert_eq!(graph.edges[2].from_port, None);
+        assert_eq!(graph.edges[2].to_port, None);
+        assert_eq!(graph.edges[2].line, LineStyle::Dashed);
+    }
+
+    #[test]
     fn graph_edge_unknown_line_style_is_error_with_exact_span() {
         let src = "graph d { a\n b\n a -> b line teal }";
         let errors = parse(src).expect_err("unknown line style must fail");
@@ -2649,6 +2916,16 @@ mod tests {
     fn fmt_edge_presentation_is_idempotent() {
         let source = "graph d {\n a\n b\n c\n a -> b line dashed weight thick : \"L\"\n b --- c\n c <-> a line dotted\n}";
         let formatted = format_kzd(source).expect("should format");
+        assert_eq!(format_kzd(&formatted).unwrap(), formatted);
+    }
+
+    #[test]
+    fn formatter_emits_canonical_ports() {
+        let source = "graph d {\n a\n b\n c\n a.east->b.west line dashed:\"x\"\n b---c\n}";
+        let formatted = format_kzd(source).expect("should format");
+        assert!(formatted.contains("a.east -> b.west line dashed : \"x\"\n"));
+        assert!(formatted.contains("b --- c\n"));
+        // Idempotent: re-formatting the already-canonical output is a no-op.
         assert_eq!(format_kzd(&formatted).unwrap(), formatted);
     }
 

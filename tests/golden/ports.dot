@@ -1,0 +1,10 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "a" [label="A"];
+  "b" [label="B" shape=circle style=""];
+  "c" [label="C" shape=diamond style=""];
+  "a":w -> "b":n [label="x"];
+  "b":s -> "c":n;
+  "a" -> "c" [style=dashed];
+}

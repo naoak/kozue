@@ -787,6 +787,18 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
 
     // Edges -- arrow bound to both endpoint rectangles, plus an optional
     // bound text label.
+    //
+    // Compass ports (`Edge.from_port`/`to_port`, M3a4) are geometry-driven
+    // here, not a separate code path: the layout engine already snapped
+    // `edge.route`'s endpoints to the requested side via
+    // `route_geometry`(below), so the emitted `points` array carries the port
+    // faithfully with no silent drop. The `focus: 0.0` legacy-form binding
+    // (below) is the same fixed representation choice already made for plain
+    // shape-boundary clipping since M3a2a-II: Excalidraw's own `restore()` may
+    // recompute a rendered arrow's visual endpoint from the bound shape's
+    // perimeter using that binding, but that is a downstream Excalidraw
+    // rendering behavior, not a kozue export decision -- the exported bytes
+    // (`points`) always encode the exact snapped port location.
     for (i, edge) in g.edges.iter().enumerate() {
         let src_idx =
             find_node_idx(edge.from.id.as_str()).ok_or_else(|| RenderError::DanglingEdge {

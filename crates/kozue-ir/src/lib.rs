@@ -27,12 +27,13 @@ pub enum IrSchemaVersion {
     V4,
     V5,
     V6,
-    #[default]
     V7,
+    #[default]
+    V8,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V7;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V8;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -55,6 +56,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V5 => serializer.serialize_u8(5),
             IrSchemaVersion::V6 => serializer.serialize_u8(6),
             IrSchemaVersion::V7 => serializer.serialize_u8(7),
+            IrSchemaVersion::V8 => serializer.serialize_u8(8),
         }
     }
 }
@@ -73,6 +75,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             5 => Ok(IrSchemaVersion::V5),
             6 => Ok(IrSchemaVersion::V6),
             7 => Ok(IrSchemaVersion::V7),
+            8 => Ok(IrSchemaVersion::V8),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -260,6 +263,7 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
                     | IrSchemaVersion::V5
                     | IrSchemaVersion::V6
                     | IrSchemaVersion::V7
+                    | IrSchemaVersion::V8
             )
         }
     }
@@ -275,12 +279,16 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V5
                     | IrSchemaVersion::V6
                     | IrSchemaVersion::V7
+                    | IrSchemaVersion::V8
             )
         }
         NodeKind::Circle | NodeKind::Diamond => {
             matches!(
                 version,
-                IrSchemaVersion::V5 | IrSchemaVersion::V6 | IrSchemaVersion::V7
+                IrSchemaVersion::V5
+                    | IrSchemaVersion::V6
+                    | IrSchemaVersion::V7
+                    | IrSchemaVersion::V8
             )
         }
     }
@@ -289,7 +297,10 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
 fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
     match line {
         LineStyle::Solid | LineStyle::Dashed => true,
-        LineStyle::Dotted => matches!(version, IrSchemaVersion::V6 | IrSchemaVersion::V7),
+        LineStyle::Dotted => matches!(
+            version,
+            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8
+        ),
     }
 }
 
@@ -297,12 +308,20 @@ fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
     let default_presentation = edge.from_arrow == ArrowType::None
         && edge.line == LineStyle::Solid
         && edge.weight == LineWeight::Normal;
-    (default_presentation || matches!(version, IrSchemaVersion::V6 | IrSchemaVersion::V7))
+    (default_presentation
+        || matches!(
+            version,
+            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8
+        ))
         && line_style_supported_in(version, edge.line)
 }
 
+fn edge_ports_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
+    (edge.from_port.is_none() && edge.to_port.is_none()) || version == IrSchemaVersion::V8
+}
+
 fn containers_supported_in(version: IrSchemaVersion, containers: &[Container]) -> bool {
-    containers.is_empty() || version == IrSchemaVersion::V7
+    containers.is_empty() || matches!(version, IrSchemaVersion::V7 | IrSchemaVersion::V8)
 }
 
 fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
@@ -317,6 +336,10 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
                     .edges
                     .iter()
                     .all(|edge| edge_supported_in(version, edge))
+                && graph
+                    .edges
+                    .iter()
+                    .all(|edge| edge_ports_supported_in(version, edge))
                 && containers_supported_in(version, &graph.containers)
         }
         Diagram::Class(class) => {
@@ -430,7 +453,21 @@ impl<'de> Deserialize<'de> for IrDocument {
             IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V7 => {
                 if !diagram_supported_in(IrSchemaVersion::V7, &wire.diagram) {
                     return Err(de::Error::custom(
-                        "IR schema version 7 does not support this diagram direction, node kind, edge presentation, or container",
+                        "IR schema version 7 does not support this diagram direction, node kind, edge presentation, container, or edge port",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V8 => {
+                if !diagram_supported_in(IrSchemaVersion::V8, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 8 does not support this diagram direction, node kind, edge presentation, container, or edge port",
                     ));
                 }
                 Ok(Self {
@@ -442,7 +479,7 @@ impl<'de> Deserialize<'de> for IrDocument {
                 })
             }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, 5, 6, and 7 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, 6, 7, and 8 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -733,6 +770,20 @@ pub enum ArrowType {
     None,
 }
 
+/// The compass side of a node that an edge endpoint attaches to.
+///
+/// Only the four cardinal sides are defined in schema V8. Ordinal (corner)
+/// sides are a future extension gated by a later schema version; this enum is
+/// `#[non_exhaustive]` so adding them stays a non-breaking Rust change.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Port {
+    North,
+    East,
+    South,
+    West,
+}
+
 /// A directed edge from one node to another, with an optional label.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
@@ -745,6 +796,11 @@ pub struct Edge {
     pub from_arrow: ArrowType,
     pub line: LineStyle,
     pub weight: LineWeight,
+    /// Compass side of the source node this edge attaches to. `None` = default
+    /// boundary clipping toward the adjacent route point (pre-V8 behavior).
+    pub from_port: Option<Port>,
+    /// Compass side of the target node this edge attaches to.
+    pub to_port: Option<Port>,
 }
 
 impl Edge {
@@ -762,6 +818,8 @@ impl Edge {
             from_arrow: ArrowType::None,
             line: LineStyle::Solid,
             weight: LineWeight::Normal,
+            from_port: None,
+            to_port: None,
         }
     }
 
@@ -783,6 +841,33 @@ impl Edge {
             from_arrow,
             line,
             weight,
+            from_port: None,
+            to_port: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_ports(
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
+        label: Option<String>,
+        arrow: ArrowType,
+        from_arrow: ArrowType,
+        line: LineStyle,
+        weight: LineWeight,
+        from_port: Option<Port>,
+        to_port: Option<Port>,
+    ) -> Self {
+        Edge {
+            from: from.into(),
+            to: to.into(),
+            label,
+            arrow,
+            from_arrow,
+            line,
+            weight,
+            from_port,
+            to_port,
         }
     }
 }
@@ -1173,6 +1258,7 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V5: &str = r#"{"schema_version":5,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V6: &str = r#"{"schema_version":6,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V7: &str = r#"{"schema_version":7,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V8: &str = r#"{"schema_version":8,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -1216,10 +1302,15 @@ mod tests {
             serde_json::from_value::<IrSchemaVersion>(json!(7)).unwrap(),
             IrSchemaVersion::V7
         );
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(8)).unwrap_err();
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V8).unwrap(), json!(8));
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(8)).unwrap(),
+            IrSchemaVersion::V8
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(9)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 8"));
+            .contains("unsupported IR schema version 9"));
     }
 
     #[test]
@@ -1242,7 +1333,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V7);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V8);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1250,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v6_documents_are_upgraded_to_v7() {
+    fn v1_through_v7_documents_are_upgraded_to_v8() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
@@ -1258,13 +1349,14 @@ mod tests {
             EMPTY_GRAPH_DOCUMENT_V4,
             EMPTY_GRAPH_DOCUMENT_V5,
             EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V7);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V8);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V7
+                EMPTY_GRAPH_DOCUMENT_V8
             );
         }
 
@@ -1527,6 +1619,75 @@ mod tests {
     }
 
     #[test]
+    fn ports_require_schema_v8() {
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph.nodes.insert("a".into(), Node::new("a", "A"));
+        graph.nodes.insert("b".into(), Node::new("b", "B"));
+        graph.edges.push(Edge::with_ports(
+            "a",
+            "b",
+            None,
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            Some(Port::North),
+            Some(Port::South),
+        ));
+        let diagram = Diagram::Graph(graph);
+
+        // V1 is omitted: its wire arm rejects the injected document before the
+        // port gate (the V1 fixture lacks the `annotations` field), so only
+        // V2-V7 exercise `edge_ports_supported_in` non-vacuously.
+        for fixture in [
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+            EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert!(
+                serde_json::from_value::<IrDocument>(value).is_err(),
+                "legacy schema accepted a non-None port"
+            );
+        }
+
+        let mut value: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V8).unwrap();
+        value["diagram"] = serde_json::to_value(&diagram).unwrap();
+        assert_eq!(
+            serde_json::from_value::<IrDocument>(value)
+                .unwrap()
+                .into_diagram(),
+            diagram
+        );
+    }
+
+    #[test]
+    fn all_ports_round_trip() {
+        let ports = [Port::North, Port::East, Port::South, Port::West];
+        for from_port in ports {
+            for to_port in ports {
+                let edge = Edge::with_ports(
+                    "a",
+                    "b",
+                    None,
+                    ArrowType::Triangle,
+                    ArrowType::None,
+                    LineStyle::Solid,
+                    LineWeight::Normal,
+                    Some(from_port),
+                    Some(to_port),
+                );
+                let json = serde_json::to_string(&edge).unwrap();
+                assert_eq!(serde_json::from_str::<Edge>(&json).unwrap(), edge);
+            }
+        }
+    }
+
+    #[test]
     fn nested_container_wire_representation_round_trips() {
         let mut child = Container::new("inner", None);
         child.members.push("b".into());
@@ -1630,9 +1791,9 @@ mod tests {
 
     #[test]
     fn document_rejects_unknown_versions_and_missing_required_fields() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V7).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V8).unwrap();
 
-        for version in [0, 1, 8] {
+        for version in [0, 1, 9] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -1820,7 +1981,7 @@ mod tests {
         let fixtures = [
             (
                 Diagram::Graph(graph),
-                r#"{"Graph":{"direction":"Down","nodes":{"a":{"id":"a","label":"A","kind":"Default"}},"edges":[{"from":"a","to":"a","label":"loop","arrow":"Triangle","from_arrow":"None","line":"Solid","weight":"Normal"}],"containers":[]}}"#,
+                r#"{"Graph":{"direction":"Down","nodes":{"a":{"id":"a","label":"A","kind":"Default"}},"edges":[{"from":"a","to":"a","label":"loop","arrow":"Triangle","from_arrow":"None","line":"Solid","weight":"Normal","from_port":null,"to_port":null}],"containers":[]}}"#,
             ),
             (
                 Diagram::Sequence(sequence),

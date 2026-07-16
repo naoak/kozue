@@ -80,6 +80,16 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
         | kozue_ir::NodeKind::Diamond => Ok(()),
         _ => mismatch("unsupported future graph node kind"),
     };
+    let port = |value: Option<kozue_ir::Port>| match value {
+        None
+        | Some(
+            kozue_ir::Port::North
+            | kozue_ir::Port::East
+            | kozue_ir::Port::South
+            | kozue_ir::Port::West,
+        ) => Ok(()),
+        _ => mismatch("unsupported future port"),
+    };
     match semantic {
         SemanticLayout::Graph(graph) => {
             for node in &graph.nodes {
@@ -90,6 +100,8 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
                 arrow(edge.from_arrow)?;
                 line(edge.line)?;
                 weight(edge.weight)?;
+                port(edge.from_port)?;
+                port(edge.to_port)?;
             }
         }
         SemanticLayout::Sequence(sequence) => {
@@ -164,6 +176,8 @@ fn validate_contract(
                     || edge.from_arrow != placed.from_arrow
                     || edge.line != placed.line
                     || edge.weight != placed.weight
+                    || edge.from_port != placed.from_port
+                    || edge.to_port != placed.to_port
                 {
                     return mismatch("graph edge index/semantics mismatch");
                 }
@@ -895,6 +909,25 @@ mod tests {
         };
         layout.edges[0].weight = LineWeight::Thick;
         assert!(weight.export_input(&graph).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_graph_edge_port_mismatches() {
+        let graph = graph_with_edge(None);
+
+        let mut from_port = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut from_port.semantic else {
+            unreachable!()
+        };
+        layout.edges[0].from_port = Some(kozue_ir::Port::North);
+        assert!(from_port.export_input(&graph).is_err());
+
+        let mut to_port = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut to_port.semantic else {
+            unreachable!()
+        };
+        layout.edges[0].to_port = Some(kozue_ir::Port::South);
+        assert!(to_port.export_input(&graph).is_err());
     }
 
     fn graph_with_container() -> Diagram {

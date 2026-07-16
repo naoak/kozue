@@ -79,6 +79,12 @@ pub struct EdgeLayout {
     pub line: kozue_ir::LineStyle,
     /// Stroke weight of this edge's line (from [`Edge::weight`](kozue_ir::Edge)).
     pub weight: kozue_ir::LineWeight,
+    /// Compass side of the source node this edge attaches to (from
+    /// [`Edge::from_port`](kozue_ir::Edge)). `None` = default boundary clipping.
+    pub from_port: Option<kozue_ir::Port>,
+    /// Compass side of the target node this edge attaches to (from
+    /// [`Edge::to_port`](kozue_ir::Edge)).
+    pub to_port: Option<kozue_ir::Port>,
     /// Routing points of the edge polyline in scene coordinates, in source-to-target order.
     /// These are the clipped endpoints and any bend points through dummy nodes.
     pub route: Vec<Point>,

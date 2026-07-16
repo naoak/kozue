@@ -53,7 +53,7 @@
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, Port};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
     StateLayout,
@@ -266,11 +266,14 @@ fn waypoints_xml(route: &[kozue_layout::semantic::Point]) -> String {
 /// checked) when they differ from their defaults — the caller has already
 /// gone through [`kozue_layout::validate_export_semantics`], so future enum
 /// variants never reach here.
+#[allow(clippy::too_many_arguments)]
 fn graph_edge_style(
     arrow: ArrowType,
     from_arrow: ArrowType,
     line: LineStyle,
     weight: LineWeight,
+    from_port: Option<Port>,
+    to_port: Option<Port>,
 ) -> Result<String, RenderError> {
     let mut style = String::from("edgeStyle=orthogonalEdgeStyle;");
     if arrow == ArrowType::None {
@@ -298,7 +301,40 @@ fn graph_edge_style(
             })
         }
     }
+    // Compass port attachment. Appended only when present, in a fixed order
+    // (source exit, then target entry), so the default (both `None`) case
+    // stays byte-identical to the pre-port output.
+    if let Some(port) = from_port {
+        style.push_str(&port_exit_entry("exit", port)?);
+    }
+    if let Some(port) = to_port {
+        style.push_str(&port_exit_entry("entry", port)?);
+    }
     Ok(style)
+}
+
+/// Map a compass [`Port`] to its draw.io `exitX/exitY` or `entryX/entryY`
+/// fractional connection-point attributes, e.g. `exitX=1;exitY=0.5;exitDx=0;exitDy=0;`.
+///
+/// Fractions use the minimal decimal representation (`0`/`0.5`/`1`), matching
+/// the existing state-diagram self-loop precedent rather than the 2-decimal
+/// coordinate formatter [`f`]. Future `#[non_exhaustive]` [`Port`] variants are
+/// explicit errors rather than a silent default.
+fn port_exit_entry(prefix: &str, port: Port) -> Result<String, RenderError> {
+    let (x, y) = match port {
+        Port::North => ("0.5", "0"),
+        Port::East => ("1", "0.5"),
+        Port::South => ("0.5", "1"),
+        Port::West => ("0", "0.5"),
+        other => {
+            return Err(RenderError::InvalidSemantic {
+                description: format!("unsupported future port: {other:?}"),
+            })
+        }
+    };
+    Ok(format!(
+        "{prefix}X={x};{prefix}Y={y};{prefix}Dx=0;{prefix}Dy=0;"
+    ))
 }
 
 fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
@@ -371,7 +407,14 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
         let src_attr = format!(" source=\"n{src_idx}\"");
         let tgt_attr = format!(" target=\"n{tgt_idx}\"");
 
-        let style = graph_edge_style(edge.arrow, edge.from_arrow, edge.line, edge.weight)?;
+        let style = graph_edge_style(
+            edge.arrow,
+            edge.from_arrow,
+            edge.line,
+            edge.weight,
+            edge.from_port,
+            edge.to_port,
+        )?;
 
         let label_value = xml_escape(edge.label.as_deref().unwrap_or(""));
         let wp = waypoints_xml(&edge.route);
@@ -1387,7 +1430,9 @@ mod tests {
                 ArrowType::Triangle,
                 ArrowType::None,
                 LineStyle::Solid,
-                LineWeight::Normal
+                LineWeight::Normal,
+                None,
+                None,
             )
             .unwrap(),
             "edgeStyle=orthogonalEdgeStyle;"
@@ -1397,7 +1442,9 @@ mod tests {
                 ArrowType::None,
                 ArrowType::None,
                 LineStyle::Solid,
-                LineWeight::Normal
+                LineWeight::Normal,
+                None,
+                None,
             )
             .unwrap(),
             "edgeStyle=orthogonalEdgeStyle;endArrow=none;"
@@ -1411,6 +1458,8 @@ mod tests {
             ArrowType::Triangle,
             LineStyle::Solid,
             LineWeight::Normal,
+            None,
+            None,
         )
         .unwrap();
         assert!(style.contains("startArrow=classic;"), "style: {style}");
@@ -1423,6 +1472,8 @@ mod tests {
             ArrowType::None,
             LineStyle::Dashed,
             LineWeight::Normal,
+            None,
+            None,
         )
         .unwrap();
         assert!(dashed.contains("dashed=1;"), "dashed style: {dashed}");
@@ -1433,6 +1484,8 @@ mod tests {
             ArrowType::None,
             LineStyle::Dotted,
             LineWeight::Normal,
+            None,
+            None,
         )
         .unwrap();
         assert!(
@@ -1448,9 +1501,55 @@ mod tests {
             ArrowType::None,
             LineStyle::Solid,
             LineWeight::Thick,
+            None,
+            None,
         )
         .unwrap();
         assert!(style.contains("strokeWidth=3;"), "style: {style}");
+    }
+
+    #[test]
+    fn graph_edge_ports_append_exit_entry_in_fixed_order() {
+        let style = graph_edge_style(
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            Some(Port::East),
+            Some(Port::West),
+        )
+        .unwrap();
+        assert_eq!(
+            style,
+            "edgeStyle=orthogonalEdgeStyle;\
+             exitX=1;exitY=0.5;exitDx=0;exitDy=0;\
+             entryX=0;entryY=0.5;entryDx=0;entryDy=0;"
+        );
+    }
+
+    #[test]
+    fn graph_edge_ports_render_through_full_pipeline() {
+        use kozue_ir::{
+            ArrowType, Diagram, Direction, Edge, GraphDiagram, LineStyle, LineWeight, Node,
+        };
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        g.edges.push(Edge::with_ports(
+            "a",
+            "b",
+            None,
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            Some(Port::East),
+            Some(Port::West),
+        ));
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        let xml = render(&out.semantic).expect("render");
+        assert!(xml.contains("exitX=1;exitY=0.5;"), "{xml}");
+        assert!(xml.contains("entryX=0;entryY=0.5;"), "{xml}");
     }
 
     #[test]

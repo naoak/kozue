@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 159.40 421.91" width="159.40" height="421.91">
+  <rect x="-20.00" y="-20.00" width="159.40" height="421.91" fill="#ffffff"/>
+  <rect x="42.76" y="0.00" width="50.95" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="68.23" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">A</text>
+  <polyline points="64.31,171.35 62.73,181.29 58.17,190.25 51.05,197.37 42.09,201.93 32.15,203.51 22.22,201.93 13.25,197.37 6.14,190.25 1.57,181.29 0.00,171.35 1.57,161.42 6.14,152.45 13.25,145.34 22.22,140.77 32.15,139.20 42.09,140.77 51.05,145.34 58.17,152.45 62.73,161.42 64.31,171.35" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="32.15" y="176.95" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">B</text>
+  <polyline points="68.23,303.51 119.40,342.71 68.23,381.91 17.06,342.71 68.23,303.51" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="68.23" y="348.31" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">C</text>
+  <polyline points="42.76,19.60 33.04,129.24" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="32.15,139.20 28.06,128.80 38.02,129.68" fill="#000000" stroke="none"/>
+  <text x="37.45" y="75.40" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">x</text>
+  <polyline points="32.15,203.51 64.84,294.10" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="68.23,303.51 60.13,295.80 69.54,292.40" fill="#000000" stroke="none"/>
+  <polyline points="72.89,39.20 104.31,171.35 77.40,299.16" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="75.34,308.95 72.50,298.13 82.29,300.19" fill="#000000" stroke="none"/>
+</svg>

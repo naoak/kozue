@@ -1,0 +1,8 @@
+graph ports {
+  a: "A"
+  b shape circle: "B"
+  c shape diamond: "C"
+  a.west -> b.north : "x"
+  b.south -> c.north
+  a -> c line dashed
+}
