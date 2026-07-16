@@ -3,9 +3,7 @@
 //! lines carrying UML end markers.
 
 use indexmap::IndexMap;
-use kozue_ir::{
-    ClassDiagram, Direction, ElementId, LineStyle, Path, Scene, SceneItem, Text, TextAlign,
-};
+use kozue_ir::{ClassDiagram, ElementId, LineStyle, Path, Scene, SceneItem, Text, TextAlign};
 
 use crate::boxes::{self, BoxSpec, ROW_FONT_SIZE};
 use crate::markers;
@@ -74,7 +72,7 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
         })
         .collect();
 
-    let horizontal = c.direction == Direction::Right;
+    let (horizontal, reverse_main) = crate::direction_axes(c.direction)?;
     let sizes: Vec<(f64, f64)> = specs
         .iter()
         .map(|s| {
@@ -108,11 +106,18 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
         layer_size[l] = size;
         cursor += size + layer_gap;
     }
+    let total_main = if nl == 0 { 0.0 } else { cursor - layer_gap };
 
     let placed: Vec<Placed> = (0..n)
         .map(|v| {
             let (w, h) = (specs[v].width, specs[v].height);
-            let main = layer_start[lay.layer_of[v]];
+            let main_size = if horizontal { w } else { h };
+            let main = crate::orient_main_start(
+                layer_start[lay.layer_of[v]],
+                main_size,
+                total_main,
+                reverse_main,
+            );
             let (x, y) = if horizontal {
                 (main, cross[v] - h / 2.0)
             } else {
@@ -131,7 +136,8 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
     let point_of = |v: usize| -> (f64, f64) {
         if lay.is_dummy[v] {
             let l = lay.layer_of[v];
-            let main = layer_start[l] + layer_size[l] / 2.0;
+            let forward = layer_start[l] + layer_size[l] / 2.0;
+            let main = crate::orient_main_center(forward, total_main, reverse_main);
             if horizontal {
                 (main, cross[v])
             } else {

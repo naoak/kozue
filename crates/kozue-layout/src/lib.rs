@@ -44,6 +44,34 @@ pub(crate) const LAYER_GAP_RIGHT: f64 = 150.0;
 pub(crate) const ARROW_LEN: f64 = 10.0;
 pub(crate) const ARROW_HALF_W: f64 = 5.0;
 
+pub(crate) fn direction_axes(direction: Direction) -> Result<(bool, bool), LayoutError> {
+    match direction {
+        Direction::Down => Ok((false, false)),
+        Direction::Right => Ok((true, false)),
+        Direction::Up => Ok((false, true)),
+        Direction::Left => Ok((true, true)),
+        _ => Err(LayoutError {
+            message: format!("unsupported layout direction: {direction:?}"),
+        }),
+    }
+}
+
+pub(crate) fn orient_main_start(forward: f64, size: f64, total: f64, reverse: bool) -> f64 {
+    if reverse {
+        total - forward - size
+    } else {
+        forward
+    }
+}
+
+pub(crate) fn orient_main_center(forward: f64, total: f64, reverse: bool) -> f64 {
+    if reverse {
+        total - forward
+    } else {
+        forward
+    }
+}
+
 /// An error produced by the layout pass.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutError {
@@ -293,7 +321,7 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         .collect();
 
     // Map (width, height) onto (cross, main) axes per direction.
-    let horizontal = g.direction == Direction::Right;
+    let (horizontal, reverse_main) = direction_axes(g.direction)?;
     let sizes: Vec<(f64, f64)> = boxes
         .iter()
         .map(|&(w, h, _)| if horizontal { (h, w) } else { (w, h) })
@@ -325,12 +353,19 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         layer_size[l] = size;
         cursor += size + layer_gap;
     }
+    let total_main = if nl == 0 { 0.0 } else { cursor - layer_gap };
 
     // Place real nodes.
     let placed: Vec<Placed> = (0..n)
         .map(|v| {
             let (w, h, ref label) = boxes[v];
-            let main = layer_start[lay.layer_of[v]];
+            let main_size = if horizontal { w } else { h };
+            let main = orient_main_start(
+                layer_start[lay.layer_of[v]],
+                main_size,
+                total_main,
+                reverse_main,
+            );
             let (x, y) = if horizontal {
                 (main, cross[v] - h / 2.0)
             } else {
@@ -351,7 +386,8 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     let point_of = |v: usize| -> (f64, f64) {
         if lay.is_dummy[v] {
             let l = lay.layer_of[v];
-            let main = layer_start[l] + layer_size[l] / 2.0;
+            let forward = layer_start[l] + layer_size[l] / 2.0;
+            let main = orient_main_center(forward, total_main, reverse_main);
             if horizontal {
                 (main, cross[v])
             } else {
@@ -693,6 +729,240 @@ mod tests {
         let scene = layout(&Diagram::Graph(g)).expect("layout");
         assert!(scene.width > 0.0);
         assert!(scene.height > 0.0);
+    }
+
+    fn three_node_chain(direction: Direction) -> GraphDiagram {
+        let mut graph = GraphDiagram::new(direction);
+        for (id, label) in [("a", "A"), ("b", "A much wider middle label"), ("c", "C")] {
+            graph.nodes.insert(id.into(), node(id, label));
+        }
+        graph.edges.push(edge("a", "b"));
+        graph.edges.push(edge("b", "c"));
+        graph.edges.push(edge("a", "c"));
+        graph
+    }
+
+    #[test]
+    fn graph_four_directions_orient_nodes_and_long_edge_routes() {
+        for direction in [
+            Direction::Down,
+            Direction::Right,
+            Direction::Up,
+            Direction::Left,
+        ] {
+            let diagram = Diagram::Graph(three_node_chain(direction));
+            let first = layout_full(&diagram).expect("layout");
+            let second = layout_full(&diagram).expect("layout");
+            assert_eq!(first, second, "{direction:?} must be deterministic");
+
+            let SemanticLayout::Graph(semantic) = first.semantic else {
+                panic!("expected graph layout")
+            };
+            let centers: Vec<(f64, f64)> = semantic
+                .nodes
+                .iter()
+                .map(|node| {
+                    (
+                        node.rect.x + node.rect.width / 2.0,
+                        node.rect.y + node.rect.height / 2.0,
+                    )
+                })
+                .collect();
+            match direction {
+                Direction::Down => assert!(centers[0].1 < centers[1].1),
+                Direction::Right => assert!(centers[0].0 < centers[1].0),
+                Direction::Up => assert!(centers[0].1 > centers[1].1),
+                Direction::Left => assert!(centers[0].0 > centers[1].0),
+                _ => unreachable!(),
+            }
+
+            let long_route = &semantic.edges[2].route;
+            assert_eq!(semantic.edges[2].from.id.as_str(), "a");
+            assert_eq!(semantic.edges[2].to.id.as_str(), "c");
+            assert!(long_route.len() >= 3, "long edge must pass through a dummy");
+            assert!(point_on_rect_border(
+                long_route.first().unwrap().x,
+                long_route.first().unwrap().y,
+                &semantic.nodes[0].rect
+            ));
+            assert!(point_on_rect_border(
+                long_route.last().unwrap().x,
+                long_route.last().unwrap().y,
+                &semantic.nodes[2].rect
+            ));
+            for point in long_route {
+                assert!(point.x >= -1e-6 && point.x <= first.scene.width + 1e-6);
+                assert!(point.y >= -1e-6 && point.y <= first.scene.height + 1e-6);
+            }
+            for pair in long_route.windows(2) {
+                match direction {
+                    Direction::Down => assert!(pair[0].y <= pair[1].y),
+                    Direction::Right => assert!(pair[0].x <= pair[1].x),
+                    Direction::Up => assert!(pair[0].y >= pair[1].y),
+                    Direction::Left => assert!(pair[0].x >= pair[1].x),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn point_on_rect_border(x: f64, y: f64, rect: &Rect) -> bool {
+        let epsilon = 1e-6;
+        let within_x = x >= rect.x - epsilon && x <= rect.x + rect.width + epsilon;
+        let within_y = y >= rect.y - epsilon && y <= rect.y + rect.height + epsilon;
+        let on_vertical =
+            (x - rect.x).abs() <= epsilon || (x - (rect.x + rect.width)).abs() <= epsilon;
+        let on_horizontal =
+            (y - rect.y).abs() <= epsilon || (y - (rect.y + rect.height)).abs() <= epsilon;
+        within_x && within_y && (on_vertical || on_horizontal)
+    }
+
+    fn assert_approx(left: f64, right: f64) {
+        assert!(
+            (left - right).abs() <= 1e-6,
+            "expected {left} to approximately equal {right}"
+        );
+    }
+
+    #[test]
+    fn graph_left_is_horizontal_mirror_with_variable_node_widths() {
+        let right = layout_full(&Diagram::Graph(three_node_chain(Direction::Right))).unwrap();
+        let left = layout_full(&Diagram::Graph(three_node_chain(Direction::Left))).unwrap();
+        let SemanticLayout::Graph(right_graph) = right.semantic else {
+            panic!("expected graph layout")
+        };
+        let SemanticLayout::Graph(left_graph) = left.semantic else {
+            panic!("expected graph layout")
+        };
+
+        assert!(right_graph.nodes[1].rect.width > right_graph.nodes[0].rect.width);
+        let right_min = right_graph
+            .nodes
+            .iter()
+            .map(|node| node.rect.x)
+            .fold(f64::INFINITY, f64::min);
+        let left_max = left_graph
+            .nodes
+            .iter()
+            .map(|node| node.rect.x + node.rect.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for (forward, reverse) in right_graph.nodes.iter().zip(&left_graph.nodes) {
+            assert_eq!(forward.id, reverse.id);
+            assert_approx(
+                forward.rect.x - right_min,
+                left_max - reverse.rect.x - reverse.rect.width,
+            );
+        }
+    }
+
+    fn three_class_chain(direction: Direction) -> kozue_ir::ClassDiagram {
+        let mut class = kozue_ir::ClassDiagram::new(direction);
+        let a = kozue_ir::ClassNode::new("a", "A");
+        let mut b = kozue_ir::ClassNode::new("b", "B");
+        b.attributes = vec!["+first: String".into(), "+second: usize".into()];
+        b.methods = vec!["+run()".into(), "+stop()".into()];
+        let mut c = kozue_ir::ClassNode::new("c", "C");
+        c.attributes = vec!["+value: bool".into()];
+        for node in [a, b, c] {
+            class.classes.insert(node.id.clone(), node);
+        }
+        for (from, to) in [("a", "b"), ("b", "c"), ("a", "c")] {
+            class.relations.push(kozue_ir::ClassRelation::new(
+                from,
+                to,
+                kozue_ir::EndMarker::None,
+                kozue_ir::EndMarker::OpenArrow,
+                kozue_ir::LineStyle::Solid,
+                None,
+                None,
+                None,
+            ));
+        }
+        class
+    }
+
+    #[test]
+    fn class_layout_respects_all_four_directions() {
+        for direction in [
+            Direction::Down,
+            Direction::Right,
+            Direction::Up,
+            Direction::Left,
+        ] {
+            let output =
+                layout_full(&Diagram::Class(three_class_chain(direction))).expect("class layout");
+            let SemanticLayout::Class(semantic) = output.semantic else {
+                panic!("expected class layout")
+            };
+            let a = semantic.boxes[0].rect.clone();
+            let b = semantic.boxes[1].rect.clone();
+            match direction {
+                Direction::Down => assert!(a.y < b.y),
+                Direction::Right => assert!(a.x < b.x),
+                Direction::Up => assert!(a.y > b.y),
+                Direction::Left => assert!(a.x > b.x),
+                _ => unreachable!(),
+            }
+
+            let long_relation = &semantic.relations[2];
+            assert_eq!(long_relation.from.as_str(), "a");
+            assert_eq!(long_relation.to.as_str(), "c");
+            assert!(long_relation.points.len() >= 3);
+            assert!(point_on_rect_border(
+                long_relation.points.first().unwrap().0,
+                long_relation.points.first().unwrap().1,
+                &semantic.boxes[0].rect
+            ));
+            assert!(point_on_rect_border(
+                long_relation.points.last().unwrap().0,
+                long_relation.points.last().unwrap().1,
+                &semantic.boxes[2].rect
+            ));
+            for &(x, y) in &long_relation.points {
+                assert!(x >= -1e-6 && x <= output.scene.width + 1e-6);
+                assert!(y >= -1e-6 && y <= output.scene.height + 1e-6);
+            }
+            for pair in long_relation.points.windows(2) {
+                match direction {
+                    Direction::Down => assert!(pair[0].1 <= pair[1].1),
+                    Direction::Right => assert!(pair[0].0 <= pair[1].0),
+                    Direction::Up => assert!(pair[0].1 >= pair[1].1),
+                    Direction::Left => assert!(pair[0].0 >= pair[1].0),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn class_up_is_vertical_mirror_with_variable_compartment_heights() {
+        let down = layout_full(&Diagram::Class(three_class_chain(Direction::Down))).unwrap();
+        let up = layout_full(&Diagram::Class(three_class_chain(Direction::Up))).unwrap();
+        let SemanticLayout::Class(down_class) = down.semantic else {
+            panic!("expected class layout")
+        };
+        let SemanticLayout::Class(up_class) = up.semantic else {
+            panic!("expected class layout")
+        };
+
+        assert!(down_class.boxes[1].rect.height > down_class.boxes[0].rect.height);
+        let down_min = down_class
+            .boxes
+            .iter()
+            .map(|node| node.rect.y)
+            .fold(f64::INFINITY, f64::min);
+        let up_max = up_class
+            .boxes
+            .iter()
+            .map(|node| node.rect.y + node.rect.height)
+            .fold(f64::NEG_INFINITY, f64::max);
+        for (forward, reverse) in down_class.boxes.iter().zip(&up_class.boxes) {
+            assert_eq!(forward.id, reverse.id);
+            assert_approx(
+                forward.rect.y - down_min,
+                up_max - reverse.rect.y - reverse.rect.height,
+            );
+        }
     }
 
     #[test]

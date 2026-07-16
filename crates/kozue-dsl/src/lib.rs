@@ -10,7 +10,7 @@
 //! ```text
 //! graph <name> {
 //!   // line comments are allowed anywhere
-//!   direction down|right
+//!   direction down|right|up|left
 //!   <id>: "label"
 //!   <a> -> <b> : "label"
 //! }
@@ -203,11 +203,13 @@ fn string_lit_spanned(
 }
 
 fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
-    // direction statement: `direction down|right`
+    // direction statement: `direction down|right|up|left`
     let direction_kw = text::keyword("direction").padded_by(kzd_ws());
     let direction_val = text::keyword("down")
         .to(Direction::Down)
-        .or(text::keyword("right").to(Direction::Right));
+        .or(text::keyword("right").to(Direction::Right))
+        .or(text::keyword("up").to(Direction::Up))
+        .or(text::keyword("left").to(Direction::Left));
 
     let direction = direction_kw
         .ignore_then(
@@ -586,7 +588,8 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             }
             Stmt::DirectionError(span) => {
                 errors.push(CompileError {
-                    message: "expected `down` or `right` after `direction`".to_string(),
+                    message: "expected `down`, `right`, `up`, or `left` after `direction`"
+                        .to_string(),
                     span: span.clone(),
                     secondary: None,
                 });
@@ -727,7 +730,8 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             }
             Stmt::DirectionError(span) => {
                 errors.push(CompileError {
-                    message: "expected `down` or `right` after `direction`".to_string(),
+                    message: "expected `down`, `right`, `up`, or `left` after `direction`"
+                        .to_string(),
                     span: span.clone(),
                     secondary: None,
                 });
@@ -915,7 +919,8 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             }
             Stmt::DirectionError(span) => {
                 errors.push(CompileError {
-                    message: "expected `down` or `right` after `direction`".to_string(),
+                    message: "expected `down`, `right`, `up`, or `left` after `direction`"
+                        .to_string(),
                     span: span.clone(),
                     secondary: None,
                 });
@@ -1433,6 +1438,8 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         let dir_str = match &ast.stmts[idx] {
             Stmt::Direction(Direction::Down, _) => "direction down",
             Stmt::Direction(Direction::Right, _) => "direction right",
+            Stmt::Direction(Direction::Up, _) => "direction up",
+            Stmt::Direction(Direction::Left, _) => "direction left",
             _ => unreachable!(),
         };
         for lc in &stmt_leading[idx] {
@@ -1711,12 +1718,24 @@ mod tests {
     }
 
     #[test]
+    fn direction_up_and_left() {
+        for (keyword, expected) in [("up", Direction::Up), ("left", Direction::Left)] {
+            let source = format!("graph d {{ direction {keyword}\n a\n b\n a -> b }}");
+            let Diagram::Graph(graph) = parse(&source).expect("should parse") else {
+                panic!("expected graph")
+            };
+            assert_eq!(graph.direction, expected);
+        }
+    }
+
+    #[test]
     fn direction_invalid_value_is_error() {
         let src = "graph d { direction dwn\n a\n b }";
         let err = parse(src).expect_err("should fail on invalid direction value");
         assert!(
-            err.iter()
-                .any(|e| e.message.contains("expected `down` or `right`")),
+            err.iter().any(|e| e
+                .message
+                .contains("expected `down`, `right`, `up`, or `left`")),
             "got: {err:?}"
         );
     }
@@ -1836,8 +1855,9 @@ mod tests {
 }"#;
         let err = parse(src).expect_err("bogus direction in sequence should be an error");
         assert!(
-            err.iter()
-                .any(|e| e.message.contains("expected `down` or `right`")),
+            err.iter().any(|e| e
+                .message
+                .contains("expected `down`, `right`, `up`, or `left`")),
             "got: {err:?}"
         );
     }
@@ -2124,6 +2144,18 @@ mod tests {
         );
         let formatted2 = format_kzd(&formatted).expect("second format");
         assert_eq!(formatted, formatted2, "fmt must be idempotent");
+    }
+
+    #[test]
+    fn fmt_direction_up_and_left_is_idempotent() {
+        for keyword in ["up", "left"] {
+            let source = format!(
+                "graph p {{\n direction {keyword}\n src: \"S\"\n dst: \"D\"\n src -> dst\n}}"
+            );
+            let formatted = format_kzd(&source).expect("should format");
+            assert!(formatted.contains(&format!("direction {keyword}")));
+            assert_eq!(format_kzd(&formatted).expect("second format"), formatted);
+        }
     }
 
     #[test]

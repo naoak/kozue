@@ -30,6 +30,27 @@ fn compile(src: &str) -> String {
     kozue_render_svg::render(&scene)
 }
 
+#[test]
+fn native_and_mermaid_reverse_directions_produce_equivalent_ir() {
+    let cases = [
+        (
+            "graph d { direction up\n a: \"A\"\n b: \"B\"\n a -> b }",
+            "flowchart BT\n  a[A] --> b[B]\n",
+        ),
+        (
+            "graph d { direction left\n a: \"A\"\n b: \"B\"\n a -> b }",
+            "flowchart RL\n  a[A] --> b[B]\n",
+        ),
+    ];
+
+    for (native, mermaid) in cases {
+        assert_eq!(
+            kozue_dsl::parse(native).expect("native parse"),
+            kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+        );
+    }
+}
+
 const GOLDEN_CASES: &[&str] = &["chain", "branch", "right", "cycle", "skip", "wide_right"];
 
 const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];

@@ -25,8 +25,7 @@
 //!
 //! - [`Diagram::Graph`](kozue_ir::Diagram::Graph) — a `digraph`. Each node
 //!   becomes a rounded-box statement; each edge becomes a `->` statement.
-//!   [`Direction::Right`](kozue_ir::Direction::Right) maps to `rankdir=LR`,
-//!   [`Direction::Down`](kozue_ir::Direction::Down) to `rankdir=TB`.
+//!   Down / Right / Up / Left map to `rankdir=TB` / `LR` / `BT` / `RL`.
 //! - [`Diagram::State`](kozue_ir::Diagram::State) — a `digraph` where named
 //!   states are rounded boxes, the initial pseudostate is a filled `point`, and
 //!   the final pseudostate is a `doublecircle`. Transitions become `->`
@@ -77,6 +76,11 @@ pub enum RenderError {
         /// Debug description of the unresolved endpoint.
         endpoint: String,
     },
+    /// A future IR direction has no defined Graphviz rank direction mapping.
+    UnknownDirection {
+        /// Debug description of the unresolved direction.
+        direction: String,
+    },
 }
 
 impl std::fmt::Display for RenderError {
@@ -90,6 +94,9 @@ impl std::fmt::Display for RenderError {
             }
             RenderError::UnknownEndpoint { endpoint } => {
                 write!(f, "unresolved transition endpoint: {endpoint}")
+            }
+            RenderError::UnknownDirection { direction } => {
+                write!(f, "unsupported DOT rank direction: {direction}")
             }
         }
     }
@@ -122,12 +129,7 @@ pub fn render(diagram: &Diagram) -> Result<String, RenderError> {
 fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
     let mut out = String::new();
     out.push_str("digraph {\n");
-    let rankdir = match g.direction {
-        Direction::Right => "LR",
-        // `Direction` is `#[non_exhaustive]`; `Down` and any future top-down
-        // variant map to Graphviz's default top-to-bottom ranking.
-        _ => "TB",
-    };
+    let rankdir = rankdir(g.direction)?;
     out.push_str(&format!("  rankdir={rankdir};\n"));
     out.push_str("  node [shape=box style=rounded];\n");
 
@@ -162,6 +164,21 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
 
     out.push_str("}\n");
     Ok(out)
+}
+
+fn rankdir(direction: Direction) -> Result<&'static str, RenderError> {
+    let rankdir = match direction {
+        Direction::Down => "TB",
+        Direction::Right => "LR",
+        Direction::Up => "BT",
+        Direction::Left => "RL",
+        _ => {
+            return Err(RenderError::UnknownDirection {
+                direction: format!("{direction:?}"),
+            })
+        }
+    };
+    Ok(rankdir)
 }
 
 /// Format a single `a -> b [attrs];` statement.
@@ -281,10 +298,7 @@ fn endpoint_id(s: &StateDiagram, ep: &Endpoint) -> Result<String, RenderError> {
 fn render_class(c: &ClassDiagram) -> Result<String, RenderError> {
     let mut out = String::new();
     out.push_str("digraph {\n");
-    let rankdir = match c.direction {
-        Direction::Right => "LR",
-        _ => "TB",
-    };
+    let rankdir = rankdir(c.direction)?;
     out.push_str(&format!("  rankdir={rankdir};\n"));
     out.push_str("  node [shape=record];\n");
 
@@ -788,10 +802,21 @@ mod tests {
     }
 
     #[test]
-    fn right_direction_maps_to_lr() {
-        let g = graph(Direction::Right);
-        let dot = render(&Diagram::Graph(g)).unwrap();
-        assert!(dot.contains("  rankdir=LR;\n"));
+    fn graph_and_class_map_all_four_rank_directions() {
+        for (direction, rankdir) in [
+            (Direction::Down, "TB"),
+            (Direction::Right, "LR"),
+            (Direction::Up, "BT"),
+            (Direction::Left, "RL"),
+        ] {
+            let graph_dot = render(&Diagram::Graph(graph(direction))).unwrap();
+            assert!(graph_dot.contains(&format!("  rankdir={rankdir};\n")));
+
+            let mut class = sample_class_diagram();
+            class.direction = direction;
+            let class_dot = render(&Diagram::Class(class)).unwrap();
+            assert!(class_dot.contains(&format!("  rankdir={rankdir};\n")));
+        }
     }
 
     #[test]

@@ -87,13 +87,13 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "direction RL",
-        support: Support::Unsupported,
-        note: "reports an unsupported error; kozue layout does not support right-to-left",
+        support: Support::Supported,
+        note: "maps to Direction::Left",
     },
     Feature {
         name: "direction BT",
-        support: Support::Unsupported,
-        note: "reports an unsupported error; kozue layout does not support bottom-to-top",
+        support: Support::Supported,
+        note: "maps to Direction::Up",
     },
     // --- Flowchart nodes ---
     Feature {

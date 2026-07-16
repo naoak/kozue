@@ -22,12 +22,13 @@ use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Seri
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IrSchemaVersion {
     V1,
-    #[default]
     V2,
+    #[default]
+    V3,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V2;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V3;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -45,6 +46,7 @@ impl Serialize for IrSchemaVersion {
         match self {
             IrSchemaVersion::V1 => serializer.serialize_u8(1),
             IrSchemaVersion::V2 => serializer.serialize_u8(2),
+            IrSchemaVersion::V3 => serializer.serialize_u8(3),
         }
     }
 }
@@ -58,6 +60,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
         match version {
             1 => Ok(IrSchemaVersion::V1),
             2 => Ok(IrSchemaVersion::V2),
+            3 => Ok(IrSchemaVersion::V3),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -219,7 +222,7 @@ struct IrDocumentV1 {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct IrDocumentV2 {
+struct IrDocumentWithAnnotations {
     schema_version: IrSchemaVersion,
     metadata: DiagramMetadata,
     diagram: Diagram,
@@ -230,8 +233,23 @@ struct IrDocumentV2 {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum IrDocumentWire {
-    V2(IrDocumentV2),
+    Annotated(IrDocumentWithAnnotations),
     V1(IrDocumentV1),
+}
+
+fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> bool {
+    match direction {
+        Direction::Down | Direction::Right => true,
+        Direction::Up | Direction::Left => version == IrSchemaVersion::V3,
+    }
+}
+
+fn diagram_direction_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
+    match diagram {
+        Diagram::Graph(graph) => direction_supported_in(version, graph.direction),
+        Diagram::Class(class) => direction_supported_in(version, class.direction),
+        _ => true,
+    }
 }
 
 impl<'de> Deserialize<'de> for IrDocument {
@@ -240,24 +258,52 @@ impl<'de> Deserialize<'de> for IrDocument {
         D: Deserializer<'de>,
     {
         match IrDocumentWire::deserialize(deserializer)? {
-            IrDocumentWire::V1(wire) if wire.schema_version == IrSchemaVersion::V1 => Ok(Self {
-                schema_version: CURRENT_IR_SCHEMA_VERSION,
-                metadata: wire.metadata,
-                diagram: wire.diagram,
-                annotations: Vec::new(),
-                extensions: wire.extensions,
-            }),
-            IrDocumentWire::V2(wire) if wire.schema_version == IrSchemaVersion::V2 => Ok(Self {
-                schema_version: CURRENT_IR_SCHEMA_VERSION,
-                metadata: wire.metadata,
-                diagram: wire.diagram,
-                annotations: wire.annotations,
-                extensions: wire.extensions,
-            }),
+            IrDocumentWire::V1(wire) if wire.schema_version == IrSchemaVersion::V1 => {
+                if !diagram_direction_supported_in(IrSchemaVersion::V1, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 1 does not support Up or Left direction",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: Vec::new(),
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V2 => {
+                if !diagram_direction_supported_in(IrSchemaVersion::V2, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 2 does not support Up or Left direction",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V3 => {
+                if !diagram_direction_supported_in(IrSchemaVersion::V3, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 3 does not support the diagram direction",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema version 2 requires an `annotations` field",
+                "IR schema versions 2 and 3 require an `annotations` field",
             )),
-            IrDocumentWire::V2(_) => Err(de::Error::custom(
+            IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
             )),
         }
@@ -350,6 +396,8 @@ pub enum Direction {
     #[default]
     Down,
     Right,
+    Up,
+    Left,
 }
 
 /// A graph diagram: a set of nodes and directed edges between them.
@@ -873,6 +921,7 @@ mod tests {
 
     const EMPTY_GRAPH_DOCUMENT_V1: &str = r#"{"schema_version":1,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V2: &str = r#"{"schema_version":2,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V3: &str = r#"{"schema_version":3,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -903,10 +952,24 @@ mod tests {
             IrSchemaVersion::V1
         );
         assert_eq!(serde_json::to_value(IrSchemaVersion::V2).unwrap(), json!(2));
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(3)).unwrap_err();
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V3).unwrap(), json!(3));
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(4)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 3"));
+            .contains("unsupported IR schema version 4"));
+    }
+
+    #[test]
+    fn all_directions_round_trip() {
+        for direction in [
+            Direction::Down,
+            Direction::Right,
+            Direction::Up,
+            Direction::Left,
+        ] {
+            let json = serde_json::to_string(&direction).unwrap();
+            assert_eq!(serde_json::from_str::<Direction>(&json).unwrap(), direction);
+        }
     }
 
     #[test]
@@ -916,7 +979,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V2);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V3);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -924,14 +987,24 @@ mod tests {
     }
 
     #[test]
-    fn v1_document_is_upgraded_and_v1_annotations_are_rejected() {
-        let document = serde_json::from_str::<IrDocument>(EMPTY_GRAPH_DOCUMENT_V1).unwrap();
-        assert_eq!(document.schema_version(), IrSchemaVersion::V2);
-        assert!(document.annotations.is_empty());
-        assert_eq!(
-            serde_json::to_string(&document).unwrap(),
-            EMPTY_GRAPH_DOCUMENT_V2
-        );
+    fn v1_and_v2_documents_are_upgraded_to_v3() {
+        for fixture in [EMPTY_GRAPH_DOCUMENT_V1, EMPTY_GRAPH_DOCUMENT_V2] {
+            let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
+            assert_eq!(document.schema_version(), IrSchemaVersion::V3);
+            assert!(document.annotations.is_empty());
+            assert_eq!(
+                serde_json::to_string(&document).unwrap(),
+                EMPTY_GRAPH_DOCUMENT_V3
+            );
+        }
+
+        let mut v2_without_annotations: serde_json::Value =
+            serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V2).unwrap();
+        v2_without_annotations
+            .as_object_mut()
+            .unwrap()
+            .remove("annotations");
+        assert!(serde_json::from_value::<IrDocument>(v2_without_annotations).is_err());
 
         let mut invalid: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V1).unwrap();
         invalid["annotations"] = json!([]);
@@ -939,7 +1012,40 @@ mod tests {
     }
 
     #[test]
-    fn v2_annotations_round_trip_in_declaration_order() {
+    fn reverse_directions_require_schema_v3_for_graph_and_class() {
+        let diagrams = |direction: Direction| {
+            [
+                Diagram::Graph(GraphDiagram::new(direction)),
+                Diagram::Class(ClassDiagram::new(direction)),
+            ]
+        };
+
+        for direction in [Direction::Up, Direction::Left] {
+            for diagram in diagrams(direction) {
+                for fixture in [EMPTY_GRAPH_DOCUMENT_V1, EMPTY_GRAPH_DOCUMENT_V2] {
+                    let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                    value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                    assert!(
+                        serde_json::from_value::<IrDocument>(value).is_err(),
+                        "legacy schema accepted {diagram:?}"
+                    );
+                }
+
+                let mut value: serde_json::Value =
+                    serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V3).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<IrDocument>(value)
+                        .unwrap()
+                        .into_diagram(),
+                    diagram
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v3_annotations_round_trip_in_declaration_order() {
         let mut document = IrDocument::new(Diagram::Graph(GraphDiagram::new(Direction::Down)));
         document.annotations = vec![
             Annotation::new(
@@ -1022,9 +1128,9 @@ mod tests {
 
     #[test]
     fn document_rejects_unknown_versions_and_missing_required_fields() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V2).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V3).unwrap();
 
-        for version in [0, 1, 3] {
+        for version in [0, 1, 4] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -1068,8 +1174,8 @@ mod tests {
     }
 
     #[test]
-    fn v2_rejects_nested_unknown_fields_and_missing_tag_value() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V2).unwrap();
+    fn v3_rejects_nested_unknown_fields_and_missing_tag_value() {
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V3).unwrap();
         let with_tag = |mut value: serde_json::Value| {
             value["annotations"] = json!([{
                 "id": "tag-1",
@@ -1236,5 +1342,20 @@ mod tests {
             assert_eq!(serde_json::to_string(&diagram).unwrap(), fixture);
             assert_eq!(serde_json::from_str::<Diagram>(fixture).unwrap(), diagram);
         }
+    }
+
+    #[test]
+    fn right_direction_bare_diagram_wire_representation_is_unchanged() {
+        let graph = Diagram::Graph(GraphDiagram::new(Direction::Right));
+        let class = Diagram::Class(ClassDiagram::new(Direction::Right));
+
+        assert_eq!(
+            serde_json::to_string(&graph).unwrap(),
+            r#"{"Graph":{"direction":"Right","nodes":{},"edges":[]}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&class).unwrap(),
+            r#"{"Class":{"direction":"Right","classes":{},"relations":[]}}"#
+        );
     }
 }

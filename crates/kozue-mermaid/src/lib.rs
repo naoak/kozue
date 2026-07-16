@@ -31,9 +31,11 @@
 //!   `NodeKind::Default`; shape differences are not rendered.
 //! - Sequence open arrows `->` and `-->` map to `ArrowType::Triangle` with the
 //!   same solid/dashed line style as `-->>` / `->>`.
-//! - Unsupported features (RL/BT direction, Note, loop, alt, subgraph, classDef,
-//!   style, etc.) are reported as positioned "unsupported" errors rather than
-//!   crashing or silently ignoring.
+//! - Flowchart directions TD/TB, LR, BT, and RL map to Down, Right, Up, and
+//!   Left respectively.
+//! - Unsupported features (Note, loop, alt, subgraph, classDef, style, etc.)
+//!   are reported as positioned "unsupported" errors rather than crashing or
+//!   silently ignoring.
 
 pub mod features;
 
@@ -104,27 +106,17 @@ fn parse_diagram(source: &str) -> Result<Diagram, Vec<Diagnostic>> {
         let direction = match dir_str.to_ascii_uppercase().as_str() {
             "TD" | "TB" => Direction::Down,
             "LR" => Direction::Right,
-            "RL" => {
-                errors.push(Diagnostic::new(
-                    "unsupported: direction RL (kozue does not support this yet)",
-                    header_offset..header_offset + header_line.len(),
-                ));
-                Direction::Down // keep going to collect more errors
-            }
-            "BT" => {
-                errors.push(Diagnostic::new(
-                    "unsupported: direction BT (kozue does not support this yet)",
-                    header_offset..header_offset + header_line.len(),
-                ));
-                Direction::Down
-            }
+            "RL" => Direction::Left,
+            "BT" => Direction::Up,
             "" => {
                 // Mermaid allows omitting direction; default to TD.
                 Direction::Down
             }
             _ => {
                 errors.push(Diagnostic::new(
-                    format!("unknown flowchart direction `{dir_str}`; expected TD, TB, or LR"),
+                    format!(
+                        "unknown flowchart direction `{dir_str}`; expected TD, TB, LR, RL, or BT"
+                    ),
                     header_offset..header_offset + header_line.len(),
                 ));
                 Direction::Down
@@ -2172,25 +2164,21 @@ mod tests {
     }
 
     #[test]
-    fn direction_rl_is_unsupported() {
-        let src = "flowchart RL\n  A --> B\n";
-        let errs = parse(src).expect_err("RL should be unsupported");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("unsupported") && e.message.contains("RL")),
-            "got: {errs:?}"
-        );
+    fn direction_rl_is_left() {
+        let src = "graph RL\n  A --> B\n";
+        let Diagram::Graph(graph) = parse(src).expect("RL should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.direction, Direction::Left);
     }
 
     #[test]
-    fn direction_bt_is_unsupported() {
+    fn direction_bt_is_up() {
         let src = "flowchart BT\n  A --> B\n";
-        let errs = parse(src).expect_err("BT should be unsupported");
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("unsupported") && e.message.contains("BT")),
-            "got: {errs:?}"
-        );
+        let Diagram::Graph(graph) = parse(src).expect("BT should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.direction, Direction::Up);
     }
 
     #[test]
@@ -2328,8 +2316,7 @@ mod tests {
 
     #[test]
     fn multiple_errors_collected() {
-        // Both RL direction error and subgraph error should be reported together.
-        let src = "flowchart RL\n  subgraph foo\n    A --> B\n  end\n";
+        let src = "flowchart TD\n  subgraph foo\n    A --> B\n  end\n  style A fill:red\n";
         let errs = parse(src).expect_err("should have errors");
         assert!(errs.len() >= 2, "expected multiple errors, got: {errs:?}");
     }
