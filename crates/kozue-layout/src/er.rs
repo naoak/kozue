@@ -95,6 +95,7 @@ pub(crate) fn layout_er_full(e: &ErDiagram) -> Result<crate::LayoutOutput, Layou
                 width: w,
                 height: h,
                 label: specs[v].title.clone(),
+                kind: kozue_ir::NodeKind::Default,
             }
         })
         .collect();

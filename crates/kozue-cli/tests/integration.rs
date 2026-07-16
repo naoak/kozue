@@ -34,11 +34,11 @@ fn compile(src: &str) -> String {
 fn native_and_mermaid_reverse_directions_produce_equivalent_ir() {
     let cases = [
         (
-            "graph d { direction up\n a: \"A\"\n b: \"B\"\n a -> b }",
+            "graph d { direction up\n a shape rectangle: \"A\"\n b shape rectangle: \"B\"\n a -> b }",
             "flowchart BT\n  a[A] --> b[B]\n",
         ),
         (
-            "graph d { direction left\n a: \"A\"\n b: \"B\"\n a -> b }",
+            "graph d { direction left\n a shape rectangle: \"A\"\n b shape rectangle: \"B\"\n a -> b }",
             "flowchart RL\n  a[A] --> b[B]\n",
         ),
     ];
@@ -49,6 +49,65 @@ fn native_and_mermaid_reverse_directions_produce_equivalent_ir() {
             kozue_mermaid::parse(mermaid).expect("Mermaid parse")
         );
     }
+}
+
+#[test]
+fn native_and_mermaid_node_shapes_produce_equivalent_ir() {
+    let native = "graph shapes {\n a shape rectangle: \"A\"\n b shape rounded: \"B\"\n a -> b\n}";
+    let mermaid = "flowchart TD\n  a[A] --> b(B)\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
+fn explicit_node_shapes_map_across_all_backends() {
+    let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    let svg = kozue_render_svg::render(&output.scene);
+    assert!(svg.contains("rx=\"4.00\""));
+    assert!(svg.contains("rx=\"0.00\""));
+    assert!(svg.contains("rx=\"8.00\""));
+
+    let term = kozue_render_term::render(&output.scene);
+    assert!(term.contains('┌'));
+    assert!(term.contains('╭'));
+
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("id=\"n0\" value=\"Default\" style=\"rounded=1;"));
+    assert!(drawio.contains("id=\"n1\" value=\"Rectangle\" style=\"rounded=0;"));
+    assert!(drawio.contains("id=\"n2\" value=\"Rounded\" style=\"rounded=1;"));
+
+    let dot = kozue_render_dot::render(&diagram).unwrap();
+    assert!(dot.contains("\"d\" [label=\"Default\"]"));
+    assert!(dot.contains("\"r\" [label=\"Rectangle\" shape=box style=\"\"]"));
+    assert!(dot.contains("\"rr\" [label=\"Rounded\" shape=box style=rounded]"));
+
+    let excalidraw: serde_json::Value =
+        serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
+    let elements = excalidraw["elements"].as_array().unwrap();
+    let roundness = |id: &str| {
+        elements.iter().find(|element| element["id"] == id).unwrap()["roundness"].clone()
+    };
+    assert!(!roundness("n0").is_null());
+    assert!(roundness("n1").is_null());
+    assert!(!roundness("n2").is_null());
+
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let pptx_text = String::from_utf8_lossy(&pptx);
+    assert!(pptx_text.contains("prst=\"rect\""));
+    assert!(pptx_text.contains("prst=\"roundRect\""));
+
+    let png_for = |shape: &str| {
+        let source = format!("graph one {{ n {shape}: \"Node\" }}");
+        let diagram = kozue_dsl::parse(&source).unwrap();
+        let scene = kozue_layout::layout(&diagram).unwrap();
+        kozue_render_png::render(&scene).unwrap()
+    };
+    assert_ne!(png_for("shape rectangle"), png_for("shape rounded"));
 }
 
 const GOLDEN_CASES: &[&str] = &["chain", "branch", "right", "cycle", "skip", "wide_right"];

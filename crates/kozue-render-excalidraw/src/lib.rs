@@ -68,7 +68,7 @@
 //! Any future [`SemanticLayout`] variants return [`RenderError::UnsupportedDiagram`]
 //! rather than silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
@@ -108,6 +108,8 @@ pub enum RenderError {
         /// Human-readable description of the unresolved endpoint.
         description: String,
     },
+    /// A future graph node kind has no defined Excalidraw mapping.
+    UnknownNodeKind { description: String },
     /// JSON serialization failed (e.g. a non-finite coordinate produced a
     /// NaN/Infinity float, which `serde_json` refuses to encode). This should
     /// not occur for layouts produced by `kozue_layout::layout_full`; it is
@@ -134,6 +136,12 @@ impl std::fmt::Display for RenderError {
                 write!(
                     f,
                     "Excalidraw export: cannot resolve transition endpoint: {description}"
+                )
+            }
+            RenderError::UnknownNodeKind { description } => {
+                write!(
+                    f,
+                    "Excalidraw export: unknown graph node kind: {description}"
                 )
             }
             RenderError::Serialization { message } => {
@@ -405,6 +413,17 @@ fn add_bound_element(elements: &mut [AnyElement], owner_id: &str, r: BoundElemen
 // ---------------------------------------------------------------------------
 
 fn make_rect(id: &str, x: f64, y: f64, w: f64, h: f64) -> ElementBase<ShapeExtra> {
+    make_rect_with_roundness(id, x, y, w, h, Some(Roundness { kind: 3 }))
+}
+
+fn make_rect_with_roundness(
+    id: &str,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    roundness: Option<Roundness>,
+) -> ElementBase<ShapeExtra> {
     ElementBase {
         id: id.to_string(),
         kind: "rectangle",
@@ -421,7 +440,7 @@ fn make_rect(id: &str, x: f64, y: f64, w: f64, h: f64) -> ElementBase<ShapeExtra
         roughness: 1,
         opacity: 100,
         group_ids: Vec::new(),
-        roundness: Some(Roundness { kind: 3 }),
+        roundness,
         seed: 0,
         version: 1,
         is_deleted: false,
@@ -665,7 +684,23 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
         let rect_id = format!("n{i}");
         let text_id = format!("{rect_id}-text");
 
-        let mut rect = make_rect(&rect_id, r.x + MARGIN, r.y + MARGIN, r.width, r.height);
+        let roundness = match &node.kind {
+            NodeKind::Default | NodeKind::RoundedRectangle => Some(Roundness { kind: 3 }),
+            NodeKind::Rectangle => None,
+            kind => {
+                return Err(RenderError::UnknownNodeKind {
+                    description: format!("{kind:?}"),
+                })
+            }
+        };
+        let mut rect = make_rect_with_roundness(
+            &rect_id,
+            r.x + MARGIN,
+            r.y + MARGIN,
+            r.width,
+            r.height,
+            roundness,
+        );
         rect.bound_elements = Some(vec![BoundElementRef {
             id: text_id.clone(),
             kind: "text",

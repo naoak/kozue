@@ -192,6 +192,7 @@ pub(crate) fn layout_state_full(
                 width: w,
                 height: h,
                 label: node_labels[v].clone(),
+                kind: kozue_ir::NodeKind::Default,
             }
         })
         .collect();

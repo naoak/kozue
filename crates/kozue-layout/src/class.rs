@@ -129,6 +129,7 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
                 width: w,
                 height: h,
                 label: specs[v].title.clone(),
+                kind: kozue_ir::NodeKind::Default,
             }
         })
         .collect();

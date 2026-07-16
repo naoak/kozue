@@ -99,12 +99,12 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         name: "rectangular node A[label]",
         support: Support::Supported,
-        note: "maps to NodeKind::Default",
+        note: "maps to NodeKind::Rectangle",
     },
     Feature {
         name: "rounded node A(label)",
-        support: Support::Partial,
-        note: "parsed and label extracted; shape maps to NodeKind::Default (no round corners rendered)",
+        support: Support::Supported,
+        note: "maps to NodeKind::RoundedRectangle",
     },
     Feature {
         name: "bare node A",

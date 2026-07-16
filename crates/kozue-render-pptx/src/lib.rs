@@ -75,7 +75,7 @@
 mod templates;
 mod zip;
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
     StateEndpointId, StateLayout,
@@ -118,6 +118,8 @@ pub enum RenderError {
         /// Human-readable description of the unresolved endpoint.
         description: String,
     },
+    /// A future graph node kind has no defined PowerPoint mapping.
+    UnknownNodeKind { description: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -136,6 +138,12 @@ impl std::fmt::Display for RenderError {
                 write!(
                     f,
                     "PowerPoint export: cannot resolve transition endpoint: {description}"
+                )
+            }
+            RenderError::UnknownNodeKind { description } => {
+                write!(
+                    f,
+                    "PowerPoint export: unknown graph node kind: {description}"
                 )
             }
         }
@@ -236,6 +244,20 @@ impl IdAlloc {
 /// A rounded-rectangle shape with centered text (used for graph nodes, state
 /// boxes, and sequence participant headers).
 fn rect_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64, label: &str) -> String {
+    rect_shape_with_geom(id, name, x, y, w, h, label, "roundRect")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rect_shape_with_geom(
+    id: u32,
+    name: &str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    label: &str,
+    geometry: &str,
+) -> String {
     // Escape `name` for the same reason `label` is escaped: it can carry a
     // user-supplied node/state/participant id. Current frontends reject XML
     // metacharacters in ids, but escaping keeps the attribute XML-safe by
@@ -249,7 +271,7 @@ fn rect_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64, label: &str) 
     format!(
         "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>\
          <p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm>\
-         <a:prstGeom prst=\"roundRect\"><a:avLst/></a:prstGeom>\
+         <a:prstGeom prst=\"{geometry}\"><a:avLst/></a:prstGeom>\
          <a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill>\
          <a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill></a:ln></p:spPr>\
          <p:txBody><a:bodyPr anchor=\"ctr\"/><a:lstStyle/><a:p><a:pPr algn=\"ctr\"/>{run}</a:p></p:txBody></p:sp>",
@@ -472,7 +494,16 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
 
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
-        shapes.push_str(&rect_shape(
+        let geometry = match &node.kind {
+            NodeKind::Default | NodeKind::RoundedRectangle => "roundRect",
+            NodeKind::Rectangle => "rect",
+            kind => {
+                return Err(RenderError::UnknownNodeKind {
+                    description: format!("{kind:?}"),
+                })
+            }
+        };
+        shapes.push_str(&rect_shape_with_geom(
             ids.next(),
             &format!("Node {i}"),
             emu_pos(r.x),
@@ -480,6 +511,7 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
             emu_len(r.width),
             emu_len(r.height),
             &node.label,
+            geometry,
         ));
     }
 

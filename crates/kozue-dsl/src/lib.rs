@@ -51,7 +51,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument, LineStyle,
-    Message, Node, Participant, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State, StateDiagram,
+    Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -61,6 +62,7 @@ enum Stmt {
     Node {
         id: String,
         id_span: std::ops::Range<usize>,
+        shape: Option<ParsedNodeShape>,
         label: Option<String>,
         /// Span of the string literal (including quotes), if present.
         label_lit_span: Option<std::ops::Range<usize>>,
@@ -82,6 +84,20 @@ enum Stmt {
         label_lit_span: Option<std::ops::Range<usize>>,
     },
     StateTransition(StateTransStmt),
+}
+
+#[derive(Debug, Clone)]
+enum ParsedNodeShape {
+    Known(NodeKind, std::ops::Range<usize>),
+    Unknown(String, std::ops::Range<usize>),
+}
+
+impl ParsedNodeShape {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            ParsedNodeShape::Known(_, span) | ParsedNodeShape::Unknown(_, span) => span,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -399,15 +415,24 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             })
         });
 
-    // Node: `id : "label"` or `id`.
+    // Node: `id`, `id: "label"`, or `id shape rectangle|rounded: "label"`.
+    let node_shape = text::keyword("shape")
+        .padded_by(kzd_ws())
+        .ignore_then(ident_spanned())
+        .map(|(name, span)| match name.as_str() {
+            "rectangle" => ParsedNodeShape::Known(NodeKind::Rectangle, span),
+            "rounded" => ParsedNodeShape::Known(NodeKind::RoundedRectangle, span),
+            _ => ParsedNodeShape::Unknown(name, span),
+        });
     let node = ident_spanned()
+        .then(node_shape.or_not())
         .then(
             just(':')
                 .padded_by(kzd_ws())
                 .ignore_then(string_lit_spanned())
                 .or_not(),
         )
-        .map(|((id, id_span), label_opt)| {
+        .map(|(((id, id_span), shape), label_opt)| {
             let (label, label_lit_span) = match label_opt {
                 Some((l, s)) => (Some(l), Some(s)),
                 None => (None, None),
@@ -415,6 +440,7 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             Stmt::Node {
                 id,
                 id_span,
+                shape,
                 label,
                 label_lit_span,
             }
@@ -597,6 +623,7 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             Stmt::Node {
                 id,
                 id_span,
+                shape,
                 label,
                 label_lit_span,
             } => {
@@ -610,6 +637,20 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     });
                     continue;
                 }
+                let kind = match shape {
+                    Some(ParsedNodeShape::Known(kind, _)) => kind.clone(),
+                    Some(ParsedNodeShape::Unknown(name, span)) => {
+                        errors.push(CompileError {
+                            message: format!(
+                                "unknown node shape `{name}`; expected `rectangle` or `rounded`"
+                            ),
+                            span: span.clone(),
+                            secondary: None,
+                        });
+                        continue;
+                    }
+                    None => NodeKind::Default,
+                };
                 let label_str = label.clone().unwrap_or_else(|| id.clone());
                 if let Some(lit_span) = label_lit_span {
                     if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
@@ -621,9 +662,10 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     }
                 }
                 first_decl_spans.insert(id.clone(), id_span.clone());
-                graph
-                    .nodes
-                    .insert(id.clone().into(), Node::new(id.clone(), label_str));
+                graph.nodes.insert(
+                    id.clone().into(),
+                    Node::with_kind(id.clone(), label_str, kind),
+                );
             }
             Stmt::DashedEdge(e) => {
                 errors.push(CompileError {
@@ -774,12 +816,18 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     .states
                     .insert(id.clone().into(), State::new(id.clone(), label_str));
             }
-            Stmt::Node { id_span, .. } => {
+            Stmt::Node { id_span, shape, .. } => {
                 errors.push(CompileError {
-                    message:
+                    message: if shape.is_some() {
+                        "node shape declarations are only valid in graph diagrams".to_string()
+                    } else {
                         "plain node declarations are not valid in state diagrams; use `state <id>`"
-                            .to_string(),
-                    span: id_span.clone(),
+                            .to_string()
+                    },
+                    span: shape
+                        .as_ref()
+                        .map(|shape| shape.span().clone())
+                        .unwrap_or_else(|| id_span.clone()),
                     secondary: None,
                 });
             }
@@ -926,10 +974,17 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 });
                 continue;
             }
-            Stmt::Node { id_span, .. } => {
+            Stmt::Node { id_span, shape, .. } => {
                 errors.push(CompileError {
-                    message: "plain node declarations are not valid in sequence diagrams; use `participant <id>`".to_string(),
-                    span: id_span.clone(),
+                    message: if shape.is_some() {
+                        "node shape declarations are only valid in graph diagrams".to_string()
+                    } else {
+                        "plain node declarations are not valid in sequence diagrams; use `participant <id>`".to_string()
+                    },
+                    span: shape
+                        .as_ref()
+                        .map(|shape| shape.span().clone())
+                        .unwrap_or_else(|| id_span.clone()),
                     secondary: None,
                 });
                 continue;
@@ -1514,17 +1569,25 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
         Stmt::Direction(_, span) | Stmt::DirectionError(span) => (span.start, span.end),
         Stmt::Node {
             id_span,
-            label_lit_span,
-            ..
-        }
-        | Stmt::Participant {
-            id_span,
+            shape,
             label_lit_span,
             ..
         } => {
             let end = label_lit_span
                 .as_ref()
                 .map(|s| s.end)
+                .or_else(|| shape.as_ref().map(|shape| shape.span().end))
+                .unwrap_or(id_span.end);
+            (id_span.start, end)
+        }
+        Stmt::Participant {
+            id_span,
+            label_lit_span,
+            ..
+        } => {
+            let end = label_lit_span
+                .as_ref()
+                .map(|span| span.end)
                 .unwrap_or(id_span.end);
             (id_span.start, end)
         }
@@ -1562,12 +1625,23 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
 /// Format a declaration statement (Node or Participant).
 fn format_decl_stmt(stmt: &Stmt) -> String {
     match stmt {
-        Stmt::Node { id, label, .. } => {
-            if let Some(label_str) = label {
-                format!("{}: {}", id, format_string_lit(label_str))
-            } else {
-                id.clone()
+        Stmt::Node {
+            id, shape, label, ..
+        } => {
+            let mut declaration = id.clone();
+            if let Some(ParsedNodeShape::Known(kind, _)) = shape {
+                match kind {
+                    NodeKind::Default => {}
+                    NodeKind::Rectangle => declaration.push_str(" shape rectangle"),
+                    NodeKind::RoundedRectangle => declaration.push_str(" shape rounded"),
+                    _ => unreachable!(),
+                }
             }
+            if let Some(label_str) = label {
+                declaration.push_str(": ");
+                declaration.push_str(&format_string_lit(label_str));
+            }
+            declaration
         }
         Stmt::Participant { id, label, .. } => {
             if let Some(label_str) = label {
@@ -1725,6 +1799,40 @@ mod tests {
                 panic!("expected graph")
             };
             assert_eq!(graph.direction, expected);
+        }
+    }
+
+    #[test]
+    fn graph_node_shapes_parse_and_unknown_shape_has_exact_span() {
+        let source = "graph d {\n a\n b shape rectangle\n c shape rounded: \"See\"\n}";
+        let Diagram::Graph(graph) = parse(source).expect("shapes should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.nodes["a"].kind, NodeKind::Default);
+        assert_eq!(graph.nodes["b"].kind, NodeKind::Rectangle);
+        assert_eq!(graph.nodes["c"].kind, NodeKind::RoundedRectangle);
+        assert_eq!(graph.nodes["c"].label, "See");
+
+        let invalid = "graph d { a shape capsule }";
+        let errors = parse(invalid).expect_err("unknown shape must fail");
+        let error = errors
+            .iter()
+            .find(|error| error.message.contains("unknown node shape"))
+            .unwrap();
+        let start = invalid.find("capsule").unwrap();
+        assert_eq!(error.span, start..start + "capsule".len());
+    }
+
+    #[test]
+    fn node_shapes_are_graph_only() {
+        for source in [
+            "sequence d { a shape rectangle }",
+            "state d { a shape rounded }",
+        ] {
+            let errors = parse(source).expect_err("shape must be graph-only");
+            assert!(errors
+                .iter()
+                .any(|error| error.message.contains("only valid in graph diagrams")));
         }
     }
 
@@ -2156,6 +2264,15 @@ mod tests {
             assert!(formatted.contains(&format!("direction {keyword}")));
             assert_eq!(format_kzd(&formatted).expect("second format"), formatted);
         }
+    }
+
+    #[test]
+    fn fmt_node_shapes_is_idempotent() {
+        let source = "graph shapes { a shape rectangle\n b shape rounded : \"Bee\"\n a -> b }";
+        let formatted = format_kzd(source).expect("should format");
+        assert!(formatted.contains("a shape rectangle"));
+        assert!(formatted.contains("b shape rounded: \"Bee\""));
+        assert_eq!(format_kzd(&formatted).unwrap(), formatted);
     }
 
     #[test]

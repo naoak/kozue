@@ -46,7 +46,7 @@
 
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErDiagram,
-    ErRelation, GraphDiagram, LineStyle, StateDiagram, Transition,
+    ErRelation, GraphDiagram, LineStyle, NodeKind, StateDiagram, Transition,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +81,8 @@ pub enum RenderError {
         /// Debug description of the unresolved direction.
         direction: String,
     },
+    /// A future graph node kind has no defined DOT mapping.
+    UnknownNodeKind { kind: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -97,6 +99,9 @@ impl std::fmt::Display for RenderError {
             }
             RenderError::UnknownDirection { direction } => {
                 write!(f, "unsupported DOT rank direction: {direction}")
+            }
+            RenderError::UnknownNodeKind { kind } => {
+                write!(f, "unsupported DOT graph node kind: {kind}")
             }
         }
     }
@@ -135,10 +140,21 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
 
     // Node statements, in declaration order.
     for node in g.nodes.values() {
+        let shape_attrs = match &node.kind {
+            NodeKind::Default => "",
+            NodeKind::Rectangle => " shape=box style=\"\"",
+            NodeKind::RoundedRectangle => " shape=box style=rounded",
+            kind => {
+                return Err(RenderError::UnknownNodeKind {
+                    kind: format!("{kind:?}"),
+                })
+            }
+        };
         out.push_str(&format!(
-            "  {} [label={}];\n",
+            "  {} [label={}{}];\n",
             quote(node.id.as_str()),
-            quote(&node.label)
+            quote(&node.label),
+            shape_attrs,
         ));
     }
 

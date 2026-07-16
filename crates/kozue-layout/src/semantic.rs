@@ -5,7 +5,7 @@
 //! and let downstream consumers (exchange exporters, hit-testing, etc.) know
 //! *which rectangle / polyline corresponds to which node / edge*.
 
-use kozue_ir::{ElementId, Rect};
+use kozue_ir::{ElementId, NodeKind, Rect};
 
 /// A 2-D point in scene coordinates (pixels, same coordinate space as
 /// [`Scene`](kozue_ir::Scene)).
@@ -36,6 +36,8 @@ pub struct NodeLayout {
     /// the Scene Text item). This is the label, not the ID: for `a: "入力"` it is
     /// `"入力"`.
     pub label: String,
+    /// Shape semantics retained from the graph IR.
+    pub kind: NodeKind,
     /// The bounding rectangle of the node box in scene coordinates.
     pub rect: Rect,
     /// The center of the text label (the anchor used when emitting the Text item).

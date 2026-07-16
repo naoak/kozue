@@ -159,11 +159,17 @@ fn render_rect(grid: &mut [Vec<Cell>], rows: usize, cols: usize, r: &kozue_ir::R
         return;
     }
 
-    // Corners.
-    set(grid, rows, cols, row0, col0, '┌');
-    set(grid, rows, cols, row0, col1, '┐');
-    set(grid, rows, cols, row1, col0, '└');
-    set(grid, rows, cols, row1, col1, '┘');
+    // Preserve legacy corners for Default (`rx=4`) and use visibly rounded
+    // corners only for explicit RoundedRectangle (`rx=8`).
+    let (top_left, top_right, bottom_left, bottom_right) = if r.rx >= 8.0 {
+        ('╭', '╮', '╰', '╯')
+    } else {
+        ('┌', '┐', '└', '┘')
+    };
+    set(grid, rows, cols, row0, col0, top_left);
+    set(grid, rows, cols, row0, col1, top_right);
+    set(grid, rows, cols, row1, col0, bottom_left);
+    set(grid, rows, cols, row1, col1, bottom_right);
 
     // Top and bottom edges.
     for c in (col0 + 1)..col1 {
@@ -468,7 +474,10 @@ fn get_i(grid: &[Vec<Cell>], rows: usize, cols: usize, row: i64, col: i64) -> ch
 /// preserved when a path line would otherwise overwrite it.
 #[inline]
 fn is_box_border(ch: char) -> bool {
-    matches!(ch, '┌' | '┐' | '└' | '┘' | '─' | '│')
+    matches!(
+        ch,
+        '┌' | '┐' | '└' | '┘' | '╭' | '╮' | '╰' | '╯' | '─' | '│'
+    )
 }
 
 // ---------------------------------------------------------------------------

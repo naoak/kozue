@@ -29,8 +29,8 @@ mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, ElementId, GraphDiagram, Path, Rect, Scene, SceneItem, Text,
-    TextAlign,
+    ArrowType, Diagram, Direction, ElementId, GraphDiagram, NodeKind, Path, Rect, Scene, SceneItem,
+    Text, TextAlign,
 };
 
 pub use semantic::SemanticLayout;
@@ -52,6 +52,17 @@ pub(crate) fn direction_axes(direction: Direction) -> Result<(bool, bool), Layou
         Direction::Left => Ok((true, true)),
         _ => Err(LayoutError {
             message: format!("unsupported layout direction: {direction:?}"),
+        }),
+    }
+}
+
+fn node_rx(kind: &NodeKind) -> Result<f64, LayoutError> {
+    match kind {
+        NodeKind::Default => Ok(4.0),
+        NodeKind::Rectangle => Ok(0.0),
+        NodeKind::RoundedRectangle => Ok(8.0),
+        _ => Err(LayoutError {
+            message: format!("unsupported graph node kind: {kind:?}"),
         }),
     }
 }
@@ -93,6 +104,7 @@ pub(crate) struct Placed {
     pub(crate) width: f64,
     pub(crate) height: f64,
     pub(crate) label: String,
+    pub(crate) kind: NodeKind,
 }
 
 impl Placed {
@@ -377,6 +389,7 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
                 width: w,
                 height: h,
                 label: label.clone(),
+                kind: g.nodes[ids[v]].kind.clone(),
             }
         })
         .collect();
@@ -405,12 +418,13 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     let mut sem_nodes: Vec<semantic::NodeLayout> = Vec::new();
 
     for (v, p) in placed.iter().enumerate() {
+        let rx = node_rx(&p.kind)?;
         items.push(SceneItem::Rect(Rect {
             x: p.x,
             y: p.y,
             width: p.width,
             height: p.height,
-            rx: 4.0,
+            rx,
         }));
         let (cx, cy) = p.center();
         let (tw, th) = kozue_text::measure(&p.label, FONT_SIZE);
@@ -427,12 +441,13 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         sem_nodes.push(semantic::NodeLayout {
             id: ids[v].clone(),
             label: p.label.clone(),
+            kind: p.kind.clone(),
             rect: Rect {
                 x: p.x,
                 y: p.y,
                 width: p.width,
                 height: p.height,
-                rx: 4.0,
+                rx,
             },
             label_anchor: semantic::Point::new(cx, cy + FONT_SIZE * 0.35),
         });
@@ -855,6 +870,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn graph_node_kind_changes_only_corner_geometry_and_is_preserved() {
+        let render = |kind: NodeKind| {
+            let mut graph = GraphDiagram::new(Direction::Down);
+            graph
+                .nodes
+                .insert("a".into(), kozue_ir::Node::with_kind("a", "A", kind));
+            graph.nodes.insert("b".into(), node("b", "B"));
+            graph.edges.push(edge("a", "b"));
+            layout_full(&Diagram::Graph(graph)).unwrap()
+        };
+
+        let default = render(NodeKind::Default);
+        let rectangle = render(NodeKind::Rectangle);
+        let rounded = render(NodeKind::RoundedRectangle);
+        let SemanticLayout::Graph(default_graph) = default.semantic else {
+            panic!("expected graph")
+        };
+        let SemanticLayout::Graph(rectangle_graph) = rectangle.semantic else {
+            panic!("expected graph")
+        };
+        let SemanticLayout::Graph(rounded_graph) = rounded.semantic else {
+            panic!("expected graph")
+        };
+
+        assert_eq!(default_graph.nodes[0].kind, NodeKind::Default);
+        assert_eq!(rectangle_graph.nodes[0].kind, NodeKind::Rectangle);
+        assert_eq!(rounded_graph.nodes[0].kind, NodeKind::RoundedRectangle);
+        assert_eq!(default_graph.nodes[0].rect.rx, 4.0);
+        assert_eq!(rectangle_graph.nodes[0].rect.rx, 0.0);
+        assert_eq!(rounded_graph.nodes[0].rect.rx, 8.0);
+        assert_eq!(
+            default_graph.nodes[0].rect.x,
+            rectangle_graph.nodes[0].rect.x
+        );
+        assert_eq!(
+            default_graph.nodes[0].rect.y,
+            rectangle_graph.nodes[0].rect.y
+        );
+        assert_eq!(
+            default_graph.nodes[0].rect.width,
+            rectangle_graph.nodes[0].rect.width
+        );
+        assert_eq!(
+            default_graph.nodes[0].rect.height,
+            rectangle_graph.nodes[0].rect.height
+        );
+        assert_eq!(default_graph.edges[0].route, rectangle_graph.edges[0].route);
+        assert_eq!(default_graph.edges[0].route, rounded_graph.edges[0].route);
+    }
+
     fn three_class_chain(direction: Direction) -> kozue_ir::ClassDiagram {
         let mut class = kozue_ir::ClassDiagram::new(direction);
         let a = kozue_ir::ClassNode::new("a", "A");
@@ -977,6 +1043,7 @@ mod tests {
                 width: 40.0,
                 height: 20.0,
                 label: "a".into(),
+                kind: NodeKind::Default,
             },
             Placed {
                 x: 0.0,
@@ -984,6 +1051,7 @@ mod tests {
                 width: 40.0,
                 height: 20.0,
                 label: "b".into(),
+                kind: NodeKind::Default,
             },
         ];
         // Singleton.

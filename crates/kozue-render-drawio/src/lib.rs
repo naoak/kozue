@@ -53,7 +53,7 @@
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
     StateLayout,
@@ -88,6 +88,8 @@ pub enum RenderError {
         /// Human-readable description of the unresolved endpoint.
         description: String,
     },
+    /// A future graph node kind has no defined draw.io mapping.
+    UnknownNodeKind { description: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -107,6 +109,9 @@ impl std::fmt::Display for RenderError {
                     f,
                     "draw.io export: cannot resolve transition endpoint: {description}"
                 )
+            }
+            RenderError::UnknownNodeKind { description } => {
+                write!(f, "draw.io export: unknown graph node kind: {description}")
             }
         }
     }
@@ -242,8 +247,17 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     // Vertices — use label (display text), not id.
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
+        let rounded = match &node.kind {
+            NodeKind::Default | NodeKind::RoundedRectangle => "1",
+            NodeKind::Rectangle => "0",
+            kind => {
+                return Err(RenderError::UnknownNodeKind {
+                    description: format!("{kind:?}"),
+                })
+            }
+        };
         out.push_str(&format!(
-            "        <mxCell id=\"n{i}\" value=\"{}\" style=\"rounded=1;whiteSpace=wrap;html=1;\" \
+            "        <mxCell id=\"n{i}\" value=\"{}\" style=\"rounded={rounded};whiteSpace=wrap;html=1;\" \
              vertex=\"1\" parent=\"1\">\n\
              \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
              \x20       </mxCell>\n",
