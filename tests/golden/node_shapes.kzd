@@ -1,0 +1,10 @@
+graph node_shapes {
+  direction right
+  start shape rectangle: "Start"
+  process shape rounded: "Process"
+  event shape circle: "Event"
+  decision shape diamond: "Decision"
+  start -> process
+  process -> event
+  event -> decision
+}

@@ -247,9 +247,11 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     // Vertices — use label (display text), not id.
     for (i, node) in g.nodes.iter().enumerate() {
         let r = &node.rect;
-        let rounded = match &node.kind {
-            NodeKind::Default | NodeKind::RoundedRectangle => "1",
-            NodeKind::Rectangle => "0",
+        let shape_style = match &node.kind {
+            NodeKind::Default | NodeKind::RoundedRectangle => "rounded=1",
+            NodeKind::Rectangle => "rounded=0",
+            NodeKind::Circle => "ellipse",
+            NodeKind::Diamond => "rhombus",
             kind => {
                 return Err(RenderError::UnknownNodeKind {
                     description: format!("{kind:?}"),
@@ -257,7 +259,7 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
             }
         };
         out.push_str(&format!(
-            "        <mxCell id=\"n{i}\" value=\"{}\" style=\"rounded={rounded};whiteSpace=wrap;html=1;\" \
+            "        <mxCell id=\"n{i}\" value=\"{}\" style=\"{shape_style};whiteSpace=wrap;html=1;\" \
              vertex=\"1\" parent=\"1\">\n\
              \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
              \x20       </mxCell>\n",

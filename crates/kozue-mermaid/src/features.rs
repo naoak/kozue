@@ -112,14 +112,24 @@ pub const FEATURES: &[Feature] = &[
         note: "auto-declared with id as label (Mermaid convention)",
     },
     Feature {
-        name: "node label first-occurrence wins",
+        name: "explicit node declarations update in place",
         support: Support::Supported,
-        note: "subsequent A[other label] references do not overwrite the first label",
+        note: "bare references preserve explicit labels; the last explicit declaration wins",
     },
     Feature {
-        name: "stadium / circle node shape",
+        name: "circle node A((label))",
+        support: Support::Supported,
+        note: "maps to NodeKind::Circle",
+    },
+    Feature {
+        name: "diamond node A{label}",
+        support: Support::Supported,
+        note: "maps to NodeKind::Diamond",
+    },
+    Feature {
+        name: "stadium node shape",
         support: Support::Unsupported,
-        note: "`([label])` / `((label))` produce an explicit unsupported error",
+        note: "`([label])` produces an explicit unsupported error",
     },
     // --- Flowchart edges ---
     Feature {

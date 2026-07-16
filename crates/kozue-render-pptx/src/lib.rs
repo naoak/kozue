@@ -497,6 +497,8 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
         let geometry = match &node.kind {
             NodeKind::Default | NodeKind::RoundedRectangle => "roundRect",
             NodeKind::Rectangle => "rect",
+            NodeKind::Circle => "ellipse",
+            NodeKind::Diamond => "diamond",
             kind => {
                 return Err(RenderError::UnknownNodeKind {
                     description: format!("{kind:?}"),

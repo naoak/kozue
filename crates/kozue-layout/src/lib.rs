@@ -61,6 +61,7 @@ fn node_rx(kind: &NodeKind) -> Result<f64, LayoutError> {
         NodeKind::Default => Ok(4.0),
         NodeKind::Rectangle => Ok(0.0),
         NodeKind::RoundedRectangle => Ok(8.0),
+        NodeKind::Circle | NodeKind::Diamond => Ok(0.0),
         _ => Err(LayoutError {
             message: format!("unsupported graph node kind: {kind:?}"),
         }),
@@ -173,13 +174,17 @@ pub(crate) struct EdgeGeom {
 ///
 /// Label anchor computation is left to the caller because it requires the
 /// actual label text (for width-aware displacement of mutual-edge labels).
-pub(crate) fn compute_edge_geom(mut pts: Vec<(f64, f64)>, from: &Placed, to: &Placed) -> EdgeGeom {
+pub(crate) fn compute_edge_geom(
+    mut pts: Vec<(f64, f64)>,
+    from: &Placed,
+    to: &Placed,
+) -> Result<EdgeGeom, LayoutError> {
     let last = pts.len() - 1;
-    pts[0] = clip_to_rect(from, pts[1].0, pts[1].1);
-    let end = clip_to_rect(to, pts[last - 1].0, pts[last - 1].1);
+    pts[0] = clip_to_shape(from, pts[1].0, pts[1].1)?;
+    let end = clip_to_shape(to, pts[last - 1].0, pts[last - 1].1)?;
     pts[last] = end;
 
-    EdgeGeom { route: pts }
+    Ok(EdgeGeom { route: pts })
 }
 
 /// Compute the anchor (text center) for an edge/transition label.
@@ -325,12 +330,29 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     // Measure each node's box.
     let boxes: Vec<(f64, f64, String)> = ids
         .iter()
-        .map(|id| {
+        .map(|id| -> Result<_, LayoutError> {
             let node = &g.nodes[*id];
             let (tw, th) = kozue_text::measure(&node.label, FONT_SIZE);
-            (tw + 2.0 * PAD_X, th + 2.0 * PAD_Y, node.label.clone())
+            let base_width = tw + 2.0 * PAD_X;
+            let base_height = th + 2.0 * PAD_Y;
+            let (width, height) = match &node.kind {
+                NodeKind::Default | NodeKind::Rectangle | NodeKind::RoundedRectangle => {
+                    (base_width, base_height)
+                }
+                NodeKind::Circle => {
+                    let diameter = base_width.hypot(base_height);
+                    (diameter, diameter)
+                }
+                NodeKind::Diamond => (2.0 * base_width, 2.0 * base_height),
+                _ => {
+                    return Err(LayoutError {
+                        message: format!("unsupported graph node kind: {:?}", node.kind),
+                    })
+                }
+            };
+            Ok((width, height, node.label.clone()))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Map (width, height) onto (cross, main) axes per direction.
     let (horizontal, reverse_main) = direction_axes(g.direction)?;
@@ -419,13 +441,27 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
 
     for (v, p) in placed.iter().enumerate() {
         let rx = node_rx(&p.kind)?;
-        items.push(SceneItem::Rect(Rect {
-            x: p.x,
-            y: p.y,
-            width: p.width,
-            height: p.height,
-            rx,
-        }));
+        match &p.kind {
+            NodeKind::Default | NodeKind::Rectangle | NodeKind::RoundedRectangle => {
+                items.push(SceneItem::Rect(Rect {
+                    x: p.x,
+                    y: p.y,
+                    width: p.width,
+                    height: p.height,
+                    rx,
+                }));
+            }
+            NodeKind::Circle => {
+                let (cx, cy) = p.center();
+                items.push(SceneItem::Path(circle_path(cx, cy, p.width / 2.0, false)));
+            }
+            NodeKind::Diamond => items.push(SceneItem::Path(diamond_path(p))),
+            _ => {
+                return Err(LayoutError {
+                    message: format!("unsupported graph node kind: {:?}", p.kind),
+                })
+            }
+        }
         let (cx, cy) = p.center();
         let (tw, th) = kozue_text::measure(&p.label, FONT_SIZE);
         items.push(SceneItem::Text(Text {
@@ -468,7 +504,7 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         let edge = &g.edges[edge_ids[k]];
 
         // Compute geometry once; emit scene items and build SemanticLayout from it.
-        let geom = compute_edge_geom(pts, &placed[from], &placed[to]);
+        let geom = compute_edge_geom(pts, &placed[from], &placed[to])?;
         // Label anchor from the shared helper (same value as the Scene text).
         let sem_label_anchor = edge.label.as_deref().map(|lbl| {
             let (tw, th) = kozue_text::measure(lbl, FONT_SIZE * 0.85);
@@ -655,30 +691,55 @@ pub(crate) fn circle_path(cx: f64, cy: f64, r: f64, filled: bool) -> Path {
     }
 }
 
-/// Return the point on the rectangle border of `p` along the ray from the
-/// center toward `(tx, ty)`.
-fn clip_to_rect(p: &Placed, tx: f64, ty: f64) -> (f64, f64) {
+/// Return the point on `p`'s shape border along the ray from its center toward
+/// `(tx, ty)`.
+fn clip_to_shape(p: &Placed, tx: f64, ty: f64) -> Result<(f64, f64), LayoutError> {
     let (cx, cy) = p.center();
     let dx = tx - cx;
     let dy = ty - cy;
     if dx.abs() < 1e-9 && dy.abs() < 1e-9 {
-        return (cx, cy);
+        return Ok((cx, cy));
     }
     let hw = p.width / 2.0;
     let hh = p.height / 2.0;
-    // Scale factor to hit each pair of borders.
-    let sx = if dx.abs() > 1e-9 {
-        hw / dx.abs()
-    } else {
-        f64::INFINITY
+    let s = match &p.kind {
+        NodeKind::Default | NodeKind::Rectangle | NodeKind::RoundedRectangle => {
+            let sx = if dx.abs() > 1e-9 {
+                hw / dx.abs()
+            } else {
+                f64::INFINITY
+            };
+            let sy = if dy.abs() > 1e-9 {
+                hh / dy.abs()
+            } else {
+                f64::INFINITY
+            };
+            sx.min(sy)
+        }
+        NodeKind::Circle => 1.0 / ((dx / hw).powi(2) + (dy / hh).powi(2)).sqrt(),
+        NodeKind::Diamond => 1.0 / (dx.abs() / hw + dy.abs() / hh),
+        _ => {
+            return Err(LayoutError {
+                message: format!("unsupported graph node kind: {:?}", p.kind),
+            })
+        }
     };
-    let sy = if dy.abs() > 1e-9 {
-        hh / dy.abs()
-    } else {
-        f64::INFINITY
-    };
-    let s = sx.min(sy);
-    (cx + dx * s, cy + dy * s)
+    Ok((cx + dx * s, cy + dy * s))
+}
+
+fn diamond_path(p: &Placed) -> Path {
+    let (cx, cy) = p.center();
+    Path {
+        points: vec![
+            (cx, p.y),
+            (p.x + p.width, cy),
+            (cx, p.y + p.height),
+            (p.x, cy),
+            (cx, p.y),
+        ],
+        filled: false,
+        dashed: false,
+    }
 }
 
 #[cfg(test)]
@@ -919,6 +980,173 @@ mod tests {
         );
         assert_eq!(default_graph.edges[0].route, rectangle_graph.edges[0].route);
         assert_eq!(default_graph.edges[0].route, rounded_graph.edges[0].route);
+    }
+
+    #[test]
+    fn circle_and_diamond_use_defined_sizes_and_closed_path_order() {
+        let render = |kind: NodeKind| {
+            let mut graph = GraphDiagram::new(Direction::Down);
+            graph
+                .nodes
+                .insert("shape".into(), Node::with_kind("shape", "Shape", kind));
+            layout_full(&Diagram::Graph(graph)).unwrap()
+        };
+        let (text_width, text_height) = kozue_text::measure("Shape", FONT_SIZE);
+        let base_width = text_width + 2.0 * PAD_X;
+        let base_height = text_height + 2.0 * PAD_Y;
+
+        let circle = render(NodeKind::Circle);
+        let SemanticLayout::Graph(circle_graph) = &circle.semantic else {
+            panic!("expected graph")
+        };
+        let diameter = base_width.hypot(base_height);
+        assert_approx(circle_graph.nodes[0].rect.width, diameter);
+        assert_approx(circle_graph.nodes[0].rect.height, diameter);
+        let circle_path = open_paths(&circle.scene)[0];
+        assert_eq!(circle_path.points.len(), CIRCLE_POINTS + 1);
+        assert_eq!(circle_path.points.first(), circle_path.points.last());
+        let circle_rect = &circle_graph.nodes[0].rect;
+        assert_eq!(
+            circle_path.points[0],
+            (
+                circle_rect.x + circle_rect.width,
+                circle_rect.y + circle_rect.height / 2.0
+            )
+        );
+
+        let diamond = render(NodeKind::Diamond);
+        let SemanticLayout::Graph(diamond_graph) = &diamond.semantic else {
+            panic!("expected graph")
+        };
+        let rect = &diamond_graph.nodes[0].rect;
+        assert_approx(rect.width, 2.0 * base_width);
+        assert_approx(rect.height, 2.0 * base_height);
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        assert_eq!(
+            open_paths(&diamond.scene)[0].points,
+            [
+                (cx, rect.y),
+                (rect.x + rect.width, cy),
+                (cx, rect.y + rect.height),
+                (rect.x, cy),
+                (cx, rect.y),
+            ]
+        );
+    }
+
+    #[test]
+    fn circle_and_diamond_clipping_hits_their_analytic_borders() {
+        for kind in [NodeKind::Circle, NodeKind::Diamond] {
+            let placed = Placed {
+                x: 10.0,
+                y: 20.0,
+                width: 80.0,
+                height: 40.0,
+                label: "shape".into(),
+                kind: kind.clone(),
+            };
+            let (x, y) = clip_to_shape(&placed, 130.0, 90.0).unwrap();
+            let (cx, cy) = placed.center();
+            let normalized_x = (x - cx) / (placed.width / 2.0);
+            let normalized_y = (y - cy) / (placed.height / 2.0);
+            match kind {
+                NodeKind::Circle => assert_approx(normalized_x.powi(2) + normalized_y.powi(2), 1.0),
+                NodeKind::Diamond => assert_approx(normalized_x.abs() + normalized_y.abs(), 1.0),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn assert_route_endpoint_on_node(point: &semantic::Point, node: &semantic::NodeLayout) {
+        let cx = node.rect.x + node.rect.width / 2.0;
+        let cy = node.rect.y + node.rect.height / 2.0;
+        let normalized_x = (point.x - cx) / (node.rect.width / 2.0);
+        let normalized_y = (point.y - cy) / (node.rect.height / 2.0);
+        match node.kind {
+            NodeKind::Circle => assert_approx(normalized_x.powi(2) + normalized_y.powi(2), 1.0),
+            NodeKind::Diamond => assert_approx(normalized_x.abs() + normalized_y.abs(), 1.0),
+            _ => panic!("expected a circle or diamond"),
+        }
+    }
+
+    fn assert_semantic_edge_endpoints_on_shapes(graph: &semantic::GraphLayout, edge_index: usize) {
+        let edge = &graph.edges[edge_index];
+        let from = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == edge.from.id)
+            .unwrap();
+        let to = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == edge.to.id)
+            .unwrap();
+        assert_route_endpoint_on_node(edge.route.first().unwrap(), from);
+        assert_route_endpoint_on_node(edge.route.last().unwrap(), to);
+    }
+
+    #[test]
+    fn semantic_routes_clip_circle_and_diamond_endpoints_for_real_route_variants() {
+        let shaped_node = |id: &str, kind| Node::with_kind(id, id, kind);
+
+        // Two sources feeding one target force a diagonal route from the first
+        // source to the target centered between its predecessors.
+        let mut diagonal = GraphDiagram::new(Direction::Down);
+        diagonal
+            .nodes
+            .insert("circle".into(), shaped_node("circle", NodeKind::Circle));
+        diagonal
+            .nodes
+            .insert("other".into(), node("other", "other"));
+        diagonal
+            .nodes
+            .insert("diamond".into(), shaped_node("diamond", NodeKind::Diamond));
+        diagonal.edges.push(edge("circle", "diamond"));
+        diagonal.edges.push(edge("other", "diamond"));
+        let output = layout_full(&Diagram::Graph(diagonal)).unwrap();
+        let SemanticLayout::Graph(graph) = output.semantic else {
+            panic!("expected graph")
+        };
+        assert_semantic_edge_endpoints_on_shapes(&graph, 0);
+        let route = &graph.edges[0].route;
+        assert!((route[1].x - route[0].x).abs() > 1e-6);
+        assert!((route[1].y - route[0].y).abs() > 1e-6);
+
+        let mut long = GraphDiagram::new(Direction::Down);
+        long.nodes
+            .insert("circle".into(), shaped_node("circle", NodeKind::Circle));
+        long.nodes.insert("b".into(), node("b", "b"));
+        long.nodes.insert("c".into(), node("c", "c"));
+        long.nodes
+            .insert("diamond".into(), shaped_node("diamond", NodeKind::Diamond));
+        long.edges.push(edge("circle", "b"));
+        long.edges.push(edge("b", "c"));
+        long.edges.push(edge("c", "diamond"));
+        long.edges.push(edge("circle", "diamond"));
+        let output = layout_full(&Diagram::Graph(long)).unwrap();
+        let SemanticLayout::Graph(graph) = output.semantic else {
+            panic!("expected graph")
+        };
+        assert!(graph.edges[3].route.len() > 2);
+        assert_semantic_edge_endpoints_on_shapes(&graph, 3);
+
+        let mut mutual = GraphDiagram::new(Direction::Down);
+        mutual
+            .nodes
+            .insert("circle".into(), shaped_node("circle", NodeKind::Circle));
+        mutual
+            .nodes
+            .insert("diamond".into(), shaped_node("diamond", NodeKind::Diamond));
+        mutual.edges.push(edge("circle", "diamond"));
+        mutual.edges.push(edge("diamond", "circle"));
+        let output = layout_full(&Diagram::Graph(mutual)).unwrap();
+        let SemanticLayout::Graph(graph) = output.semantic else {
+            panic!("expected graph")
+        };
+        assert_ne!(graph.edges[0].route, graph.edges[1].route);
+        assert_semantic_edge_endpoints_on_shapes(&graph, 0);
+        assert_semantic_edge_endpoints_on_shapes(&graph, 1);
     }
 
     fn three_class_chain(direction: Direction) -> kozue_ir::ClassDiagram {

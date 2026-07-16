@@ -168,7 +168,7 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
         crate::bow_polyline(&mut pts, offsets[k]);
         let rel = &c.relations[rel_ids[k]];
 
-        let geom = crate::compute_edge_geom(pts, &placed[from], &placed[to]);
+        let geom = crate::compute_edge_geom(pts, &placed[from], &placed[to])?;
         let route = geom.route;
         let last = route.len() - 1;
 

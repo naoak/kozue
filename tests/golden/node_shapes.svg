@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 981.01 134.36" width="981.01" height="134.36">
+  <rect x="-20.00" y="-20.00" width="981.01" height="134.36" fill="#ffffff"/>
+  <rect x="0.00" y="27.58" width="79.09" height="39.20" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="39.54" y="52.78" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Start</text>
+  <rect x="229.09" y="27.58" width="101.33" height="39.20" rx="8.00" ry="8.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="279.75" y="52.78" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Process</text>
+  <polyline points="574.78,47.18 572.47,61.76 565.77,74.91 555.33,85.35 542.18,92.05 527.60,94.36 513.02,92.05 499.86,85.35 489.42,74.91 482.72,61.76 480.41,47.18 482.72,32.60 489.42,19.45 499.86,9.01 513.02,2.31 527.60,0.00 542.18,2.31 555.33,9.01 565.77,19.45 572.47,32.60 574.78,47.18" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="527.60" y="52.78" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Event</text>
+  <polyline points="832.89,7.98 941.01,47.18 832.89,86.38 724.78,47.18 832.89,7.98" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="832.89" y="52.78" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Decision</text>
+  <polyline points="79.09,47.18 219.09,47.18" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="229.09,47.18 219.09,52.18 219.09,42.18" fill="#000000" stroke="none"/>
+  <polyline points="330.41,47.18 470.41,47.18" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="480.41,47.18 470.41,52.18 470.41,42.18" fill="#000000" stroke="none"/>
+  <polyline points="574.78,47.18 714.78,47.18" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="724.78,47.18 714.78,52.18 714.78,42.18" fill="#000000" stroke="none"/>
+</svg>

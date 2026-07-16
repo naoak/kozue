@@ -1,0 +1,11 @@
+digraph {
+  rankdir=LR;
+  node [shape=box style=rounded];
+  "start" [label="Start" shape=box style=""];
+  "process" [label="Process" shape=box style=rounded];
+  "event" [label="Event" shape=circle style=""];
+  "decision" [label="Decision" shape=diamond style=""];
+  "start" -> "process";
+  "process" -> "event";
+  "event" -> "decision";
+}

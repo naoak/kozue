@@ -27,8 +27,9 @@
 //!
 //! # Compatibility notes
 //!
-//! - Node shapes: bare nodes use the legacy unspecified shape, `[label]` maps
-//!   to a rectangle, and `(label)` maps to a rounded rectangle.
+//! - Node shapes: bare nodes use the legacy unspecified shape; `[label]`,
+//!   `(label)`, `((label))`, and `{label}` map to rectangle, rounded rectangle,
+//!   circle, and diamond respectively.
 //! - Sequence open arrows `->` and `-->` map to `ArrowType::Triangle` with the
 //!   same solid/dashed line style as `-->>` / `->>`.
 //! - Flowchart directions TD/TB, LR, BT, and RL map to Down, Right, Up, and
@@ -198,8 +199,11 @@ fn parse_flowchart(
     direction: Direction,
     errors: &mut Vec<Diagnostic>,
 ) -> Result<Diagram, Vec<Diagnostic>> {
-    // nodes: id -> (label, kind); first declaration wins for both fields.
-    let mut node_specs: IndexMap<String, (String, NodeKind)> = IndexMap::new();
+    struct NodeSpec {
+        label: String,
+        kind: NodeKind,
+    }
+    let mut node_specs: IndexMap<String, NodeSpec> = IndexMap::new();
     // Raw edges to process after scanning all lines.
     struct RawEdge {
         from: String,
@@ -210,18 +214,28 @@ fn parse_flowchart(
     }
     let mut raw_edges: Vec<RawEdge> = Vec::new();
 
-    // Helper: register a node (first-declared label wins).
+    // Bare references preserve an explicit declaration; later explicit forms update in place.
     let mut ensure_node = |id: &str, label: Option<&str>, kind: NodeKind| {
-        if !node_specs.contains_key(id) {
-            let lbl = label.unwrap_or(id).to_string();
-            node_specs.insert(id.to_string(), (lbl, kind));
+        let explicit = kind != NodeKind::Default;
+        if let Some(existing) = node_specs.get_mut(id) {
+            if explicit {
+                existing.label = label.unwrap_or(id).to_string();
+                existing.kind = kind;
+            }
+        } else {
+            node_specs.insert(
+                id.to_string(),
+                NodeSpec {
+                    label: label.unwrap_or(id).to_string(),
+                    kind,
+                },
+            );
         }
-        // If node already exists and a different label is given, silently ignore
-        // (Mermaid: first occurrence wins).
     };
 
     for &(offset, line) in lines {
         let trimmed = line.trim();
+        let trimmed_offset = line.find(trimmed).unwrap_or(0);
         let line_end = offset + line.len();
         let span = offset..line_end;
 
@@ -262,11 +276,11 @@ fn parse_flowchart(
             continue;
         }
 
-        if let Some(delimiter) = unsupported_node_shape_after_id(trimmed) {
-            let delimiter_offset = line.find(delimiter).unwrap_or(0);
+        if let Some((delimiter, relative_start)) = unsupported_node_shape_after_id(trimmed) {
             errors.push(Diagnostic::new(
                 unsupported_node_shape_message(),
-                offset + delimiter_offset..offset + delimiter_offset + delimiter.len(),
+                offset + trimmed_offset + relative_start
+                    ..offset + trimmed_offset + relative_start + delimiter.len(),
             ));
             continue;
         }
@@ -280,7 +294,7 @@ fn parse_flowchart(
         //   A -- label --- B   (no-arrow + space label)
         //   A --> B --> C      (chain — generates multiple edges)
         // Each endpoint may optionally have [label] or (label).
-        if let Some(chain) = try_parse_edge_chain(trimmed, offset) {
+        if let Some(chain) = try_parse_edge_chain(trimmed, offset + trimmed_offset) {
             match chain {
                 Ok(edges) => {
                     for (
@@ -305,9 +319,7 @@ fn parse_flowchart(
                         });
                     }
                 }
-                Err(msg) => {
-                    errors.push(Diagnostic::new(msg, span));
-                }
+                Err(diagnostic) => errors.push(diagnostic),
             }
             continue;
         }
@@ -330,10 +342,10 @@ fn parse_flowchart(
 
     // Build GraphDiagram.
     let mut graph = GraphDiagram::new(direction);
-    for (id, (label, kind)) in &node_specs {
+    for (id, spec) in &node_specs {
         graph.nodes.insert(
             id.clone().into(),
-            Node::with_kind(id.clone(), label.clone(), kind.clone()),
+            Node::with_kind(id.clone(), spec.label.clone(), spec.kind.clone()),
         );
     }
 
@@ -871,26 +883,70 @@ fn try_parse_node_decl(line: &str) -> Option<(String, Option<String>, NodeKind)>
         return Some((id, None, NodeKind::Default));
     }
     if rest.starts_with('[') {
-        let label = extract_bracket(rest, '[', ']')?;
+        let (label, after) = extract_bracket_with_rest(rest, '[', ']')?;
+        if !after.trim().is_empty() {
+            return None;
+        }
         return Some((id, Some(label), NodeKind::Rectangle));
     }
+    if rest.starts_with("((") {
+        let (label, after) = extract_circle_with_rest(rest)?;
+        if !after.trim().is_empty() {
+            return None;
+        }
+        return Some((id, Some(label), NodeKind::Circle));
+    }
     if rest.starts_with('(') {
-        let label = extract_bracket(rest, '(', ')')?;
+        let (label, after) = extract_bracket_with_rest(rest, '(', ')')?;
+        if !after.trim().is_empty() {
+            return None;
+        }
         return Some((id, Some(label), NodeKind::RoundedRectangle));
+    }
+    if rest.starts_with('{') {
+        let (label, after) = extract_bracket_with_rest(rest, '{', '}')?;
+        if !after.trim().is_empty() {
+            return None;
+        }
+        return Some((id, Some(label), NodeKind::Diamond));
     }
     None
 }
 
 /// Parse one edge operator+target segment from `rest`, returning
 /// `(to_id, to_label, edge_label, arrow, remainder_after_to_node)` or None/Err.
-fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String>> {
+enum SegmentParseError {
+    Message(String),
+    UnsupportedShape {
+        relative_start: usize,
+        delimiter_len: usize,
+    },
+}
+
+impl From<String> for SegmentParseError {
+    fn from(message: String) -> Self {
+        Self::Message(message)
+    }
+}
+
+fn unsupported_segment_error(segment: &str, node: &str) -> Option<SegmentParseError> {
+    let (delimiter, node_relative_start) = unsupported_node_shape_after_id(node)?;
+    let node_start = node.as_ptr() as usize - segment.as_ptr() as usize;
+    Some(SegmentParseError::UnsupportedShape {
+        relative_start: node_start + node_relative_start,
+        delimiter_len: delimiter.len(),
+    })
+}
+
+fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, SegmentParseError>> {
     let rest = rest.trim_start();
 
     // Check for multi-target `&` — must error explicitly.
     if rest.starts_with('&') {
         return Some(Err(
             "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                .to_string(),
+                .to_string()
+                .into(),
         ));
     }
 
@@ -901,8 +957,8 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
             // `-->|label| to_node`
             let (edge_label, rest3) = extract_pipe_label(rest2)?;
             let rest3 = rest3.trim_start();
-            if unsupported_node_shape_after_id(rest3).is_some() {
-                return Some(Err(unsupported_node_shape_message()));
+            if let Some(error) = unsupported_segment_error(rest, rest3) {
+                return Some(Err(error));
             }
             // Strictly validate: rest3 must start with a valid node identifier.
             // parse_node_with_label will return None if it cannot parse a node.
@@ -913,7 +969,8 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
                         "syntax error: expected node identifier after `-->|{}|`, got `{}`",
                         edge_label,
                         rest3.chars().take(20).collect::<String>()
-                    )));
+                    )
+                    .into()));
                 }
             };
             let after = after.trim_start();
@@ -921,7 +978,8 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
             if after.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
             return Some(Ok((
@@ -937,19 +995,21 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
             if rest2.trim_start().starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
             // `-->  to_node` (no label)
-            if unsupported_node_shape_after_id(rest2).is_some() {
-                return Some(Err(unsupported_node_shape_message()));
+            if let Some(error) = unsupported_segment_error(rest, rest2) {
+                return Some(Err(error));
             }
             let (to_id, to_label, to_kind, after) = parse_node_with_label(rest2)?;
             let after = after.trim_start();
             if after.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
             return Some(Ok((
@@ -969,18 +1029,20 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
         if rest2.starts_with('&') {
             return Some(Err(
                 "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             ));
         }
-        if unsupported_node_shape_after_id(rest2).is_some() {
-            return Some(Err(unsupported_node_shape_message()));
+        if let Some(error) = unsupported_segment_error(rest, rest2) {
+            return Some(Err(error));
         }
         let (to_id, to_label, to_kind, after) = parse_node_with_label(rest2)?;
         let after = after.trim_start();
         if after.starts_with('&') {
             return Some(Err(
                 "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                    .to_string(),
+                    .to_string()
+                    .into(),
             ));
         }
         return Some(Ok((to_id, to_label, to_kind, None, ArrowType::None, after)));
@@ -994,18 +1056,20 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
             if rest3.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
-            if unsupported_node_shape_after_id(rest3).is_some() {
-                return Some(Err(unsupported_node_shape_message()));
+            if let Some(error) = unsupported_segment_error(rest, rest3) {
+                return Some(Err(error));
             }
             let (to_id, to_label, to_kind, after) = parse_node_with_label(rest3)?;
             let after = after.trim_start();
             if after.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
             let edge_label = if label.is_empty() { None } else { Some(label) };
@@ -1024,18 +1088,20 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
             if rest3.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
-            if unsupported_node_shape_after_id(rest3).is_some() {
-                return Some(Err(unsupported_node_shape_message()));
+            if let Some(error) = unsupported_segment_error(rest, rest3) {
+                return Some(Err(error));
             }
             let (to_id, to_label, to_kind, after) = parse_node_with_label(rest3)?;
             let after = after.trim_start();
             if after.starts_with('&') {
                 return Some(Err(
                     "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string(),
+                        .to_string()
+                        .into(),
                 ));
             }
             let edge_label = if label.is_empty() { None } else { Some(label) };
@@ -1061,10 +1127,13 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, String
 /// `Some(Ok(vec))` with one or more edges on success.
 fn try_parse_edge_chain(
     line: &str,
-    _offset: usize,
-) -> Option<Result<Vec<EdgeParseResult>, String>> {
-    if unsupported_node_shape_after_id(line).is_some() {
-        return Some(Err(unsupported_node_shape_message()));
+    offset: usize,
+) -> Option<Result<Vec<EdgeParseResult>, Diagnostic>> {
+    if let Some((delimiter, relative_start)) = unsupported_node_shape_after_id(line) {
+        return Some(Err(Diagnostic::new(
+            unsupported_node_shape_message(),
+            offset + relative_start..offset + relative_start + delimiter.len(),
+        )));
     }
     let (first_id, first_label, first_kind, rest) = parse_node_with_label(line)?;
     let rest = rest.trim_start();
@@ -1088,12 +1157,28 @@ fn try_parse_edge_chain(
                 if current_rest.is_empty() {
                     break;
                 }
-                return Some(Err(format!(
-                    "syntax error: unexpected tokens in edge: `{}`",
-                    current_rest.chars().take(40).collect::<String>()
+                return Some(Err(Diagnostic::new(
+                    format!(
+                        "syntax error: unexpected tokens in edge: `{}`",
+                        current_rest.chars().take(40).collect::<String>()
+                    ),
+                    offset..offset + line.len(),
                 )));
             }
-            Some(Err(msg)) => return Some(Err(msg)),
+            Some(Err(SegmentParseError::Message(message))) => {
+                return Some(Err(Diagnostic::new(message, offset..offset + line.len())))
+            }
+            Some(Err(SegmentParseError::UnsupportedShape {
+                relative_start,
+                delimiter_len,
+            })) => {
+                let segment_start = current_rest.as_ptr() as usize - line.as_ptr() as usize;
+                let start = offset + segment_start + relative_start;
+                return Some(Err(Diagnostic::new(
+                    unsupported_node_shape_message(),
+                    start..start + delimiter_len,
+                )));
+            }
             Some(Ok((to_id, to_label, to_kind, edge_label, arrow, remainder))) => {
                 results.push((
                     from_id.clone(),
@@ -1117,9 +1202,12 @@ fn try_parse_edge_chain(
                     && !current_rest.starts_with("---")
                     && !current_rest.starts_with("-- ")
                 {
-                    return Some(Err(format!(
-                        "syntax error: unexpected tokens after edge: `{}`",
-                        current_rest.chars().take(40).collect::<String>()
+                    return Some(Err(Diagnostic::new(
+                        format!(
+                            "syntax error: unexpected tokens after edge: `{}`",
+                            current_rest.chars().take(40).collect::<String>()
+                        ),
+                        offset..offset + line.len(),
                     )));
                 }
             }
@@ -1134,23 +1222,29 @@ fn try_parse_edge_chain(
 }
 
 fn unsupported_node_shape_message() -> String {
-    "unsupported: stadium, circle, diamond, or other compound Mermaid node shape".to_string()
+    "unsupported: this compound Mermaid node shape is not supported by kozue".to_string()
 }
 
-fn unsupported_node_shape_after_id(s: &str) -> Option<&'static str> {
+fn unsupported_node_shape_after_id(s: &str) -> Option<(&'static str, usize)> {
+    let start = s.as_ptr() as usize;
     let (_, rest) = split_id(s)?;
     let rest = rest.trim_start();
-    ["([", "((", "[[", "[(", "[/", "[\\", "{"]
+    let delimiter = ["(((", "{{", "@{", "([", "[[", "[(", "[/", "[\\"]
         .into_iter()
-        .find(|delimiter| rest.starts_with(delimiter))
+        .find(|delimiter| rest.starts_with(delimiter))?;
+    Some((delimiter, rest.as_ptr() as usize - start))
+}
+
+fn extract_circle_with_rest(s: &str) -> Option<(String, &str)> {
+    let (content, rest) = extract_bracket_with_rest(s, '(', ')')?;
+    let label = content.strip_prefix('(')?.strip_suffix(')')?.to_string();
+    Some((label, rest))
 }
 
 /// Parse a node reference at the start of `s`, which may have an optional shape
 /// label (`[label]` or `(label)`). Returns `(id, Option<label>, rest)` or None.
 ///
-/// Stadium/circle shapes (`([` or `((`) are NOT parsed here; they are detected and
-/// rejected by the caller (try_parse_node_decl_checked / try_parse_edge_chain) so
-/// that a clear "unsupported" error is reported instead of silently mangling the label.
+/// Unsupported compound shapes are rejected by the caller before this parser.
 fn parse_node_with_label(s: &str) -> Option<(String, Option<String>, NodeKind, &str)> {
     let (id, rest) = split_id(s)?;
     let rest = rest.trim_start();
@@ -1158,13 +1252,21 @@ fn parse_node_with_label(s: &str) -> Option<(String, Option<String>, NodeKind, &
         let (label, after) = extract_bracket_with_rest(rest, '[', ']')?;
         return Some((id, Some(label), NodeKind::Rectangle, after));
     }
-    // Reject stadium `([` and circle `((` shapes — do not attempt to parse.
-    if rest.starts_with("([") || rest.starts_with("((") {
+    // Reject stadium `([` before the generic rounded-rectangle parser.
+    if rest.starts_with("([") {
         return None;
+    }
+    if rest.starts_with("((") {
+        let (label, after) = extract_circle_with_rest(rest)?;
+        return Some((id, Some(label), NodeKind::Circle, after));
     }
     if rest.starts_with('(') {
         let (label, after) = extract_bracket_with_rest(rest, '(', ')')?;
         return Some((id, Some(label), NodeKind::RoundedRectangle, after));
+    }
+    if rest.starts_with('{') {
+        let (label, after) = extract_bracket_with_rest(rest, '{', '}')?;
+        return Some((id, Some(label), NodeKind::Diamond, after));
     }
     Some((id, None, NodeKind::Default, rest))
 }
@@ -1188,11 +1290,6 @@ fn split_id(s: &str) -> Option<(String, &str)> {
     }
     let id = s[..end].to_string();
     Some((id, &s[end..]))
-}
-
-/// Extract the content between open/close bracket chars, handling nested brackets.
-fn extract_bracket(s: &str, open: char, close: char) -> Option<String> {
-    extract_bracket_with_rest(s, open, close).map(|(content, _)| content)
 }
 
 fn extract_bracket_with_rest(s: &str, open: char, close: char) -> Option<(String, &str)> {
@@ -2171,12 +2268,11 @@ mod tests {
     }
 
     #[test]
-    fn first_label_wins_no_overwrite() {
-        // Mermaid: first occurrence of a node's label wins.
+    fn last_explicit_label_wins() {
         let src = "flowchart TD\n  A[First] --> B\n  A[Second] --> C\n";
         let d = parse(src).expect("should parse");
         let Diagram::Graph(g) = d else { panic!() };
-        assert_eq!(g.nodes["A"].label, "First", "first label must win");
+        assert_eq!(g.nodes["A"].label, "Second");
     }
 
     #[test]
@@ -2261,26 +2357,72 @@ mod tests {
 
     #[test]
     fn supported_node_shapes_map_to_semantic_kinds() {
-        let src = "flowchart TD\n  A\n  B[rectangle]\n  C(rounded)\n";
+        let src = "flowchart TD\n  A\n  B[rectangle]\n  C(rounded)\n  D((circle))\n  E{diamond}\n";
         let d = parse(src).expect("node shapes should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.nodes["A"].kind, NodeKind::Default);
         assert_eq!(g.nodes["B"].kind, NodeKind::Rectangle);
         assert_eq!(g.nodes["C"].kind, NodeKind::RoundedRectangle);
+        assert_eq!(g.nodes["D"].kind, NodeKind::Circle);
+        assert_eq!(g.nodes["E"].kind, NodeKind::Diamond);
     }
 
     #[test]
-    fn first_node_declaration_wins_for_label_and_shape_in_chains() {
-        let src =
-            "flowchart TD\n  A[first] --> B(round) --> C\n  A(later) --> D\n  B[later] --> D\n";
+    fn standalone_node_shapes_reject_trailing_tokens() {
+        for declaration in [
+            "A[rect] garbage",
+            "A(round) garbage",
+            "A((circle)) garbage",
+            "A{diamond} garbage",
+        ] {
+            let source = format!("flowchart TD\n  {declaration}\n");
+            let errors = parse(&source).expect_err("trailing tokens must be rejected");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("syntax error")),
+                "got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_long_node_delimiters_have_exact_spans_standalone_and_on_edges() {
+        for (shape, delimiter) in [
+            ("A(((double)))", "((("),
+            ("A{{hexagon}}", "{{"),
+            ("A@{ shape: circle }", "@{"),
+        ] {
+            for statement in [shape.to_string(), format!("X --> {shape}")] {
+                let source = format!("flowchart TD\n  {statement}\n");
+                let errors = parse(&source).expect_err("shape must be unsupported");
+                let start = source.find(delimiter).unwrap();
+                assert!(
+                    errors.iter().any(|error| {
+                        error.message.contains("unsupported")
+                            && error.span == (start..start + delimiter.len())
+                    }),
+                    "expected exact span for {statement:?}, got: {errors:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_declarations_update_in_place_and_bare_references_do_not_overwrite() {
+        let src = "flowchart TD\n  A[first] --> B(round) --> C\n  A --> D\n  A((last)) --> E\n  B --> E\n  B[later] --> E\n";
         let Diagram::Graph(graph) = parse(src).expect("flowchart should parse") else {
             panic!("expected graph")
         };
-        assert_eq!(graph.nodes["A"].label, "first");
-        assert_eq!(graph.nodes["A"].kind, NodeKind::Rectangle);
-        assert_eq!(graph.nodes["B"].label, "round");
-        assert_eq!(graph.nodes["B"].kind, NodeKind::RoundedRectangle);
+        assert_eq!(graph.nodes["A"].label, "last");
+        assert_eq!(graph.nodes["A"].kind, NodeKind::Circle);
+        assert_eq!(graph.nodes["B"].label, "later");
+        assert_eq!(graph.nodes["B"].kind, NodeKind::Rectangle);
         assert_eq!(graph.nodes["C"].kind, NodeKind::Default);
+        assert_eq!(
+            graph.nodes.keys().map(|id| id.as_str()).collect::<Vec<_>>(),
+            ["A", "B", "C", "D", "E"]
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2475,8 +2617,7 @@ mod tests {
         let src = "flowchart TD\n  A([丸い])\n";
         let errs = parse(src).expect_err("stadium shape should be unsupported");
         assert!(
-            errs.iter().any(|e| e.message.contains("unsupported")
-                && (e.message.contains("stadium") || e.message.contains("circle"))),
+            errs.iter().any(|e| e.message.contains("unsupported")),
             "got: {errs:?}"
         );
         let start = src.find("([").unwrap();
@@ -2484,24 +2625,24 @@ mod tests {
     }
 
     #[test]
-    fn circle_node_is_unsupported() {
-        let src = "flowchart TD\n  A((丸))\n";
-        let errs = parse(src).expect_err("circle shape should be unsupported");
-        assert!(
-            errs.iter().any(|e| e.message.contains("unsupported")
-                && (e.message.contains("stadium") || e.message.contains("circle"))),
-            "got: {errs:?}"
-        );
+    fn circle_and_diamond_are_supported_at_edge_endpoints() {
+        let source = "flowchart TD\n  A{decision} --> B((circle))\n";
+        let Diagram::Graph(graph) = parse(source).expect("shapes should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.nodes["A"].kind, NodeKind::Diamond);
+        assert_eq!(graph.nodes["A"].label, "decision");
+        assert_eq!(graph.nodes["B"].kind, NodeKind::Circle);
+        assert_eq!(graph.nodes["B"].label, "circle");
     }
 
     #[test]
-    fn diamond_and_edge_endpoint_circle_are_unsupported() {
-        for src in [
-            "flowchart TD\n  A{decision}\n",
-            "flowchart TD\n  A --> B((circle))\n",
+    fn remaining_compound_node_shapes_are_unsupported() {
+        for source in [
             "flowchart TD\n  A --> B[[subroutine]]\n",
+            "flowchart TD\n  A --> B[(database)]\n",
         ] {
-            let errors = parse(src).expect_err("shape should be unsupported");
+            let errors = parse(source).expect_err("shape should be unsupported");
             assert!(errors
                 .iter()
                 .any(|error| error.message.contains("unsupported")));

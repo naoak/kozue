@@ -53,8 +53,8 @@ fn native_and_mermaid_reverse_directions_produce_equivalent_ir() {
 
 #[test]
 fn native_and_mermaid_node_shapes_produce_equivalent_ir() {
-    let native = "graph shapes {\n a shape rectangle: \"A\"\n b shape rounded: \"B\"\n a -> b\n}";
-    let mermaid = "flowchart TD\n  a[A] --> b(B)\n";
+    let native = "graph shapes {\n a shape rectangle: \"A\"\n b shape rounded: \"B\"\n c shape circle: \"C\"\n d shape diamond: \"D\"\n a -> b\n b -> c\n c -> d\n}";
+    let mermaid = "flowchart TD\n  a[A] --> b(B) --> c((C)) --> d{D}\n";
     assert_eq!(
         kozue_dsl::parse(native).expect("native parse"),
         kozue_mermaid::parse(mermaid).expect("Mermaid parse")
@@ -63,7 +63,7 @@ fn native_and_mermaid_node_shapes_produce_equivalent_ir() {
 
 #[test]
 fn explicit_node_shapes_map_across_all_backends() {
-    let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n}";
+    let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n c shape circle: \"Circle\"\n dm shape diamond: \"Diamond\"\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
     let output = kozue_layout::layout_full(&diagram).unwrap();
 
@@ -71,6 +71,7 @@ fn explicit_node_shapes_map_across_all_backends() {
     assert!(svg.contains("rx=\"4.00\""));
     assert!(svg.contains("rx=\"0.00\""));
     assert!(svg.contains("rx=\"8.00\""));
+    assert_eq!(svg.matches("<polyline").count(), 2);
 
     let term = kozue_render_term::render(&output.scene);
     assert!(term.contains('┌'));
@@ -80,11 +81,15 @@ fn explicit_node_shapes_map_across_all_backends() {
     assert!(drawio.contains("id=\"n0\" value=\"Default\" style=\"rounded=1;"));
     assert!(drawio.contains("id=\"n1\" value=\"Rectangle\" style=\"rounded=0;"));
     assert!(drawio.contains("id=\"n2\" value=\"Rounded\" style=\"rounded=1;"));
+    assert!(drawio.contains("id=\"n3\" value=\"Circle\" style=\"ellipse;"));
+    assert!(drawio.contains("id=\"n4\" value=\"Diamond\" style=\"rhombus;"));
 
     let dot = kozue_render_dot::render(&diagram).unwrap();
     assert!(dot.contains("\"d\" [label=\"Default\"]"));
     assert!(dot.contains("\"r\" [label=\"Rectangle\" shape=box style=\"\"]"));
     assert!(dot.contains("\"rr\" [label=\"Rounded\" shape=box style=rounded]"));
+    assert!(dot.contains("\"c\" [label=\"Circle\" shape=circle style=\"\"]"));
+    assert!(dot.contains("\"dm\" [label=\"Diamond\" shape=diamond style=\"\"]"));
 
     let excalidraw: serde_json::Value =
         serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
@@ -95,11 +100,20 @@ fn explicit_node_shapes_map_across_all_backends() {
     assert!(!roundness("n0").is_null());
     assert!(roundness("n1").is_null());
     assert!(!roundness("n2").is_null());
+    let element_type = |id: &str| {
+        elements.iter().find(|element| element["id"] == id).unwrap()["type"]
+            .as_str()
+            .unwrap()
+    };
+    assert_eq!(element_type("n3"), "ellipse");
+    assert_eq!(element_type("n4"), "diamond");
 
     let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
     let pptx_text = String::from_utf8_lossy(&pptx);
     assert!(pptx_text.contains("prst=\"rect\""));
     assert!(pptx_text.contains("prst=\"roundRect\""));
+    assert!(pptx_text.contains("prst=\"ellipse\""));
+    assert!(pptx_text.contains("prst=\"diamond\""));
 
     let png_for = |shape: &str| {
         let source = format!("graph one {{ n {shape}: \"Node\" }}");
@@ -108,9 +122,19 @@ fn explicit_node_shapes_map_across_all_backends() {
         kozue_render_png::render(&scene).unwrap()
     };
     assert_ne!(png_for("shape rectangle"), png_for("shape rounded"));
+    assert_ne!(png_for("shape circle"), png_for("shape diamond"));
+    assert_ne!(png_for("shape rectangle"), png_for("shape circle"));
 }
 
-const GOLDEN_CASES: &[&str] = &["chain", "branch", "right", "cycle", "skip", "wide_right"];
+const GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "right",
+    "cycle",
+    "skip",
+    "wide_right",
+    "node_shapes",
+];
 
 const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
 
@@ -883,7 +907,7 @@ fn compile_term_mermaid(src: &str) -> String {
     kozue_render_term::render(&scene)
 }
 
-const TERM_GOLDEN_KZD_CASES: &[&str] = &["chain", "branch", "seq_basic"];
+const TERM_GOLDEN_KZD_CASES: &[&str] = &["chain", "branch", "seq_basic", "node_shapes"];
 const TERM_GOLDEN_MMD_CASES: &[&str] = &["mermaid_flow"];
 
 #[test]
@@ -984,7 +1008,7 @@ fn compile_png(src: &str) -> Vec<u8> {
     kozue_render_png::render(&scene).expect("golden PNG render must succeed")
 }
 
-const PNG_GOLDEN_CASES: &[&str] = &["chain", "branch", "seq_basic"];
+const PNG_GOLDEN_CASES: &[&str] = &["chain", "branch", "seq_basic", "node_shapes"];
 
 #[test]
 fn golden_pngs_match() {
@@ -1331,7 +1355,7 @@ fn compile_drawio_kzd(src: &str) -> String {
     kozue_render_drawio::render(&layout_out.semantic).expect("golden draw.io render must succeed")
 }
 
-const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1620,8 +1644,15 @@ fn compile_dot_kzd(src: &str) -> String {
     kozue_render_dot::render(&diagram).expect("golden DOT render must succeed")
 }
 
-const DOT_GRAPH_GOLDEN_CASES: &[&str] =
-    &["chain", "branch", "right", "cycle", "skip", "wide_right"];
+const DOT_GRAPH_GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "right",
+    "cycle",
+    "skip",
+    "wide_right",
+    "node_shapes",
+];
 const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DOT_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DOT_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -1716,7 +1747,7 @@ fn compile_excalidraw_kzd(src: &str) -> String {
         .expect("golden Excalidraw render must succeed")
 }
 
-const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1916,7 +1947,7 @@ fn compile_pptx_kzd(src: &str) -> Vec<u8> {
     kozue_render_pptx::render(&layout_out.semantic).expect("golden pptx render must succeed")
 }
 
-const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip"];
+const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];

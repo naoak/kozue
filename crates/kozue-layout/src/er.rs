@@ -129,7 +129,7 @@ pub(crate) fn layout_er_full(e: &ErDiagram) -> Result<crate::LayoutOutput, Layou
         crate::bow_polyline(&mut pts, offsets[k]);
         let rel = &e.relations[rel_ids[k]];
 
-        let geom = crate::compute_edge_geom(pts, &placed[from], &placed[to]);
+        let geom = crate::compute_edge_geom(pts, &placed[from], &placed[to])?;
         let route = geom.route;
         let last = route.len() - 1;
 

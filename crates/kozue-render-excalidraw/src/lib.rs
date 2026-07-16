@@ -684,9 +684,13 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
         let rect_id = format!("n{i}");
         let text_id = format!("{rect_id}-text");
 
-        let roundness = match &node.kind {
-            NodeKind::Default | NodeKind::RoundedRectangle => Some(Roundness { kind: 3 }),
-            NodeKind::Rectangle => None,
+        let (shape_kind, roundness) = match &node.kind {
+            NodeKind::Default | NodeKind::RoundedRectangle => {
+                ("rectangle", Some(Roundness { kind: 3 }))
+            }
+            NodeKind::Rectangle => ("rectangle", None),
+            NodeKind::Circle => ("ellipse", None),
+            NodeKind::Diamond => ("diamond", None),
             kind => {
                 return Err(RenderError::UnknownNodeKind {
                     description: format!("{kind:?}"),
@@ -701,6 +705,7 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
             r.height,
             roundness,
         );
+        rect.kind = shape_kind;
         rect.bound_elements = Some(vec![BoundElementRef {
             id: text_id.clone(),
             kind: "text",

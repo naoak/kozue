@@ -144,6 +144,8 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
             NodeKind::Default => "",
             NodeKind::Rectangle => " shape=box style=\"\"",
             NodeKind::RoundedRectangle => " shape=box style=rounded",
+            NodeKind::Circle => " shape=circle style=\"\"",
+            NodeKind::Diamond => " shape=diamond style=\"\"",
             kind => {
                 return Err(RenderError::UnknownNodeKind {
                     kind: format!("{kind:?}"),

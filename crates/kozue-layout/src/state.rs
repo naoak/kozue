@@ -293,7 +293,7 @@ pub(crate) fn layout_state_full(
         let trans = &diagram.transitions[ti];
         let trans_label = trans.label.as_deref();
 
-        let geom = super::compute_edge_geom(pts, &placed[from], &placed[to]);
+        let geom = super::compute_edge_geom(pts, &placed[from], &placed[to])?;
         // Label anchor from the shared helper (same value as the Scene text).
         let sem_label_anchor = trans_label.map(|lbl| {
             let (tw, th) = kozue_text::measure(lbl, FONT_SIZE * 0.85);

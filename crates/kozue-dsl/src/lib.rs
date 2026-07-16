@@ -422,6 +422,8 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .map(|(name, span)| match name.as_str() {
             "rectangle" => ParsedNodeShape::Known(NodeKind::Rectangle, span),
             "rounded" => ParsedNodeShape::Known(NodeKind::RoundedRectangle, span),
+            "circle" => ParsedNodeShape::Known(NodeKind::Circle, span),
+            "diamond" => ParsedNodeShape::Known(NodeKind::Diamond, span),
             _ => ParsedNodeShape::Unknown(name, span),
         });
     let node = ident_spanned()
@@ -642,7 +644,7 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     Some(ParsedNodeShape::Unknown(name, span)) => {
                         errors.push(CompileError {
                             message: format!(
-                                "unknown node shape `{name}`; expected `rectangle` or `rounded`"
+                                "unknown node shape `{name}`; expected `rectangle`, `rounded`, `circle`, or `diamond`"
                             ),
                             span: span.clone(),
                             secondary: None,
@@ -1634,6 +1636,8 @@ fn format_decl_stmt(stmt: &Stmt) -> String {
                     NodeKind::Default => {}
                     NodeKind::Rectangle => declaration.push_str(" shape rectangle"),
                     NodeKind::RoundedRectangle => declaration.push_str(" shape rounded"),
+                    NodeKind::Circle => declaration.push_str(" shape circle"),
+                    NodeKind::Diamond => declaration.push_str(" shape diamond"),
                     _ => unreachable!(),
                 }
             }
@@ -1804,7 +1808,7 @@ mod tests {
 
     #[test]
     fn graph_node_shapes_parse_and_unknown_shape_has_exact_span() {
-        let source = "graph d {\n a\n b shape rectangle\n c shape rounded: \"See\"\n}";
+        let source = "graph d {\n a\n b shape rectangle\n c shape rounded: \"See\"\n d shape circle\n e shape diamond: \"Decide\"\n}";
         let Diagram::Graph(graph) = parse(source).expect("shapes should parse") else {
             panic!("expected graph")
         };
@@ -1812,6 +1816,9 @@ mod tests {
         assert_eq!(graph.nodes["b"].kind, NodeKind::Rectangle);
         assert_eq!(graph.nodes["c"].kind, NodeKind::RoundedRectangle);
         assert_eq!(graph.nodes["c"].label, "See");
+        assert_eq!(graph.nodes["d"].kind, NodeKind::Circle);
+        assert_eq!(graph.nodes["e"].kind, NodeKind::Diamond);
+        assert_eq!(graph.nodes["e"].label, "Decide");
 
         let invalid = "graph d { a shape capsule }";
         let errors = parse(invalid).expect_err("unknown shape must fail");
@@ -1828,6 +1835,8 @@ mod tests {
         for source in [
             "sequence d { a shape rectangle }",
             "state d { a shape rounded }",
+            "sequence d { a shape circle }",
+            "state d { a shape diamond }",
         ] {
             let errors = parse(source).expect_err("shape must be graph-only");
             assert!(errors
@@ -2268,10 +2277,12 @@ mod tests {
 
     #[test]
     fn fmt_node_shapes_is_idempotent() {
-        let source = "graph shapes { a shape rectangle\n b shape rounded : \"Bee\"\n a -> b }";
+        let source = "graph shapes { a shape rectangle\n b shape rounded : \"Bee\"\n c shape circle\n d shape diamond : \"Dee\"\n a -> b }";
         let formatted = format_kzd(source).expect("should format");
         assert!(formatted.contains("a shape rectangle"));
         assert!(formatted.contains("b shape rounded: \"Bee\""));
+        assert!(formatted.contains("c shape circle"));
+        assert!(formatted.contains("d shape diamond: \"Dee\""));
         assert_eq!(format_kzd(&formatted).unwrap(), formatted);
     }
 
