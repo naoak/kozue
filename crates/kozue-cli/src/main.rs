@@ -167,15 +167,21 @@ fn run_render(
             return ExitCode::FAILURE;
         }
     };
-    let kozue_layout::LayoutOutput {
-        scene,
-        semantic: layout_semantic,
-        ..
-    } = layout_out;
+    let export_input = if matches!(format, Format::Drawio | Format::Excalidraw | Format::Pptx) {
+        match layout_out.export_input(&diagram) {
+            Ok(input) => Some(input),
+            Err(error) => {
+                eprintln!("error: export contract failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
 
     match format {
         Format::Svg => {
-            let svg = kozue_render_svg::render(&scene);
+            let svg = kozue_render_svg::render(&layout_out.scene);
             let out_path = output.unwrap_or_else(|| input.with_extension("svg"));
             if let Err(e) = std::fs::write(&out_path, svg) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
@@ -183,7 +189,7 @@ fn run_render(
             }
         }
         Format::Term => {
-            let text = kozue_render_term::render(&scene);
+            let text = kozue_render_term::render(&layout_out.scene);
             match output {
                 Some(out_path) => {
                     if let Err(e) = std::fs::write(&out_path, text) {
@@ -197,7 +203,7 @@ fn run_render(
             }
         }
         Format::Png => {
-            let png = match kozue_render_png::render(&scene) {
+            let png = match kozue_render_png::render(&layout_out.scene) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     eprintln!("error: PNG render failed: {}", e);
@@ -211,7 +217,7 @@ fn run_render(
             }
         }
         Format::Drawio => {
-            let drawio = match kozue_render_drawio::render(&layout_semantic) {
+            let drawio = match kozue_render_drawio::render_export(export_input.as_ref().unwrap()) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("error: draw.io export failed: {}", e);
@@ -241,13 +247,14 @@ fn run_render(
             }
         }
         Format::Excalidraw => {
-            let excalidraw = match kozue_render_excalidraw::render(&layout_semantic) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("error: Excalidraw export failed: {}", e);
-                    return ExitCode::FAILURE;
-                }
-            };
+            let excalidraw =
+                match kozue_render_excalidraw::render_export(export_input.as_ref().unwrap()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("error: Excalidraw export failed: {}", e);
+                        return ExitCode::FAILURE;
+                    }
+                };
             let out_path = output.unwrap_or_else(|| input.with_extension("excalidraw"));
             if let Err(e) = std::fs::write(&out_path, &excalidraw) {
                 eprintln!("error: cannot write {}: {}", out_path.display(), e);
@@ -255,7 +262,7 @@ fn run_render(
             }
         }
         Format::Pptx => {
-            let pptx = match kozue_render_pptx::render(&layout_semantic) {
+            let pptx = match kozue_render_pptx::render_export(export_input.as_ref().unwrap()) {
                 Ok(bytes) => bytes,
                 Err(e) => {
                     eprintln!("error: PowerPoint export failed: {}", e);

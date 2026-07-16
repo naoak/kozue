@@ -123,6 +123,13 @@ pub(crate) fn layout_state_full(
     let mut edge_to_trans: Vec<usize> = Vec::new(); // raw_edge_index -> transition_index
 
     for (ti, t) in diagram.transitions.iter().enumerate() {
+        if matches!(t.from, kozue_ir::Endpoint::Final)
+            || matches!(t.to, kozue_ir::Endpoint::Initial)
+        {
+            return Err(LayoutError {
+                message: format!("illegal state transition endpoint at transition {ti}"),
+            });
+        }
         let from_idx = match &t.from {
             kozue_ir::Endpoint::Initial => initial_idx,
             kozue_ir::Endpoint::Final => None,
@@ -136,7 +143,9 @@ pub(crate) fn layout_state_full(
             _ => None,
         };
         let (Some(from), Some(to)) = (from_idx, to_idx) else {
-            continue;
+            return Err(LayoutError {
+                message: format!("unresolved state transition endpoint at transition {ti}"),
+            });
         };
         if from == to {
             self_trans_indices.push(ti);

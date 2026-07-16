@@ -56,6 +56,19 @@ transition 自体の ID、annotation の frontend 構文対応を延期した。
 dangling target、空の multi-element target の semantic validation も、実際に frontend が
 annotation を生成するマイルストーンで追加する。
 
+### M3x0: Exchange exporter contract bridge
+
+状態: **実装済み**
+
+- `LayoutOutput::export_input(&Diagram)` が diagram / scene / semantic layout を借用し、
+  top-level variant、5 domain の identity/order/index/semantic parity、有限かつ非負の geometry を検証
+- `ExportInput` は clone を持たず、private field と getter のみを公開
+- draw.io / Excalidraw / PowerPoint に strict `render_export` API を追加し、legacy `render` と同一 bytes を維持
+- CLI の exchange 3形式だけを strict contract 経由に変更。SVG / terminal / PNG / DOT の入力境界は維持
+- dangling graph/class/ER relation、dangling sequence participant、illegal state endpoint と
+  future enum fallback を layout error に変更
+- IR schema と既存 golden bytes は変更しない
+
 ### M3: Existing diagram semantics
 
 状態: **M3a2a-II（Graph circle / diamond shapes）実装済み**

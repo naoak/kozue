@@ -145,7 +145,7 @@ pub struct MessageLayout {
 pub struct SequenceLayout {
     /// Participants in declaration order.
     pub participants: Vec<ParticipantLayout>,
-    /// Messages in item order (only `Message` items; other future item types are skipped).
+    /// Messages in item order. Unsupported future item types are rejected by layout.
     pub messages: Vec<MessageLayout>,
 }
 

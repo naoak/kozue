@@ -31,9 +31,17 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
     let mut raw_edges: Vec<(usize, usize)> = Vec::new();
     let mut rel_ids: Vec<usize> = Vec::new();
     for (i, r) in c.relations.iter().enumerate() {
+        crate::validate_marker(r.from_marker)?;
+        crate::validate_marker(r.to_marker)?;
+        crate::validate_line(r.line)?;
         let (Some(&from), Some(&to)) = (index_of.get(r.from.as_str()), index_of.get(r.to.as_str()))
         else {
-            continue;
+            return Err(LayoutError {
+                message: format!(
+                    "class relation references unknown class ({} -> {})",
+                    r.from, r.to
+                ),
+            });
         };
         if from == to {
             return Err(LayoutError {

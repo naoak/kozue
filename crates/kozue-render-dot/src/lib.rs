@@ -83,6 +83,12 @@ pub enum RenderError {
     },
     /// A future graph node kind has no defined DOT mapping.
     UnknownNodeKind { kind: String },
+    /// A future arrow type has no defined DOT mapping.
+    UnknownArrowType { arrow: String },
+    /// A future relation line style has no defined DOT mapping.
+    UnknownLineStyle { line: String },
+    /// A future relation end marker has no defined DOT mapping.
+    UnknownEndMarker { marker: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -102,6 +108,15 @@ impl std::fmt::Display for RenderError {
             }
             RenderError::UnknownNodeKind { kind } => {
                 write!(f, "unsupported DOT graph node kind: {kind}")
+            }
+            RenderError::UnknownArrowType { arrow } => {
+                write!(f, "unsupported DOT arrow type: {arrow}")
+            }
+            RenderError::UnknownLineStyle { line } => {
+                write!(f, "unsupported DOT line style: {line}")
+            }
+            RenderError::UnknownEndMarker { marker } => {
+                write!(f, "unsupported DOT end marker: {marker}")
             }
         }
     }
@@ -177,7 +192,7 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
             edge.to.as_str(),
             edge.label.as_deref(),
             edge.arrow,
-        ));
+        )?);
     }
 
     out.push_str("}\n");
@@ -200,23 +215,34 @@ fn rankdir(direction: Direction) -> Result<&'static str, RenderError> {
 }
 
 /// Format a single `a -> b [attrs];` statement.
-fn edge_stmt(from: &str, to: &str, label: Option<&str>, arrow: ArrowType) -> String {
+fn edge_stmt(
+    from: &str,
+    to: &str,
+    label: Option<&str>,
+    arrow: ArrowType,
+) -> Result<String, RenderError> {
     let mut attrs: Vec<String> = Vec::new();
     if let Some(l) = label {
         attrs.push(format!("label={}", quote(l)));
     }
-    if arrow == ArrowType::None {
-        attrs.push("dir=none".to_string());
+    match arrow {
+        ArrowType::Triangle => {}
+        ArrowType::None => attrs.push("dir=none".to_string()),
+        _ => {
+            return Err(RenderError::UnknownArrowType {
+                arrow: format!("{arrow:?}"),
+            })
+        }
     }
     if attrs.is_empty() {
-        format!("  {} -> {};\n", quote(from), quote(to))
+        Ok(format!("  {} -> {};\n", quote(from), quote(to)))
     } else {
-        format!(
+        Ok(format!(
             "  {} -> {} [{}];\n",
             quote(from),
             quote(to),
             attrs.join(" ")
-        )
+        ))
     }
 }
 
@@ -279,12 +305,7 @@ fn render_state(s: &StateDiagram) -> Result<String, RenderError> {
 fn transition_stmt(s: &StateDiagram, t: &Transition) -> Result<String, RenderError> {
     let from = endpoint_id(s, &t.from)?;
     let to = endpoint_id(s, &t.to)?;
-    Ok(edge_stmt(
-        &from,
-        &to,
-        t.label.as_deref(),
-        ArrowType::Triangle,
-    ))
+    edge_stmt(&from, &to, t.label.as_deref(), ArrowType::Triangle)
 }
 
 /// Resolve a transition endpoint to a DOT node identifier.
@@ -339,7 +360,7 @@ fn render_class(c: &ClassDiagram) -> Result<String, RenderError> {
                 node_id: rel.to.to_string(),
             });
         }
-        out.push_str(&class_relation_stmt(rel));
+        out.push_str(&class_relation_stmt(rel)?);
     }
 
     out.push_str("}\n");
@@ -434,7 +455,7 @@ fn render_er(e: &ErDiagram) -> Result<String, RenderError> {
                 node_id: rel.to.to_string(),
             });
         }
-        out.push_str(&er_relation_stmt(rel));
+        out.push_str(&er_relation_stmt(rel)?);
     }
 
     out.push_str("}\n");
@@ -483,7 +504,7 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-fn er_relation_stmt(rel: &ErRelation) -> String {
+fn er_relation_stmt(rel: &ErRelation) -> Result<String, RenderError> {
     relation_stmt(
         rel.from.as_str(),
         rel.to.as_str(),
@@ -500,7 +521,7 @@ fn er_relation_stmt(rel: &ErRelation) -> String {
 // Shared relation/marker rendering (class + ER)
 // ---------------------------------------------------------------------------
 
-fn class_relation_stmt(rel: &ClassRelation) -> String {
+fn class_relation_stmt(rel: &ClassRelation) -> Result<String, RenderError> {
     relation_stmt(
         rel.from.as_str(),
         rel.to.as_str(),
@@ -528,14 +549,20 @@ fn relation_stmt(
     label: Option<&str>,
     from_mult: Option<&str>,
     to_mult: Option<&str>,
-) -> String {
+) -> Result<String, RenderError> {
     let mut attrs = vec![
         "dir=both".to_string(),
-        format!("arrowtail={}", arrow_shape(from_marker)),
-        format!("arrowhead={}", arrow_shape(to_marker)),
+        format!("arrowtail={}", arrow_shape(from_marker)?),
+        format!("arrowhead={}", arrow_shape(to_marker)?),
     ];
-    if line == LineStyle::Dashed {
-        attrs.push("style=dashed".to_string());
+    match line {
+        LineStyle::Solid => {}
+        LineStyle::Dashed => attrs.push("style=dashed".to_string()),
+        _ => {
+            return Err(RenderError::UnknownLineStyle {
+                line: format!("{line:?}"),
+            })
+        }
     }
     if let Some(l) = label {
         attrs.push(format!("label={}", quote(l)));
@@ -546,12 +573,12 @@ fn relation_stmt(
     if let Some(m) = to_mult {
         attrs.push(format!("headlabel={}", quote(m)));
     }
-    format!(
+    Ok(format!(
         "  {} -> {} [{}];\n",
         quote(from),
         quote(to),
         attrs.join(" ")
-    )
+    ))
 }
 
 /// Map an [`EndMarker`] to a Graphviz arrow-shape name.
@@ -569,10 +596,9 @@ fn relation_stmt(
 /// | `ErOneOrMany`       | `teecrow`      |
 /// | `ErZeroOrMany`      | `odotcrow`     |
 ///
-/// Any future `#[non_exhaustive]` variant falls back to `none` rather than
-/// producing invalid DOT.
-fn arrow_shape(marker: EndMarker) -> &'static str {
-    match marker {
+/// Future `#[non_exhaustive]` variants are explicit errors.
+fn arrow_shape(marker: EndMarker) -> Result<&'static str, RenderError> {
+    Ok(match marker {
         EndMarker::None => "none",
         EndMarker::HollowTriangle => "empty",
         EndMarker::OpenArrow => "vee",
@@ -583,8 +609,12 @@ fn arrow_shape(marker: EndMarker) -> &'static str {
         EndMarker::ErZeroOrOne => "odottee",
         EndMarker::ErOneOrMany => "teecrow",
         EndMarker::ErZeroOrMany => "odotcrow",
-        _ => "none",
-    }
+        _ => {
+            return Err(RenderError::UnknownEndMarker {
+                marker: format!("{marker:?}"),
+            })
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +646,43 @@ fn quote(s: &str) -> String {
 mod tests {
     use super::*;
     use kozue_ir::{ClassNode, Edge, ErAttribute, ErEntity, Node, State, Transition};
+
+    #[test]
+    fn known_arrow_line_and_marker_mappings_are_preserved() {
+        assert_eq!(
+            edge_stmt("a", "b", None, ArrowType::Triangle).unwrap(),
+            "  \"a\" -> \"b\";\n"
+        );
+        assert!(edge_stmt("a", "b", None, ArrowType::None)
+            .unwrap()
+            .contains("dir=none"));
+        for (marker, expected) in [
+            (EndMarker::None, "none"),
+            (EndMarker::HollowTriangle, "empty"),
+            (EndMarker::OpenArrow, "vee"),
+            (EndMarker::FilledDiamond, "diamond"),
+            (EndMarker::HollowDiamond, "odiamond"),
+            (EndMarker::ErOne, "tee"),
+            (EndMarker::ErMany, "crow"),
+            (EndMarker::ErZeroOrOne, "odottee"),
+            (EndMarker::ErOneOrMany, "teecrow"),
+            (EndMarker::ErZeroOrMany, "odotcrow"),
+        ] {
+            assert_eq!(arrow_shape(marker).unwrap(), expected);
+        }
+        assert!(relation_stmt(
+            "a",
+            "b",
+            EndMarker::None,
+            EndMarker::None,
+            LineStyle::Dashed,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .contains("style=dashed"));
+    }
 
     fn sample_class_diagram() -> ClassDiagram {
         let mut cd = ClassDiagram::new(Direction::Down);

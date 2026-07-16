@@ -17,6 +17,7 @@
 mod bounds;
 mod boxes;
 mod class;
+mod contract;
 mod coords;
 mod cycle;
 mod er;
@@ -29,10 +30,11 @@ mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, ElementId, GraphDiagram, NodeKind, Path, Rect, Scene, SceneItem,
-    Text, TextAlign,
+    ArrowType, Diagram, Direction, ElementId, EndMarker, GraphDiagram, LineStyle, NodeKind, Path,
+    Rect, Scene, SceneItem, Text, TextAlign,
 };
 
+pub use contract::{validate_export_semantics, ExportContractError, ExportInput};
 pub use semantic::SemanticLayout;
 
 pub(crate) const FONT_SIZE: f64 = 16.0;
@@ -98,6 +100,42 @@ impl std::fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
+pub(crate) fn validate_arrow(arrow: ArrowType) -> Result<(), LayoutError> {
+    match arrow {
+        ArrowType::Triangle | ArrowType::None => Ok(()),
+        _ => Err(LayoutError {
+            message: format!("unsupported arrow type: {arrow:?}"),
+        }),
+    }
+}
+
+pub(crate) fn validate_line(line: LineStyle) -> Result<(), LayoutError> {
+    match line {
+        LineStyle::Solid | LineStyle::Dashed => Ok(()),
+        _ => Err(LayoutError {
+            message: format!("unsupported line style: {line:?}"),
+        }),
+    }
+}
+
+pub(crate) fn validate_marker(marker: EndMarker) -> Result<(), LayoutError> {
+    match marker {
+        EndMarker::None
+        | EndMarker::HollowTriangle
+        | EndMarker::OpenArrow
+        | EndMarker::FilledDiamond
+        | EndMarker::HollowDiamond
+        | EndMarker::ErOne
+        | EndMarker::ErMany
+        | EndMarker::ErZeroOrOne
+        | EndMarker::ErOneOrMany
+        | EndMarker::ErZeroOrMany => Ok(()),
+        _ => Err(LayoutError {
+            message: format!("unsupported end marker: {marker:?}"),
+        }),
+    }
+}
+
 /// A positioned node box.
 pub(crate) struct Placed {
     pub(crate) x: f64,
@@ -126,6 +164,15 @@ pub struct LayoutOutput {
     pub semantic: SemanticLayout,
 }
 
+impl LayoutOutput {
+    pub fn export_input<'a>(
+        &'a self,
+        diagram: &'a Diagram,
+    ) -> Result<ExportInput<'a>, ExportContractError> {
+        ExportInput::new(diagram, &self.scene, &self.semantic)
+    }
+}
+
 /// Lay out a semantic [`Diagram`] into a [`Scene`] together with the
 /// [`SemanticLayout`] that maps diagram elements to their geometric positions.
 ///
@@ -134,7 +181,7 @@ pub struct LayoutOutput {
 pub fn layout_full(diagram: &Diagram) -> Result<LayoutOutput, LayoutError> {
     match diagram {
         Diagram::Graph(g) => layout_graph_full(g),
-        Diagram::Sequence(s) => Ok(sequence::layout_sequence_full(s)),
+        Diagram::Sequence(s) => sequence::layout_sequence_full(s),
         Diagram::State(s) => state::layout_state_full(s),
         Diagram::Class(c) => class::layout_class_full(c),
         Diagram::Er(e) => er::layout_er_full(e),
@@ -298,14 +345,19 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
         .collect();
     let n = ids.len();
 
-    // Resolve edge endpoints (skipping edges with unknown endpoints, which
-    // the DSL already rejects).
+    // Resolve edge endpoints.
     let mut raw_edges: Vec<(usize, usize)> = Vec::new();
     let mut edge_ids: Vec<usize> = Vec::new();
     for (i, e) in g.edges.iter().enumerate() {
+        validate_arrow(e.arrow)?;
         let (Some(&from), Some(&to)) = (index_of.get(e.from.as_str()), index_of.get(e.to.as_str()))
         else {
-            continue;
+            return Err(LayoutError {
+                message: format!(
+                    "graph edge references unknown node ({} -> {})",
+                    e.from, e.to
+                ),
+            });
         };
         if from == to {
             return Err(LayoutError {
@@ -1605,6 +1657,78 @@ mod tests {
         g.edges.push(edge("a", "a"));
         let result = layout(&Diagram::Graph(g));
         assert!(result.is_err(), "self loops must be rejected");
+    }
+
+    #[test]
+    fn dangling_relations_messages_and_illegal_state_endpoints_are_errors() {
+        let mut graph = GraphDiagram::new(Direction::Down);
+        graph.nodes.insert("a".into(), node("a", "A"));
+        graph.edges.push(edge("a", "missing"));
+        assert!(layout_full(&Diagram::Graph(graph)).is_err());
+
+        let mut sequence = kozue_ir::SequenceDiagram::new();
+        sequence
+            .participants
+            .insert("a".into(), kozue_ir::Participant::new("a", "A"));
+        sequence
+            .items
+            .push(kozue_ir::SequenceItem::Message(kozue_ir::Message::new(
+                "a",
+                "missing",
+                None,
+                kozue_ir::LineStyle::Solid,
+                ArrowType::Triangle,
+            )));
+        assert!(layout_full(&Diagram::Sequence(sequence)).is_err());
+
+        let mut class = kozue_ir::ClassDiagram::new(Direction::Down);
+        class
+            .classes
+            .insert("a".into(), kozue_ir::ClassNode::new("a", "A"));
+        class.relations.push(kozue_ir::ClassRelation::new(
+            "a",
+            "missing",
+            kozue_ir::EndMarker::None,
+            kozue_ir::EndMarker::None,
+            kozue_ir::LineStyle::Solid,
+            None,
+            None,
+            None,
+        ));
+        assert!(layout_full(&Diagram::Class(class)).is_err());
+
+        let mut er = kozue_ir::ErDiagram::new();
+        er.entities
+            .insert("a".into(), kozue_ir::ErEntity::new("a", "A"));
+        er.relations.push(kozue_ir::ErRelation::new(
+            "a",
+            "missing",
+            kozue_ir::EndMarker::ErOne,
+            kozue_ir::EndMarker::ErMany,
+            None,
+            kozue_ir::LineStyle::Solid,
+        ));
+        assert!(layout_full(&Diagram::Er(er)).is_err());
+
+        for transition in [
+            kozue_ir::Transition::new(
+                kozue_ir::Endpoint::Final,
+                kozue_ir::Endpoint::State("a".into()),
+                None,
+            ),
+            kozue_ir::Transition::new(
+                kozue_ir::Endpoint::State("a".into()),
+                kozue_ir::Endpoint::Initial,
+                None,
+            ),
+        ] {
+            let mut state = kozue_ir::StateDiagram::new();
+            state
+                .states
+                .insert("a".into(), kozue_ir::State::new("a", "A"));
+            state.transitions.push(transition);
+            assert!(layout_full(&Diagram::State(state)).is_err());
+        }
     }
 
     // --- Sequence diagram layout tests ---

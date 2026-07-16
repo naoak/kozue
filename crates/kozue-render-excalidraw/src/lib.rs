@@ -72,6 +72,7 @@ use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
+use kozue_layout::ExportInput;
 use serde::Serialize;
 
 const MARGIN: f64 = 20.0;
@@ -110,6 +111,8 @@ pub enum RenderError {
     },
     /// A future graph node kind has no defined Excalidraw mapping.
     UnknownNodeKind { description: String },
+    /// A future semantic enum variant has no defined export mapping.
+    InvalidSemantic { description: String },
     /// JSON serialization failed (e.g. a non-finite coordinate produced a
     /// NaN/Infinity float, which `serde_json` refuses to encode). This should
     /// not occur for layouts produced by `kozue_layout::layout_full`; it is
@@ -142,6 +145,12 @@ impl std::fmt::Display for RenderError {
                 write!(
                     f,
                     "Excalidraw export: unknown graph node kind: {description}"
+                )
+            }
+            RenderError::InvalidSemantic { description } => {
+                write!(
+                    f,
+                    "Excalidraw export: invalid semantic value: {description}"
                 )
             }
             RenderError::Serialization { message } => {
@@ -351,6 +360,11 @@ impl AnyElement {
 /// Returns [`RenderError::Serialization`] if the resulting scene cannot be
 /// encoded as JSON (should not happen for finite layout coordinates).
 pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
+    kozue_layout::validate_export_semantics(layout).map_err(|error| {
+        RenderError::InvalidSemantic {
+            description: error.to_string(),
+        }
+    })?;
     let mut elements = match layout {
         SemanticLayout::Graph(g) => render_graph(g)?,
         SemanticLayout::State(s) => render_state(s)?,
@@ -375,6 +389,11 @@ pub fn render(layout: &SemanticLayout) -> Result<String, RenderError> {
     serde_json::to_string_pretty(&doc).map_err(|e| RenderError::Serialization {
         message: e.to_string(),
     })
+}
+
+/// Export a validated diagram/scene/semantic contract to Excalidraw JSON.
+pub fn render_export(input: &ExportInput<'_>) -> Result<String, RenderError> {
+    render(input.semantic())
 }
 
 /// Assign each element's `seed` to its 1-based position in the output array

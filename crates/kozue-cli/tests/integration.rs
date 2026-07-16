@@ -126,6 +126,43 @@ fn explicit_node_shapes_map_across_all_backends() {
     assert_ne!(png_for("shape rectangle"), png_for("shape circle"));
 }
 
+#[test]
+fn strict_exchange_export_matches_legacy_bytes_for_all_domains_and_is_deterministic() {
+    for name in [
+        "chain",
+        "seq_basic",
+        "state_basic",
+        "class_basic",
+        "er_basic",
+    ] {
+        let source = std::fs::read_to_string(golden_dir().join(format!("{name}.kzd"))).unwrap();
+        let diagram = kozue_dsl::parse(&source).unwrap();
+        let output = kozue_layout::layout_full(&diagram).unwrap();
+        let input = output.export_input(&diagram).unwrap();
+
+        let drawio = kozue_render_drawio::render_export(&input).unwrap();
+        assert_eq!(
+            drawio,
+            kozue_render_drawio::render(&output.semantic).unwrap()
+        );
+        assert_eq!(drawio, kozue_render_drawio::render_export(&input).unwrap());
+
+        let excalidraw = kozue_render_excalidraw::render_export(&input).unwrap();
+        assert_eq!(
+            excalidraw,
+            kozue_render_excalidraw::render(&output.semantic).unwrap()
+        );
+        assert_eq!(
+            excalidraw,
+            kozue_render_excalidraw::render_export(&input).unwrap()
+        );
+
+        let pptx = kozue_render_pptx::render_export(&input).unwrap();
+        assert_eq!(pptx, kozue_render_pptx::render(&output.semantic).unwrap());
+        assert_eq!(pptx, kozue_render_pptx::render_export(&input).unwrap());
+    }
+}
+
 const GOLDEN_CASES: &[&str] = &[
     "chain",
     "branch",

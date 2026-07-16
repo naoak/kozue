@@ -80,6 +80,7 @@ use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
     StateEndpointId, StateLayout,
 };
+use kozue_layout::ExportInput;
 
 /// Fixed scene margin (px), matching the SVG/PNG/draw.io/Excalidraw renderers.
 const MARGIN: f64 = 20.0;
@@ -120,6 +121,8 @@ pub enum RenderError {
     },
     /// A future graph node kind has no defined PowerPoint mapping.
     UnknownNodeKind { description: String },
+    /// A future semantic enum variant has no defined export mapping.
+    InvalidSemantic { description: String },
 }
 
 impl std::fmt::Display for RenderError {
@@ -146,6 +149,12 @@ impl std::fmt::Display for RenderError {
                     "PowerPoint export: unknown graph node kind: {description}"
                 )
             }
+            RenderError::InvalidSemantic { description } => {
+                write!(
+                    f,
+                    "PowerPoint export: invalid semantic value: {description}"
+                )
+            }
         }
     }
 }
@@ -169,6 +178,11 @@ impl std::error::Error for RenderError {}
 /// ID. Returns [`RenderError::UnknownEndpoint`] if a state transition
 /// endpoint cannot be resolved.
 pub fn render(layout: &SemanticLayout) -> Result<Vec<u8>, RenderError> {
+    kozue_layout::validate_export_semantics(layout).map_err(|error| {
+        RenderError::InvalidSemantic {
+            description: error.to_string(),
+        }
+    })?;
     let slide_xml = match layout {
         SemanticLayout::Graph(g) => render_graph(g)?,
         SemanticLayout::State(s) => render_state(s)?,
@@ -178,6 +192,11 @@ pub fn render(layout: &SemanticLayout) -> Result<Vec<u8>, RenderError> {
         _ => return Err(RenderError::UnsupportedDiagram { kind: "unknown" }),
     };
     Ok(build_pptx(&slide_xml))
+}
+
+/// Export a validated diagram/scene/semantic contract to PowerPoint.
+pub fn render_export(input: &ExportInput<'_>) -> Result<Vec<u8>, RenderError> {
+    render(input.semantic())
 }
 
 // ---------------------------------------------------------------------------

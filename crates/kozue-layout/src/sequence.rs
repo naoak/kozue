@@ -24,7 +24,28 @@ const LIFELINE_EXTRA: f64 = 24.0; // extra space below last message
 const ARROW_LEN: f64 = 10.0;
 const ARROW_HALF_W: f64 = 5.0;
 
-pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput {
+pub(crate) fn layout_sequence_full(
+    seq: &SequenceDiagram,
+) -> Result<crate::LayoutOutput, crate::LayoutError> {
+    for item in &seq.items {
+        let SequenceItem::Message(message) = item else {
+            return Err(crate::LayoutError {
+                message: "unsupported future sequence item".to_string(),
+            });
+        };
+        if !seq.participants.contains_key(&message.from)
+            || !seq.participants.contains_key(&message.to)
+        {
+            return Err(crate::LayoutError {
+                message: format!(
+                    "sequence message references unknown participant ({} -> {})",
+                    message.from, message.to
+                ),
+            });
+        }
+        crate::validate_line(message.line)?;
+        crate::validate_arrow(message.arrow)?;
+    }
     // Collect participant IDs in insertion order.
     let ids: Vec<&ElementId> = seq.participants.keys().collect();
     let n = ids.len();
@@ -378,8 +399,8 @@ pub(crate) fn layout_sequence_full(seq: &SequenceDiagram) -> crate::LayoutOutput
         messages: sem_messages,
     });
 
-    crate::LayoutOutput {
+    Ok(crate::LayoutOutput {
         scene,
         semantic: sem,
-    }
+    })
 }
