@@ -62,6 +62,21 @@ fn native_and_mermaid_node_shapes_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_mermaid_edge_presentation_produce_equivalent_ir() {
+    // Mermaid has no plain "dashed graph edge" token (dashed line style is
+    // only reachable via sequence-diagram `-->>`), so dashed edges are
+    // exercised separately in `kozue-dsl`/`kozue-mermaid`'s own test suites
+    // rather than here — this test only covers the tokens both frontends
+    // can express: dotted, thick, undirected, and bidirectional.
+    let native = "graph d {\n a\n b\n c\n d\n e\n a -> b line dotted\n b --- c\n c <-> d\n d -> e weight thick\n}";
+    let mermaid = "flowchart TD\n  a -.-> b\n  b --- c\n  c <--> d\n  d ==> e\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
 fn explicit_node_shapes_map_across_all_backends() {
     let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n c shape circle: \"Circle\"\n dm shape diamond: \"Diamond\"\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
@@ -127,6 +142,72 @@ fn explicit_node_shapes_map_across_all_backends() {
 }
 
 #[test]
+fn edge_presentation_maps_across_all_backends() {
+    let source = "graph edges {\n a: \"A\"\n b: \"B\"\n c: \"C\"\n d: \"D\"\n a -> b line dashed\n b -> c line dotted weight thick\n a --- c\n b <-> d weight thick\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    let svg = kozue_render_svg::render(&output.scene);
+    assert!(svg.contains("stroke-dasharray=\"6 4\""));
+    assert!(svg.contains("stroke-dasharray=\"1.50 3.00\""));
+    assert!(svg.contains("stroke-width=\"3.00\""));
+    // Undirected edge: one polyline with no arrowhead polygon following it;
+    // bidirectional edge: two arrowhead polygons framing its polyline.
+    assert_eq!(svg.matches("<polyline").count(), 4);
+    assert_eq!(svg.matches("<polygon").count(), 4);
+
+    let dot = kozue_render_dot::render(&diagram).unwrap();
+    assert!(dot.contains("style=dashed"));
+    assert!(dot.contains("style=\"dotted,bold\""));
+    assert!(dot.contains("penwidth=2"));
+    assert!(dot.contains("dir=none"));
+    assert!(dot.contains("dir=both"));
+    assert!(dot.contains("style=bold"));
+
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("dashed=1;"));
+    assert!(drawio.contains("dashPattern="));
+    assert!(drawio.contains("strokeWidth=3;"));
+    assert!(drawio.contains("startArrow=classic"));
+    assert!(drawio.contains("endArrow=none"));
+
+    let excalidraw: serde_json::Value =
+        serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
+    let elements = excalidraw["elements"].as_array().unwrap();
+    let edges: Vec<_> = elements
+        .iter()
+        .filter(|element| element["type"] == "arrow")
+        .collect();
+    assert!(edges.iter().any(|e| e["strokeStyle"] == "dashed"));
+    assert!(edges.iter().any(|e| e["strokeStyle"] == "dotted"));
+    assert!(edges.iter().any(|e| e["strokeWidth"] == 2.0));
+    assert!(edges
+        .iter()
+        .any(|e| e["startArrowhead"].is_null() && e["endArrowhead"].is_null()));
+    assert!(edges.iter().any(|e| !e["startArrowhead"].is_null()));
+
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let pptx_text = String::from_utf8_lossy(&pptx);
+    assert!(pptx_text.contains("prstDash val=\"dash\""));
+    assert!(pptx_text.contains("prstDash val=\"sysDot\""));
+    assert!(pptx_text.contains("w=\"38100\""));
+    assert!(pptx_text.contains("headEnd"));
+
+    let png_for = |edge: &str| {
+        let source = format!("graph one {{ a: \"A\"\n b: \"B\"\n a {edge} }}");
+        let diagram = kozue_dsl::parse(&source).unwrap();
+        let scene = kozue_layout::layout(&diagram).unwrap();
+        kozue_render_png::render(&scene).unwrap()
+    };
+    let dashed_only = png_for("-> b line dashed");
+    let dotted_only = png_for("-> b line dotted");
+    let thick_only = png_for("-> b weight thick");
+    assert_ne!(dashed_only, dotted_only);
+    assert_ne!(dashed_only, thick_only);
+    assert_ne!(dotted_only, thick_only);
+}
+
+#[test]
 fn strict_exchange_export_matches_legacy_bytes_for_all_domains_and_is_deterministic() {
     for name in [
         "chain",
@@ -171,6 +252,7 @@ const GOLDEN_CASES: &[&str] = &[
     "skip",
     "wide_right",
     "node_shapes",
+    "edge_presentation",
 ];
 
 const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
@@ -944,7 +1026,13 @@ fn compile_term_mermaid(src: &str) -> String {
     kozue_render_term::render(&scene)
 }
 
-const TERM_GOLDEN_KZD_CASES: &[&str] = &["chain", "branch", "seq_basic", "node_shapes"];
+const TERM_GOLDEN_KZD_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "seq_basic",
+    "node_shapes",
+    "edge_presentation",
+];
 const TERM_GOLDEN_MMD_CASES: &[&str] = &["mermaid_flow"];
 
 #[test]
@@ -1045,7 +1133,13 @@ fn compile_png(src: &str) -> Vec<u8> {
     kozue_render_png::render(&scene).expect("golden PNG render must succeed")
 }
 
-const PNG_GOLDEN_CASES: &[&str] = &["chain", "branch", "seq_basic", "node_shapes"];
+const PNG_GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "seq_basic",
+    "node_shapes",
+    "edge_presentation",
+];
 
 #[test]
 fn golden_pngs_match() {
@@ -1392,7 +1486,13 @@ fn compile_drawio_kzd(src: &str) -> String {
     kozue_render_drawio::render(&layout_out.semantic).expect("golden draw.io render must succeed")
 }
 
-const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
+const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "skip",
+    "node_shapes",
+    "edge_presentation",
+];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1689,6 +1789,7 @@ const DOT_GRAPH_GOLDEN_CASES: &[&str] = &[
     "skip",
     "wide_right",
     "node_shapes",
+    "edge_presentation",
 ];
 const DOT_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const DOT_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1784,7 +1885,13 @@ fn compile_excalidraw_kzd(src: &str) -> String {
         .expect("golden Excalidraw render must succeed")
 }
 
-const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
+const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "skip",
+    "node_shapes",
+    "edge_presentation",
+];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
@@ -1984,7 +2091,13 @@ fn compile_pptx_kzd(src: &str) -> Vec<u8> {
     kozue_render_pptx::render(&layout_out.semantic).expect("golden pptx render must succeed")
 }
 
-const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &["chain", "branch", "skip", "node_shapes"];
+const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &[
+    "chain",
+    "branch",
+    "skip",
+    "node_shapes",
+    "edge_presentation",
+];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
 const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];

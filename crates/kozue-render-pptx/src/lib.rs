@@ -75,7 +75,7 @@
 mod templates;
 mod zip;
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
     StateEndpointId, StateLayout,
@@ -331,15 +331,31 @@ fn ellipse_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64, filled: bo
 ///   `p:cxnSp`, so an arbitrary polyline must be a freeform `p:sp`, not a
 ///   `cxnSp` — that mismatch was the cause of "PowerPoint can't open" files.
 ///
-/// `dashed` selects `prstDash="dash"` (sequence dashed messages / lifelines);
-/// `arrow` selects a triangle tail arrowhead when not [`ArrowType::None`].
-fn connector_shape(id: u32, name: &str, route: &[Point], dashed: bool, arrow: bool) -> String {
+/// `line`/`weight` map to the connector's dash pattern / stroke width (see
+/// [`connector_shape_ends`]); `from_arrow` selects a triangle head arrowhead
+/// (route's first point) when not [`ArrowType::None`], `arrow` a triangle
+/// tail arrowhead (route's last point) the same way.
+#[allow(clippy::too_many_arguments)]
+fn connector_shape(
+    id: u32,
+    name: &str,
+    route: &[Point],
+    line: LineStyle,
+    weight: LineWeight,
+    from_arrow: ArrowType,
+    arrow: bool,
+) -> String {
     connector_shape_ends(
         id,
         name,
         route,
-        dashed,
-        "none",
+        line,
+        weight,
+        if from_arrow == ArrowType::Triangle {
+            "triangle"
+        } else {
+            "none"
+        },
         if arrow { "triangle" } else { "none" },
     )
 }
@@ -349,11 +365,17 @@ fn connector_shape(id: u32, name: &str, route: &[Point], dashed: bool, arrow: bo
 /// class/ER relations, whose end markers can differ at each end. `head`/
 /// `tail` are `ST_LineEndType` values (`"none"`, `"triangle"`, `"stealth"`,
 /// `"diamond"`, `"oval"`, `"arrow"`).
+///
+/// `line` selects the dash pattern (`Solid` -> no `prstDash`, matching the
+/// output from before `Dotted` existed); `weight` selects the line's `w`
+/// (EMU) attribute (`Normal` -> no `w` attr at all, unchanged from before
+/// `weight` existed; `Thick` -> `w="38100"`, 3pt).
 fn connector_shape_ends(
     id: u32,
     name: &str,
     route: &[Point],
-    dashed: bool,
+    line: LineStyle,
+    weight: LineWeight,
     head: &str,
     tail: &str,
 ) -> String {
@@ -379,10 +401,22 @@ fn connector_shape_ends(
     let w_px = max_x - min_x;
     let h_px = max_y - min_y;
 
-    let dash_xml = if dashed {
-        "<a:prstDash val=\"dash\"/>"
-    } else {
-        ""
+    let dash_xml = match line {
+        LineStyle::Solid => "",
+        LineStyle::Dashed => "<a:prstDash val=\"dash\"/>",
+        LineStyle::Dotted => "<a:prstDash val=\"sysDot\"/>",
+        // `LineStyle` is `#[non_exhaustive]`: callers go through
+        // `validate_export_semantics` before reaching this renderer, so a
+        // future variant here would already have been rejected; fall back to
+        // solid rather than panic.
+        _ => "",
+    };
+    // `Normal` keeps the connector's `<a:ln>` attribute-free, matching output
+    // from before `weight` existed; `Thick` sets an explicit 3pt (38100 EMU)
+    // width.
+    let ln_w_attr = match weight {
+        LineWeight::Thick => " w=\"38100\"",
+        _ => "",
     };
     // `headEnd` decorates the route's first point, `tailEnd` its last point
     // (matches this module's existing single-ended `arrow` convention, where
@@ -398,7 +432,7 @@ fn connector_shape_ends(
         format!("<a:tailEnd type=\"{tail}\"/>")
     };
     let ln = format!(
-        "<a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill>{dash_xml}{head_xml}{tail_xml}</a:ln>"
+        "<a:ln{ln_w_attr}><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill>{dash_xml}{head_xml}{tail_xml}</a:ln>"
     );
 
     // A freeform polyline is only meaningful when there are interior bend
@@ -556,7 +590,9 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
             ids.next(),
             &format!("Edge {i}"),
             &edge.route,
-            false,
+            edge.line,
+            edge.weight,
+            edge.from_arrow,
             edge.arrow != ArrowType::None,
         ));
         if let (Some(label), Some(anchor)) = (&edge.label, &edge.label_anchor) {
@@ -688,7 +724,9 @@ fn render_state(s: &StateLayout) -> Result<String, RenderError> {
             ids.next(),
             &format!("Transition {i}"),
             &tr.route,
-            false,
+            LineStyle::Solid,
+            LineWeight::Normal,
+            ArrowType::None,
             true, // state transitions are always directed
         ));
         if let (Some(label), Some(anchor)) = (&tr.label, &tr.label_anchor) {
@@ -732,7 +770,9 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
             ids.next(),
             &format!("Lifeline {}", p.id),
             &lifeline,
-            true,
+            LineStyle::Dashed,
+            LineWeight::Normal,
+            ArrowType::None,
             false,
         ));
     }
@@ -760,7 +800,9 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
             ids.next(),
             &format!("Message {i}"),
             &m.route,
-            m.line == LineStyle::Dashed,
+            m.line,
+            LineWeight::Normal,
+            ArrowType::None,
             m.arrow != ArrowType::None,
         ));
         if let (Some(label), Some(anchor)) = (&m.label, &m.label_anchor) {
@@ -966,7 +1008,8 @@ fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
                 ids.next(),
                 &format!("Box {} divider", b.id),
                 &divider,
-                false,
+                LineStyle::Solid,
+                LineWeight::Normal,
                 "none",
                 "none",
             ));
@@ -996,7 +1039,8 @@ fn render_class(layout: &ClassLayout) -> Result<String, RenderError> {
             ids.next(),
             &format!("Relation {i}"),
             &route,
-            rel.line == LineStyle::Dashed,
+            rel.line,
+            LineWeight::Normal,
             pptx_line_end(rel.from_marker),
             pptx_line_end(rel.to_marker),
         ));
@@ -1451,6 +1495,67 @@ mod tests {
             text.contains("<a:t>yes</a:t>"),
             "edge label must be rendered in a label box"
         );
+    }
+
+    fn graph_edge_presentation_slide(
+        from_arrow: ArrowType,
+        line: LineStyle,
+        weight: LineWeight,
+    ) -> String {
+        use kozue_ir::{Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        let mut e = Edge::new("a", "b", None, ArrowType::Triangle);
+        e.from_arrow = from_arrow;
+        e.line = line;
+        e.weight = weight;
+        g.edges.push(e);
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        let bytes = render(&out.semantic).expect("render");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn graph_edge_default_presentation_is_byte_identical() {
+        // Same fixture as `graph_slide_contains_node_labels_and_shapes`;
+        // assert the connector's <a:ln> stays attribute-free and undecorated.
+        let text =
+            graph_edge_presentation_slide(ArrowType::None, LineStyle::Solid, LineWeight::Normal);
+        assert!(text.contains("<a:ln><a:solidFill>"));
+        assert!(!text.contains("prstDash"));
+        assert!(!text.contains("headEnd"));
+    }
+
+    #[test]
+    fn graph_edge_from_arrow_emits_head_end_triangle() {
+        let text = graph_edge_presentation_slide(
+            ArrowType::Triangle,
+            LineStyle::Solid,
+            LineWeight::Normal,
+        );
+        assert!(
+            text.contains("<a:headEnd type=\"triangle\"/>"),
+            "from_arrow must add a headEnd: {text}"
+        );
+    }
+
+    #[test]
+    fn graph_edge_line_maps_to_prst_dash() {
+        let dashed =
+            graph_edge_presentation_slide(ArrowType::None, LineStyle::Dashed, LineWeight::Normal);
+        assert!(dashed.contains("<a:prstDash val=\"dash\"/>"), "{dashed}");
+
+        let dotted =
+            graph_edge_presentation_slide(ArrowType::None, LineStyle::Dotted, LineWeight::Normal);
+        assert!(dotted.contains("<a:prstDash val=\"sysDot\"/>"), "{dotted}");
+    }
+
+    #[test]
+    fn graph_edge_thick_weight_sets_line_width() {
+        let text =
+            graph_edge_presentation_slide(ArrowType::None, LineStyle::Solid, LineWeight::Thick);
+        assert!(text.contains("<a:ln w=\"38100\">"), "{text}");
     }
 
     #[test]

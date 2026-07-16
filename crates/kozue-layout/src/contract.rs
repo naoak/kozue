@@ -50,8 +50,14 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
         _ => mismatch("unsupported future arrow type"),
     };
     let line = |value| match value {
-        kozue_ir::LineStyle::Solid | kozue_ir::LineStyle::Dashed => Ok(()),
+        kozue_ir::LineStyle::Solid | kozue_ir::LineStyle::Dashed | kozue_ir::LineStyle::Dotted => {
+            Ok(())
+        }
         _ => mismatch("unsupported future line style"),
+    };
+    let weight = |value| match value {
+        kozue_ir::LineWeight::Normal | kozue_ir::LineWeight::Thick => Ok(()),
+        _ => mismatch("unsupported future line weight"),
     };
     let marker = |value| match value {
         kozue_ir::EndMarker::None
@@ -81,6 +87,9 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
             }
             for edge in &graph.edges {
                 arrow(edge.arrow)?;
+                arrow(edge.from_arrow)?;
+                line(edge.line)?;
+                weight(edge.weight)?;
             }
         }
         SemanticLayout::Sequence(sequence) => {
@@ -152,6 +161,9 @@ fn validate_contract(
                     || edge.to != placed.to.id
                     || edge.label != placed.label
                     || edge.arrow != placed.arrow
+                    || edge.from_arrow != placed.from_arrow
+                    || edge.line != placed.line
+                    || edge.weight != placed.weight
                 {
                     return mismatch("graph edge index/semantics mismatch");
                 }
@@ -505,8 +517,9 @@ fn validate_semantic_geometry(layout: &SemanticLayout) -> Result<(), ExportContr
 mod tests {
     use kozue_ir::{
         ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
-        ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, LineStyle, Message, Node,
-        Participant, SceneItem, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+        ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, LineStyle, LineWeight, Message,
+        Node, Participant, SceneItem, SequenceDiagram, SequenceItem, State, StateDiagram,
+        Transition,
     };
 
     use crate::{layout_full, SemanticLayout};
@@ -814,5 +827,30 @@ mod tests {
         };
         layout.boxes[0].compartments[0].rows[0] = "wrong".into();
         assert!(row.export_input(&er).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_graph_edge_presentation_field_mismatches() {
+        let graph = graph_with_edge(None);
+        let mut from_arrow = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut from_arrow.semantic else {
+            unreachable!()
+        };
+        layout.edges[0].from_arrow = ArrowType::Triangle;
+        assert!(from_arrow.export_input(&graph).is_err());
+
+        let mut line = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut line.semantic else {
+            unreachable!()
+        };
+        layout.edges[0].line = LineStyle::Dashed;
+        assert!(line.export_input(&graph).is_err());
+
+        let mut weight = layout_full(&graph).unwrap();
+        let SemanticLayout::Graph(layout) = &mut weight.semantic else {
+            unreachable!()
+        };
+        layout.edges[0].weight = LineWeight::Thick;
+        assert!(weight.export_input(&graph).is_err());
     }
 }

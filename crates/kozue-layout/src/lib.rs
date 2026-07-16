@@ -30,12 +30,25 @@ mod state;
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, Diagram, Direction, ElementId, EndMarker, GraphDiagram, LineStyle, NodeKind, Path,
-    Rect, Scene, SceneItem, Text, TextAlign,
+    ArrowType, Diagram, Direction, ElementId, EndMarker, GraphDiagram, LineStyle, LineWeight,
+    NodeKind, Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign,
 };
 
 pub use contract::{validate_export_semantics, ExportContractError, ExportInput};
 pub use semantic::SemanticLayout;
+
+/// Map a semantic [`LineStyle`] onto the Scene IR's [`StrokeStyle`]. Shared
+/// by class-relation and ER-relation layout.
+pub(crate) fn line_style_to_stroke(line: LineStyle) -> StrokeStyle {
+    match line {
+        LineStyle::Solid => StrokeStyle::Solid,
+        LineStyle::Dashed => StrokeStyle::Dashed,
+        LineStyle::Dotted => StrokeStyle::Dotted,
+        // `LineStyle` is `#[non_exhaustive]`: fall back to solid for any
+        // future variant rather than panic.
+        _ => StrokeStyle::Solid,
+    }
+}
 
 pub(crate) const FONT_SIZE: f64 = 16.0;
 pub(crate) const PAD_X: f64 = 20.0;
@@ -268,35 +281,71 @@ pub(crate) fn edge_label_anchor(
 ///
 /// This is the "emit" half of what was previously a single `push_edge`
 /// function. It produces identical output to the old `push_edge`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn push_edge_geom(
     items: &mut Vec<SceneItem>,
     geom: &EdgeGeom,
     label: Option<&str>,
     arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
     label_offset: (f64, f64),
 ) {
+    let stroke = line_style_to_stroke(line);
+    let stroke_weight = match weight {
+        LineWeight::Thick => StrokeWeight::Thick,
+        // `LineWeight` is `#[non_exhaustive]`: fall back to normal for any
+        // future variant rather than panic.
+        _ => StrokeWeight::Normal,
+    };
+
     let pts = &geom.route;
     let last = pts.len() - 1;
     let end = pts[last];
+    let start = pts[0];
 
     let draw_arrow = !matches!(arrow, ArrowType::None);
+    let draw_from_arrow = !matches!(from_arrow, ArrowType::None);
 
-    if draw_arrow {
+    // Retract whichever ends carry an arrowhead so the line stops short of
+    // the tip rather than running underneath it.
+    let mut line_pts = pts.clone();
+
+    let target_tip = if draw_arrow {
         let dx = end.0 - pts[last - 1].0;
         let dy = end.1 - pts[last - 1].1;
         let len = (dx * dx + dy * dy).sqrt().max(1e-6);
         let ux = dx / len;
         let uy = dy / len;
         let line_end = (end.0 - ux * ARROW_LEN, end.1 - uy * ARROW_LEN);
-
-        let mut line_pts = pts.clone();
         line_pts[last] = line_end;
-        items.push(SceneItem::Path(Path {
-            points: line_pts,
-            filled: false,
-            dashed: false,
-        }));
+        Some((end, line_end, ux, uy))
+    } else {
+        None
+    };
 
+    let source_tip = if draw_from_arrow {
+        let dx = start.0 - pts[1].0;
+        let dy = start.1 - pts[1].1;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let ux = dx / len;
+        let uy = dy / len;
+        let line_start = (start.0 - ux * ARROW_LEN, start.1 - uy * ARROW_LEN);
+        line_pts[0] = line_start;
+        Some((start, line_start, ux, uy))
+    } else {
+        None
+    };
+
+    items.push(SceneItem::Path(Path {
+        points: line_pts,
+        filled: false,
+        stroke,
+        weight: stroke_weight,
+    }));
+
+    if let Some((tip, line_end, ux, uy)) = target_tip {
         let px = -uy;
         let py = ux;
         let left = (
@@ -308,15 +357,29 @@ pub(crate) fn push_edge_geom(
             line_end.1 - py * ARROW_HALF_W,
         );
         items.push(SceneItem::Path(Path {
-            points: vec![end, left, right],
+            points: vec![tip, left, right],
             filled: true,
-            dashed: false,
+            stroke: StrokeStyle::Solid,
+            weight: StrokeWeight::Normal,
         }));
-    } else {
+    }
+
+    if let Some((tip, line_end, ux, uy)) = source_tip {
+        let px = -uy;
+        let py = ux;
+        let left = (
+            line_end.0 + px * ARROW_HALF_W,
+            line_end.1 + py * ARROW_HALF_W,
+        );
+        let right = (
+            line_end.0 - px * ARROW_HALF_W,
+            line_end.1 - py * ARROW_HALF_W,
+        );
         items.push(SceneItem::Path(Path {
-            points: pts.clone(),
-            filled: false,
-            dashed: false,
+            points: vec![tip, left, right],
+            filled: true,
+            stroke: StrokeStyle::Solid,
+            weight: StrokeWeight::Normal,
         }));
     }
 
@@ -350,6 +413,7 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
     let mut edge_ids: Vec<usize> = Vec::new();
     for (i, e) in g.edges.iter().enumerate() {
         validate_arrow(e.arrow)?;
+        validate_arrow(e.from_arrow)?;
         let (Some(&from), Some(&to)) = (index_of.get(e.from.as_str()), index_of.get(e.to.as_str()))
         else {
             return Err(LayoutError {
@@ -569,6 +633,9 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
             &geom,
             edge.label.as_deref(),
             edge.arrow,
+            edge.from_arrow,
+            edge.line,
+            edge.weight,
             offsets[k],
         );
 
@@ -577,6 +644,9 @@ fn layout_graph_full(g: &GraphDiagram) -> Result<LayoutOutput, LayoutError> {
             from: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].from.clone()),
             to: semantic::GraphEndpoint::new(g.edges[edge_ids[k]].to.clone()),
             arrow: edge.arrow,
+            from_arrow: edge.from_arrow,
+            line: edge.line,
+            weight: edge.weight,
             route: geom
                 .route
                 .iter()
@@ -739,7 +809,8 @@ pub(crate) fn circle_path(cx: f64, cy: f64, r: f64, filled: bool) -> Path {
     Path {
         points,
         filled,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     }
 }
 
@@ -790,7 +861,8 @@ fn diamond_path(p: &Placed) -> Path {
             (cx, p.y),
         ],
         filled: false,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     }
 }
 
@@ -1482,6 +1554,127 @@ mod tests {
             "b->a arrow must point back into a (tip y {} vs a bottom {})",
             tip_ba.1,
             ra.y + ra.height
+        );
+    }
+
+    /// `line`/`weight` on the edge propagate to the drawn polyline's stroke.
+    #[test]
+    fn edge_line_and_weight_propagate_to_path_stroke() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        let mut e = edge("a", "b");
+        e.line = LineStyle::Dotted;
+        e.weight = LineWeight::Thick;
+        g.edges.push(e);
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+
+        let lines = open_paths(&scene);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].stroke, StrokeStyle::Dotted);
+        assert_eq!(lines[0].weight, StrokeWeight::Thick);
+    }
+
+    /// `from_arrow` draws a second arrowhead at the source end and retracts
+    /// the polyline there, mirroring the existing target-end behavior.
+    #[test]
+    fn from_arrow_draws_source_arrowhead_and_retracts_line() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        let mut e = edge("a", "b");
+        e.from_arrow = ArrowType::Triangle;
+        g.edges.push(e);
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+
+        let rects = rects(&scene);
+        let ra = rects[0];
+
+        let arrows = filled_paths(&scene);
+        assert_eq!(arrows.len(), 2, "both source and target arrowheads drawn");
+
+        // One tip sits on a's bottom border (source), the other on b's top
+        // border (target); order is target-then-source (matches emission order).
+        let tip_target = arrows[0].points[0];
+        let tip_source = arrows[1].points[0];
+        assert!(
+            (tip_source.1 - (ra.y + ra.height)).abs() < 1e-6,
+            "from_arrow tip must sit on a's border (tip y {} vs a bottom {})",
+            tip_source.1,
+            ra.y + ra.height
+        );
+        assert_ne!(tip_target, tip_source);
+
+        // The polyline must be retracted at both ends (not touching either
+        // node's border) since both ends now carry an arrowhead.
+        let lines = open_paths(&scene);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        let first = line.points[0];
+        assert!(
+            (first.1 - (ra.y + ra.height)).abs() > 1e-6,
+            "line start must be retracted away from a's border"
+        );
+    }
+
+    /// Undirected edges (`arrow = None`, `from_arrow = None`) still draw no
+    /// arrowheads at all, preserving prior behavior.
+    #[test]
+    fn undirected_edge_draws_no_arrowheads() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        let mut e = edge("a", "b");
+        e.arrow = ArrowType::None;
+        g.edges.push(e);
+        let scene = layout(&Diagram::Graph(g)).expect("layout");
+
+        assert!(filled_paths(&scene).is_empty());
+        assert_eq!(open_paths(&scene).len(), 1);
+    }
+
+    /// A reversed (back) edge keeps `from_arrow`/`arrow` on their semantically
+    /// correct ends: the polyline is always restored to declared from->to
+    /// order before arrowheads are emitted, regardless of layout reversal.
+    #[test]
+    fn reversed_edge_keeps_from_arrow_on_correct_end() {
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), node("a", "A"));
+        g.nodes.insert("b".into(), node("b", "B"));
+        g.edges.push(edge("a", "b"));
+        // b -> a is the back edge that gets reversed internally for layering.
+        let mut back = edge("b", "a");
+        back.from_arrow = ArrowType::Triangle;
+        g.edges.push(back);
+        let scene = layout(&Diagram::Graph(g)).expect("cycles must be supported");
+
+        let rects = rects(&scene);
+        let (ra, rb) = (rects[0], rects[1]);
+        assert!(ra.y < rb.y);
+
+        // Arrowheads are emitted per edge in declaration order, target then
+        // source: [a->b target, b->a target, b->a source].
+        let arrows = filled_paths(&scene);
+        assert_eq!(
+            arrows.len(),
+            3,
+            "a->b: 1 target arrow; b->a: target + source"
+        );
+        let ab_target = arrows[0].points[0];
+        let ba_target = arrows[1].points[0];
+        let ba_source = arrows[2].points[0];
+
+        assert!(
+            (ab_target.1 - rb.y).abs() < 1e-6,
+            "a->b target arrow must point into b"
+        );
+        assert!(
+            (ba_target.1 - (ra.y + ra.height)).abs() < 1e-6,
+            "b->a target arrow must point back into a"
+        );
+        assert!(
+            (ba_source.1 - rb.y).abs() < 1e-6,
+            "b->a from_arrow must sit on b's border (the semantic source end)"
         );
     }
 

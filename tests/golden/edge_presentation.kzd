@@ -1,0 +1,10 @@
+graph edge_presentation {
+  a: "A"
+  b: "B"
+  c: "C"
+  d: "D"
+  a -> b line dashed
+  b -> c line dotted weight thick
+  a --- c
+  b <-> d weight thick
+}

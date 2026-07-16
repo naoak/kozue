@@ -68,7 +68,7 @@
 //! Any future [`SemanticLayout`] variants return [`RenderError::UnsupportedDiagram`]
 //! rather than silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
@@ -583,7 +583,8 @@ fn make_arrow(
     end_binding: Option<Binding>,
     start_arrowhead: Option<&'static str>,
     end_arrowhead: Option<&'static str>,
-    dashed: bool,
+    stroke_style: &'static str,
+    stroke_width: f64,
 ) -> ElementBase<ArrowExtra> {
     ElementBase {
         id: id.to_string(),
@@ -596,8 +597,8 @@ fn make_arrow(
         stroke_color: STROKE_COLOR,
         background_color: "transparent",
         fill_style: "hachure",
-        stroke_width: 1.0,
-        stroke_style: if dashed { "dashed" } else { "solid" },
+        stroke_width,
+        stroke_style,
         roughness: 1,
         opacity: 100,
         group_ids: Vec::new(),
@@ -775,6 +776,23 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
         } else {
             Some("triangle")
         };
+        // Source-end marker: Excalidraw's open `"arrow"` head (there is no
+        // separate filled-triangle *start* head in the format).
+        let start_arrowhead = if edge.from_arrow == ArrowType::None {
+            None
+        } else {
+            Some("arrow")
+        };
+        let stroke_style = match edge.line {
+            LineStyle::Dashed => "dashed",
+            LineStyle::Dotted => "dotted",
+            _ => "solid",
+        };
+        let stroke_width = if edge.weight == LineWeight::Thick {
+            2.0
+        } else {
+            1.0
+        };
         let arrow = make_arrow(
             &arrow_id,
             ax,
@@ -792,9 +810,10 @@ fn render_graph(g: &GraphLayout) -> Result<Vec<AnyElement>, RenderError> {
                 focus: 0.0,
                 gap: 4.0,
             }),
-            None,
+            start_arrowhead,
             end_arrowhead,
-            /* dashed */ false,
+            stroke_style,
+            stroke_width,
         );
         elements.push(AnyElement::Arrow(arrow));
         add_bound_element(
@@ -997,7 +1016,8 @@ fn render_state(s: &StateLayout) -> Result<Vec<AnyElement>, RenderError> {
             None,
             // Filled triangle head, matching the SVG/PNG backends.
             Some("triangle"),
-            /* dashed */ false,
+            "solid",
+            1.0,
         );
         elements.push(AnyElement::Arrow(arrow));
         add_bound_element(
@@ -1126,7 +1146,11 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
         } else {
             Some("triangle")
         };
-        let dashed = m.line == LineStyle::Dashed;
+        let stroke_style = if m.line == LineStyle::Dashed {
+            "dashed"
+        } else {
+            "solid"
+        };
         let arrow = make_arrow(
             &arrow_id,
             ax,
@@ -1138,7 +1162,8 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
             None,
             None,
             end_arrowhead,
-            dashed,
+            stroke_style,
+            1.0,
         );
         elements.push(AnyElement::Arrow(arrow));
 
@@ -1306,7 +1331,11 @@ fn render_class(layout: &ClassLayout) -> Result<Vec<AnyElement>, RenderError> {
         let (ax, ay, points, w, h) = route_geometry(&route);
         let start_arrowhead = excalidraw_arrowhead(rel.from_marker);
         let end_arrowhead = excalidraw_arrowhead(rel.to_marker);
-        let dashed = rel.line == LineStyle::Dashed;
+        let stroke_style = if rel.line == LineStyle::Dashed {
+            "dashed"
+        } else {
+            "solid"
+        };
         let arrow = make_arrow(
             &arrow_id,
             ax,
@@ -1326,7 +1355,8 @@ fn render_class(layout: &ClassLayout) -> Result<Vec<AnyElement>, RenderError> {
             }),
             start_arrowhead,
             end_arrowhead,
-            dashed,
+            stroke_style,
+            1.0,
         );
         elements.push(AnyElement::Arrow(arrow));
         add_bound_element(
@@ -1658,6 +1688,101 @@ mod tests {
             .find(|e| e["id"] == "e0")
             .unwrap();
         assert!(arrow["endArrowhead"].is_null());
+    }
+
+    // Helper: graph layout with a single edge carrying non-default
+    // presentation (from_arrow/line/weight all set).
+    fn graph_presentation_layout(
+        from_arrow: kozue_ir::ArrowType,
+        line: LineStyle,
+        weight: LineWeight,
+    ) -> SemanticLayout {
+        use kozue_ir::{ArrowType, Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        let mut e = Edge::new("a", "b", None, ArrowType::Triangle);
+        e.from_arrow = from_arrow;
+        e.line = line;
+        e.weight = weight;
+        g.edges.push(e);
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        out.semantic
+    }
+
+    #[test]
+    fn graph_render_from_arrow_maps_to_start_arrowhead_arrow() {
+        let layout = graph_presentation_layout(
+            kozue_ir::ArrowType::Triangle,
+            LineStyle::Solid,
+            LineWeight::Normal,
+        );
+        let json = render(&layout).expect("render");
+        let v = parse(&json);
+        let arrow = v["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "e0")
+            .unwrap();
+        assert_eq!(arrow["startArrowhead"], "arrow");
+    }
+
+    #[test]
+    fn graph_render_line_maps_to_stroke_style() {
+        for (line, expected) in [
+            (LineStyle::Solid, "solid"),
+            (LineStyle::Dashed, "dashed"),
+            (LineStyle::Dotted, "dotted"),
+        ] {
+            let layout =
+                graph_presentation_layout(kozue_ir::ArrowType::None, line, LineWeight::Normal);
+            let json = render(&layout).expect("render");
+            let v = parse(&json);
+            let arrow = v["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == "e0")
+                .unwrap();
+            assert_eq!(arrow["strokeStyle"], expected, "line {line:?}");
+        }
+    }
+
+    #[test]
+    fn graph_render_thick_weight_maps_to_stroke_width_two() {
+        let layout = graph_presentation_layout(
+            kozue_ir::ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Thick,
+        );
+        let json = render(&layout).expect("render");
+        let v = parse(&json);
+        let arrow = v["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "e0")
+            .unwrap();
+        assert_eq!(arrow["strokeWidth"], 2.0);
+    }
+
+    #[test]
+    fn graph_render_default_presentation_edge_is_unchanged() {
+        // Same fixture as `graph_render_edge_arrow_geometry_and_bindings`, just
+        // asserting the two new fields keep their legacy defaults.
+        let layout = graph_two_node_layout();
+        let json = render(&layout).expect("render");
+        let v = parse(&json);
+        let arrow = v["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == "e0")
+            .unwrap();
+        assert!(arrow["startArrowhead"].is_null());
+        assert_eq!(arrow["strokeStyle"], "solid");
+        assert_eq!(arrow["strokeWidth"], 1.0);
     }
 
     // --- determinism ---

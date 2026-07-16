@@ -8,7 +8,7 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ElementId, ErAttribute, ErDiagram, LineStyle, Path, Scene, SceneItem, Text, TextAlign,
+    ElementId, ErAttribute, ErDiagram, Path, Scene, SceneItem, StrokeWeight, Text, TextAlign,
 };
 
 use crate::boxes::{self, BoxSpec, ROW_FONT_SIZE};
@@ -159,7 +159,8 @@ pub(crate) fn layout_er_full(e: &ErDiagram) -> Result<crate::LayoutOutput, Layou
         items.push(SceneItem::Path(Path {
             points: line_pts,
             filled: false,
-            dashed: rel.line == LineStyle::Dashed,
+            stroke: crate::line_style_to_stroke(rel.line),
+            weight: StrokeWeight::Normal,
         }));
 
         if let Some(label) = rel.label.as_deref() {

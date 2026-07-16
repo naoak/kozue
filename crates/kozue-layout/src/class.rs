@@ -3,7 +3,7 @@
 //! lines carrying UML end markers.
 
 use indexmap::IndexMap;
-use kozue_ir::{ClassDiagram, ElementId, LineStyle, Path, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{ClassDiagram, ElementId, Path, Scene, SceneItem, StrokeWeight, Text, TextAlign};
 
 use crate::boxes::{self, BoxSpec, ROW_FONT_SIZE};
 use crate::markers;
@@ -198,7 +198,8 @@ pub(crate) fn layout_class_full(c: &ClassDiagram) -> Result<crate::LayoutOutput,
         items.push(SceneItem::Path(Path {
             points: line_pts,
             filled: false,
-            dashed: rel.line == LineStyle::Dashed,
+            stroke: crate::line_style_to_stroke(rel.line),
+            weight: StrokeWeight::Normal,
         }));
 
         if let Some(label) = rel.label.as_deref() {

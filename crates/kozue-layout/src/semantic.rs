@@ -72,6 +72,13 @@ pub struct EdgeLayout {
     /// use this to distinguish a directed edge from an undirected one
     /// ([`ArrowType::None`](kozue_ir::ArrowType)).
     pub arrow: kozue_ir::ArrowType,
+    /// Arrowhead style at the source end of this edge (from
+    /// [`Edge::from_arrow`](kozue_ir::Edge)).
+    pub from_arrow: kozue_ir::ArrowType,
+    /// Dash pattern of this edge's line (from [`Edge::line`](kozue_ir::Edge)).
+    pub line: kozue_ir::LineStyle,
+    /// Stroke weight of this edge's line (from [`Edge::weight`](kozue_ir::Edge)).
+    pub weight: kozue_ir::LineWeight,
     /// Routing points of the edge polyline in scene coordinates, in source-to-target order.
     /// These are the clipped endpoints and any bend points through dummy nodes.
     pub route: Vec<Point>,

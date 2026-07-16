@@ -31,7 +31,7 @@
 //! 1 em so overall text width matches the measured layout width). This matches
 //! the SVG output, which delegates glyph rendering to the browser's font stack.
 
-use kozue_ir::{Path, Rect, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign};
 use kozue_text::{glyph_advance_units, glyph_outline, units_per_em, OutlineCmd};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
@@ -264,13 +264,23 @@ fn render_path(pixmap: &mut Pixmap, p: &Path, ox: f32, oy: f32) {
         let mut paint = Paint::default();
         paint.set_color(tiny_skia::Color::BLACK);
         paint.anti_alias = true;
-        let dash = if p.dashed {
-            tiny_skia::StrokeDash::new(vec![6.0, 4.0], 0.0)
-        } else {
-            None
+        let dash = match p.stroke {
+            StrokeStyle::Solid => None,
+            StrokeStyle::Dashed => tiny_skia::StrokeDash::new(vec![6.0, 4.0], 0.0),
+            StrokeStyle::Dotted => tiny_skia::StrokeDash::new(vec![1.5, 3.0], 0.0),
+            // `StrokeStyle` is `#[non_exhaustive]`: fall back to the fine dotted
+            // pattern for any future variant rather than panic.
+            _ => tiny_skia::StrokeDash::new(vec![1.5, 3.0], 0.0),
+        };
+        let width = match p.weight {
+            StrokeWeight::Thick => 3.0,
+            StrokeWeight::Normal => 1.5,
+            // `StrokeWeight` is `#[non_exhaustive]`: treat any future variant
+            // as the normal weight rather than panic.
+            _ => 1.5,
         };
         let stroke = Stroke {
-            width: 1.5,
+            width,
             dash,
             ..Stroke::default()
         };

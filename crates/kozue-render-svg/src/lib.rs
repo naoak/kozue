@@ -5,7 +5,7 @@
 
 use std::fmt::Write;
 
-use kozue_ir::{Path, Rect, Scene, SceneItem, Text, TextAlign};
+use kozue_ir::{Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign};
 
 const MARGIN: f64 = 20.0;
 const FONT_FAMILY: &str = "DejaVu Sans";
@@ -95,15 +95,25 @@ fn render_path(s: &mut String, p: &Path, indent: &str) {
             s,
             "{indent}<polygon points=\"{pts}\" fill=\"#000000\" stroke=\"none\"/>",
         );
-    } else if p.dashed {
-        let _ = writeln!(
-            s,
-            "{indent}<polyline points=\"{pts}\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1.50\" stroke-dasharray=\"6 4\"/>",
-        );
     } else {
+        let width = match p.weight {
+            StrokeWeight::Thick => f(3.0),
+            StrokeWeight::Normal => f(1.5),
+            // `StrokeWeight` is `#[non_exhaustive]`: treat any future variant
+            // as the normal weight rather than panic.
+            _ => f(1.5),
+        };
+        let dasharray = match p.stroke {
+            StrokeStyle::Solid => String::new(),
+            StrokeStyle::Dashed => " stroke-dasharray=\"6 4\"".to_string(),
+            StrokeStyle::Dotted => format!(" stroke-dasharray=\"{} {}\"", f(1.5), f(3.0)),
+            // `StrokeStyle` is `#[non_exhaustive]`: fall back to the fine dotted
+            // pattern for any future variant rather than panic.
+            _ => format!(" stroke-dasharray=\"{} {}\"", f(1.5), f(3.0)),
+        };
         let _ = writeln!(
             s,
-            "{indent}<polyline points=\"{pts}\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1.50\"/>",
+            "{indent}<polyline points=\"{pts}\" fill=\"none\" stroke=\"#000000\" stroke-width=\"{width}\"{dasharray}/>",
         );
     }
 }

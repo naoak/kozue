@@ -8,7 +8,7 @@
 
 use unicode_width::UnicodeWidthChar;
 
-use kozue_ir::{Scene, SceneItem, TextAlign};
+use kozue_ir::{Scene, SceneItem, StrokeStyle, TextAlign};
 
 /// Pixels per grid cell (horizontal).
 const CELL_W: f64 = 8.0;
@@ -247,8 +247,12 @@ fn render_path(grid: &mut [Vec<Cell>], rows: usize, cols: usize, p: &kozue_ir::P
                     set_i(grid, rows, cols, row, col, seg_char);
                 }
             }
-            if p.dashed {
-                draw = !draw;
+            // A character grid cannot represent stroke weight, and a dotted
+            // pattern is indistinguishable from dashed at this resolution, so
+            // both `Dashed` and `Dotted` toggle the draw phase the same way.
+            match p.stroke {
+                StrokeStyle::Solid => {}
+                _ => draw = !draw,
             }
         }
 
@@ -487,7 +491,7 @@ fn is_box_border(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{Path, Rect, Scene, SceneItem, Text, TextAlign};
+    use kozue_ir::{Path, Rect, Scene, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign};
 
     fn empty_scene() -> Scene {
         Scene {
@@ -603,7 +607,8 @@ mod tests {
             items: vec![SceneItem::Path(Path {
                 points: vec![(16.0, 32.0), (8.0, 16.0), (24.0, 16.0)],
                 filled: true,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             })],
         };
         let out = render(&scene);
@@ -642,7 +647,8 @@ mod tests {
             items: vec![SceneItem::Path(Path {
                 points: pts.clone(),
                 filled: false,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             })],
         };
         let scene_dashed = Scene {
@@ -651,7 +657,8 @@ mod tests {
             items: vec![SceneItem::Path(Path {
                 points: pts,
                 filled: false,
-                dashed: true,
+                stroke: StrokeStyle::Dashed,
+                weight: StrokeWeight::Normal,
             })],
         };
         let solid = render(&scene_solid);

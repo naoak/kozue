@@ -53,7 +53,7 @@
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
     StateLayout,
@@ -257,6 +257,50 @@ fn waypoints_xml(route: &[kozue_layout::semantic::Point]) -> String {
 // Graph diagram renderer
 // ---------------------------------------------------------------------------
 
+/// Build the mxCell `style` attribute for a graph edge.
+///
+/// Presentation attributes are appended in a fixed order so the common
+/// (default-presentation) case stays byte-identical to the pre-M3a2b output:
+/// `edgeStyle=orthogonalEdgeStyle;` alone, or with `endArrow=none;` for an
+/// undirected edge. `from_arrow`/`line`/`weight` are only present (and only
+/// checked) when they differ from their defaults — the caller has already
+/// gone through [`kozue_layout::validate_export_semantics`], so future enum
+/// variants never reach here.
+fn graph_edge_style(
+    arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
+) -> Result<String, RenderError> {
+    let mut style = String::from("edgeStyle=orthogonalEdgeStyle;");
+    if arrow == ArrowType::None {
+        style.push_str("endArrow=none;");
+    }
+    if from_arrow == ArrowType::Triangle {
+        style.push_str("startArrow=classic;");
+    }
+    match line {
+        LineStyle::Solid => {}
+        LineStyle::Dashed => style.push_str("dashed=1;"),
+        LineStyle::Dotted => style.push_str("dashed=1;dashPattern=1 4;"),
+        _ => {
+            return Err(RenderError::InvalidSemantic {
+                description: format!("unsupported draw.io line style: {line:?}"),
+            })
+        }
+    }
+    match weight {
+        LineWeight::Normal => {}
+        LineWeight::Thick => style.push_str("strokeWidth=3;"),
+        _ => {
+            return Err(RenderError::InvalidSemantic {
+                description: format!("unsupported draw.io line weight: {weight:?}"),
+            })
+        }
+    }
+    Ok(style)
+}
+
 fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
     let mut out = mxfile_header();
 
@@ -307,12 +351,7 @@ fn render_graph(g: &GraphLayout) -> Result<String, RenderError> {
         let src_attr = format!(" source=\"n{src_idx}\"");
         let tgt_attr = format!(" target=\"n{tgt_idx}\"");
 
-        // Undirected edge: append endArrow=none; to the style.
-        let style = if edge.arrow == ArrowType::None {
-            "edgeStyle=orthogonalEdgeStyle;endArrow=none;"
-        } else {
-            "edgeStyle=orthogonalEdgeStyle;"
-        };
+        let style = graph_edge_style(edge.arrow, edge.from_arrow, edge.line, edge.weight)?;
 
         let label_value = xml_escape(edge.label.as_deref().unwrap_or(""));
         let wp = waypoints_xml(&edge.route);
@@ -1280,6 +1319,94 @@ mod tests {
             !xml.contains("endArrow=none"),
             "directed edge must not have endArrow=none: {xml}"
         );
+    }
+
+    #[test]
+    fn graph_edge_default_presentation_style_is_unchanged() {
+        assert_eq!(
+            graph_edge_style(
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "edgeStyle=orthogonalEdgeStyle;"
+        );
+        assert_eq!(
+            graph_edge_style(
+                ArrowType::None,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "edgeStyle=orthogonalEdgeStyle;endArrow=none;"
+        );
+    }
+
+    #[test]
+    fn graph_edge_from_arrow_maps_to_start_arrow_classic() {
+        let style = graph_edge_style(
+            ArrowType::Triangle,
+            ArrowType::Triangle,
+            LineStyle::Solid,
+            LineWeight::Normal,
+        )
+        .unwrap();
+        assert!(style.contains("startArrow=classic;"), "style: {style}");
+    }
+
+    #[test]
+    fn graph_edge_line_maps_to_dashed_and_dotted() {
+        let dashed = graph_edge_style(
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Dashed,
+            LineWeight::Normal,
+        )
+        .unwrap();
+        assert!(dashed.contains("dashed=1;"), "dashed style: {dashed}");
+        assert!(!dashed.contains("dashPattern"));
+
+        let dotted = graph_edge_style(
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Dotted,
+            LineWeight::Normal,
+        )
+        .unwrap();
+        assert!(
+            dotted.contains("dashed=1;dashPattern=1 4;"),
+            "dotted style: {dotted}"
+        );
+    }
+
+    #[test]
+    fn graph_edge_thick_weight_maps_to_stroke_width() {
+        let style = graph_edge_style(
+            ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Thick,
+        )
+        .unwrap();
+        assert!(style.contains("strokeWidth=3;"), "style: {style}");
+    }
+
+    #[test]
+    fn graph_render_new_edge_attrs_produce_byte_identical_default_case() {
+        use kozue_ir::{ArrowType, Diagram, Direction, Edge, GraphDiagram, Node};
+        let mut g = GraphDiagram::new(Direction::Down);
+        g.nodes.insert("a".into(), Node::new("a", "A"));
+        g.nodes.insert("b".into(), Node::new("b", "B"));
+        g.edges.push(Edge::new("a", "b", None, ArrowType::Triangle));
+        let out = kozue_layout::layout_full(&Diagram::Graph(g)).expect("layout");
+        let xml = render(&out.semantic).expect("render");
+        assert!(xml.contains("style=\"edgeStyle=orthogonalEdgeStyle;\""));
+        assert!(!xml.contains("startArrow"));
+        assert!(!xml.contains("dashed"));
+        assert!(!xml.contains("strokeWidth"));
     }
 
     // --- state rendering ---

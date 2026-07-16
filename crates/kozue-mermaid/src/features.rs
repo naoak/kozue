@@ -169,8 +169,13 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "dotted / thick edge styles",
-        support: Support::Unsupported,
-        note: "-.-> and ==> produce a syntax error",
+        support: Support::Partial,
+        note: "-.-> / -.- (dotted) and ==> / === (thick) are supported, each with an optional |label|; Mermaid's middle-label forms (`-. label .->`, `== label ==>`) are not supported yet",
+    },
+    Feature {
+        name: "bidirectional edge <-->",
+        support: Support::Partial,
+        note: "maps to ArrowType::Triangle at both ends; combined dotted/thick bidirectional forms (<-.->, <==>) are not supported yet",
     },
     // --- Sequence diagram ---
     Feature {

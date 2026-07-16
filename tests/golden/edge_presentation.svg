@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 183.49 357.60" width="183.49" height="357.60">
+  <rect x="-20.00" y="-20.00" width="183.49" height="357.60" fill="#ffffff"/>
+  <rect x="62.93" y="0.00" width="50.95" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="88.41" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">A</text>
+  <rect x="30.17" y="139.20" width="50.98" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="55.66" y="164.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">B</text>
+  <rect x="92.32" y="278.40" width="51.17" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="117.91" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">C</text>
+  <rect x="0.00" y="278.40" width="52.32" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="26.16" y="303.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">D</text>
+  <polyline points="83.79,39.20 62.56,129.47" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="60.27,139.20 57.69,128.32 67.43,130.61" fill="#000000" stroke="none"/>
+  <polyline points="64.43,178.40 105.06,269.27" fill="none" stroke="#000000" stroke-width="3.00" stroke-dasharray="1.50 3.00"/>
+  <polygon points="109.14,278.40 100.50,271.31 109.62,267.23" fill="#000000" stroke="none"/>
+  <polyline points="93.02,39.20 121.15,158.80 118.36,278.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="49.43,188.18 32.39,268.62" fill="none" stroke="#000000" stroke-width="3.00"/>
+  <polygon points="30.31,278.40 27.50,267.58 37.28,269.65" fill="#000000" stroke="none"/>
+  <polygon points="51.51,178.40 54.33,189.22 44.54,187.15" fill="#000000" stroke="none"/>
+</svg>

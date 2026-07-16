@@ -10,7 +10,7 @@
 //! items and the matching [`CompartmentBox`] once the position is known. The
 //! two share the same per-block height accounting so they can never diverge.
 
-use kozue_ir::{ElementId, Path, Rect, SceneItem, Text, TextAlign};
+use kozue_ir::{ElementId, Path, Rect, SceneItem, StrokeStyle, StrokeWeight, Text, TextAlign};
 
 use crate::semantic::{Compartment, CompartmentBox};
 use crate::{FONT_SIZE, PAD_X};
@@ -182,6 +182,7 @@ fn divider(x: f64, y: f64, width: f64) -> SceneItem {
     SceneItem::Path(Path {
         points: vec![(x, y), (x + width, y)],
         filled: false,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     })
 }

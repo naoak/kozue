@@ -51,8 +51,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument, LineStyle,
-    Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State, StateDiagram,
-    Transition,
+    LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State,
+    StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -69,6 +69,10 @@ enum Stmt {
     },
     Edge(EdgeStmt),
     DashedEdge(EdgeStmt),
+    /// `a --- b` — undirected graph edge.
+    UndirectedEdge(EdgeStmt),
+    /// `a <-> b` — bidirectional graph edge.
+    BidirectionalEdge(EdgeStmt),
     Participant {
         id: String,
         id_span: std::ops::Range<usize>,
@@ -109,6 +113,94 @@ struct EdgeStmt {
     label: Option<String>,
     /// Span of the label string literal (including quotes), if present.
     label_lit_span: Option<std::ops::Range<usize>>,
+    /// `line <style>` / `weight <weight>` modifiers, in source order. Only
+    /// meaningful for graph diagrams; state/sequence diagrams reject any
+    /// non-empty modifier list. Order-independent, last-wins per kind.
+    modifiers: Vec<EdgeModifier>,
+}
+
+/// A parsed `line <style>` edge modifier value.
+#[derive(Debug, Clone)]
+enum ParsedLineMod {
+    Known(LineStyle, std::ops::Range<usize>),
+    Unknown(String, std::ops::Range<usize>),
+}
+
+impl ParsedLineMod {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            ParsedLineMod::Known(_, span) | ParsedLineMod::Unknown(_, span) => span,
+        }
+    }
+}
+
+/// A parsed `weight <weight>` edge modifier value.
+#[derive(Debug, Clone)]
+enum ParsedWeightMod {
+    Known(LineWeight, std::ops::Range<usize>),
+    Unknown(String, std::ops::Range<usize>),
+}
+
+impl ParsedWeightMod {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            ParsedWeightMod::Known(_, span) | ParsedWeightMod::Unknown(_, span) => span,
+        }
+    }
+}
+
+/// A single edge presentation modifier (`line ...` or `weight ...`).
+#[derive(Debug, Clone)]
+enum EdgeModifier {
+    Line(ParsedLineMod),
+    Weight(ParsedWeightMod),
+}
+
+impl EdgeModifier {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            EdgeModifier::Line(m) => m.span(),
+            EdgeModifier::Weight(m) => m.span(),
+        }
+    }
+}
+
+/// Byte span covering every modifier attached to an edge statement, for
+/// diagnostics that reject the whole modifier block (e.g. in state/sequence
+/// diagrams). Falls back to the end of the target identifier if there are no
+/// modifiers (callers should only invoke this when `modifiers` is non-empty).
+fn edge_modifiers_span(e: &EdgeStmt) -> std::ops::Range<usize> {
+    let start = e
+        .modifiers
+        .iter()
+        .map(|m| m.span().start)
+        .min()
+        .unwrap_or(e.to_span.end);
+    let end = e
+        .modifiers
+        .iter()
+        .map(|m| m.span().end)
+        .max()
+        .unwrap_or(e.to_span.end);
+    start..end
+}
+
+/// Resolve a modifier list to effective (line, weight) values, applying
+/// last-wins semantics and defaulting to Solid/Normal. Assumes all modifiers
+/// are `Known` (callers running after successful semantic validation, e.g.
+/// the formatter, are guaranteed this since unknown modifiers are a build
+/// error).
+fn resolve_edge_modifiers(modifiers: &[EdgeModifier]) -> (LineStyle, LineWeight) {
+    let mut line = LineStyle::Solid;
+    let mut weight = LineWeight::Normal;
+    for modifier in modifiers {
+        match modifier {
+            EdgeModifier::Line(ParsedLineMod::Known(value, _)) => line = *value,
+            EdgeModifier::Weight(ParsedWeightMod::Known(value, _)) => weight = *value,
+            _ => {}
+        }
+    }
+    (line, weight)
 }
 
 /// A state endpoint: either `[*]` or a state ID.
@@ -365,55 +457,133 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             },
         );
 
+    // Edge presentation modifiers: `line solid|dashed|dotted` and
+    // `weight normal|thick`, order-independent, last-wins (resolved later in
+    // the build functions / formatter). Only meaningful for graph diagrams;
+    // state/sequence diagrams reject a non-empty modifier list outright.
+    let line_mod = text::keyword("line")
+        .padded_by(kzd_ws())
+        .ignore_then(ident_spanned())
+        .map(|(name, span)| {
+            EdgeModifier::Line(match name.as_str() {
+                "solid" => ParsedLineMod::Known(LineStyle::Solid, span),
+                "dashed" => ParsedLineMod::Known(LineStyle::Dashed, span),
+                "dotted" => ParsedLineMod::Known(LineStyle::Dotted, span),
+                _ => ParsedLineMod::Unknown(name, span),
+            })
+        });
+    let weight_mod = text::keyword("weight")
+        .padded_by(kzd_ws())
+        .ignore_then(ident_spanned())
+        .map(|(name, span)| {
+            EdgeModifier::Weight(match name.as_str() {
+                "normal" => ParsedWeightMod::Known(LineWeight::Normal, span),
+                "thick" => ParsedWeightMod::Known(LineWeight::Thick, span),
+                _ => ParsedWeightMod::Unknown(name, span),
+            })
+        });
+    let edge_modifiers = line_mod.or(weight_mod).repeated();
+
+    let label_suffix = just(':')
+        .padded_by(kzd_ws())
+        .ignore_then(string_lit_spanned())
+        .or_not();
+
     // Dashed edge: `a --> b` optionally `: "label"`
     let dashed_edge = ident_spanned()
         .then_ignore(just("-->").padded_by(kzd_ws()))
         .then(ident_spanned())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(|(((from, from_span), (to, to_span)), label_opt)| {
-            let (label, label_lit_span) = match label_opt {
-                Some((l, s)) => (Some(l), Some(s)),
-                None => (None, None),
-            };
-            Stmt::DashedEdge(EdgeStmt {
-                from,
-                from_span,
-                to,
-                to_span,
-                label,
-                label_lit_span,
-            })
-        });
+        .then(edge_modifiers.clone())
+        .then(label_suffix.clone())
+        .map(
+            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::DashedEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            },
+        );
 
-    // Solid edge: `a -> b` optionally `: "label"`.
+    // Solid edge: `a -> b` optionally `(line ... | weight ...)*` and `: "label"`.
     let edge = ident_spanned()
         .then_ignore(just("->").padded_by(kzd_ws()))
         .then(ident_spanned())
-        .then(
-            just(':')
-                .padded_by(kzd_ws())
-                .ignore_then(string_lit_spanned())
-                .or_not(),
-        )
-        .map(|(((from, from_span), (to, to_span)), label_opt)| {
-            let (label, label_lit_span) = match label_opt {
-                Some((l, s)) => (Some(l), Some(s)),
-                None => (None, None),
-            };
-            Stmt::Edge(EdgeStmt {
-                from,
-                from_span,
-                to,
-                to_span,
-                label,
-                label_lit_span,
-            })
-        });
+        .then(edge_modifiers.clone())
+        .then(label_suffix.clone())
+        .map(
+            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::Edge(EdgeStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            },
+        );
+
+    // Undirected edge: `a --- b` optionally `(line ... | weight ...)*` and `: "label"`.
+    let undirected_edge = ident_spanned()
+        .then_ignore(just("---").padded_by(kzd_ws()))
+        .then(ident_spanned())
+        .then(edge_modifiers.clone())
+        .then(label_suffix.clone())
+        .map(
+            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::UndirectedEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            },
+        );
+
+    // Bidirectional edge: `a <-> b` optionally `(line ... | weight ...)*` and `: "label"`.
+    let bidirectional_edge = ident_spanned()
+        .then_ignore(just("<->").padded_by(kzd_ws()))
+        .then(ident_spanned())
+        .then(edge_modifiers.clone())
+        .then(label_suffix.clone())
+        .map(
+            |((((from, from_span), (to, to_span)), modifiers), label_opt)| {
+                let (label, label_lit_span) = match label_opt {
+                    Some((l, s)) => (Some(l), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::BidirectionalEdge(EdgeStmt {
+                    from,
+                    from_span,
+                    to,
+                    to_span,
+                    label,
+                    label_lit_span,
+                    modifiers,
+                })
+            },
+        );
 
     // Node: `id`, `id: "label"`, or `id shape rectangle|rounded: "label"`.
     let node_shape = text::keyword("shape")
@@ -454,6 +624,8 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         .or(state_trans_pseudo_left)
         .or(state_trans_pseudo_right)
         .or(dashed_edge)
+        .or(bidirectional_edge)
+        .or(undirected_edge)
         .or(edge)
         .or(node);
     let body = stmt.repeated().padded_by(kzd_ws());
@@ -698,54 +870,90 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     secondary: None,
                 });
             }
-            Stmt::Edge(_) => {}
+            Stmt::Edge(_) | Stmt::UndirectedEdge(_) | Stmt::BidirectionalEdge(_) => {}
         }
     }
     graph.direction = direction;
 
     for stmt in &ast.stmts {
-        if let Stmt::Edge(e) = stmt {
-            if e.from == e.to {
+        let (e, arrow, from_arrow) = match stmt {
+            Stmt::Edge(e) => (e, ArrowType::Triangle, ArrowType::None),
+            Stmt::UndirectedEdge(e) => (e, ArrowType::None, ArrowType::None),
+            Stmt::BidirectionalEdge(e) => (e, ArrowType::Triangle, ArrowType::Triangle),
+            _ => continue,
+        };
+
+        if e.from == e.to {
+            errors.push(CompileError {
+                message: format!(
+                    "self-loops are not yet supported (edge `{}` -> `{}`)",
+                    e.from, e.to
+                ),
+                span: e.from_span.start..e.to_span.end,
+                secondary: None,
+            });
+            continue;
+        }
+
+        for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
+            if !graph.nodes.contains_key(endpoint.as_str()) {
+                let mut message = format!("unknown node `{}`", endpoint);
+                if let Some(suggestion) = closest_name(endpoint, graph.nodes.keys()) {
+                    message.push_str(&format!(", did you mean `{}`?", suggestion));
+                }
                 errors.push(CompileError {
-                    message: format!(
-                        "self-loops are not yet supported (edge `{}` -> `{}`)",
-                        e.from, e.to
-                    ),
-                    span: e.from_span.start..e.to_span.end,
+                    message,
+                    span: span.clone(),
                     secondary: None,
                 });
-                continue;
             }
+        }
+        if let Some(label_lit_span) = &e.label_lit_span {
+            if let Some(err_span) = find_invalid_escape_in_span(src, label_lit_span) {
+                errors.push(CompileError {
+                    message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                    span: err_span,
+                    secondary: None,
+                });
+            }
+        }
 
-            for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
-                if !graph.nodes.contains_key(endpoint.as_str()) {
-                    let mut message = format!("unknown node `{}`", endpoint);
-                    if let Some(suggestion) = closest_name(endpoint, graph.nodes.keys()) {
-                        message.push_str(&format!(", did you mean `{}`?", suggestion));
-                    }
+        let mut line = LineStyle::Solid;
+        let mut weight = LineWeight::Normal;
+        for modifier in &e.modifiers {
+            match modifier {
+                EdgeModifier::Line(ParsedLineMod::Known(value, _)) => line = *value,
+                EdgeModifier::Line(ParsedLineMod::Unknown(name, span)) => {
                     errors.push(CompileError {
-                        message,
+                        message: format!(
+                            "unknown edge line style `{name}`; expected `solid`, `dashed`, or `dotted`"
+                        ),
+                        span: span.clone(),
+                        secondary: None,
+                    });
+                }
+                EdgeModifier::Weight(ParsedWeightMod::Known(value, _)) => weight = *value,
+                EdgeModifier::Weight(ParsedWeightMod::Unknown(name, span)) => {
+                    errors.push(CompileError {
+                        message: format!(
+                            "unknown edge weight `{name}`; expected `normal` or `thick`"
+                        ),
                         span: span.clone(),
                         secondary: None,
                     });
                 }
             }
-            if let Some(label_lit_span) = &e.label_lit_span {
-                if let Some(err_span) = find_invalid_escape_in_span(src, label_lit_span) {
-                    errors.push(CompileError {
-                        message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
-                        span: err_span,
-                        secondary: None,
-                    });
-                }
-            }
-            graph.edges.push(Edge::new(
-                e.from.clone(),
-                e.to.clone(),
-                e.label.clone(),
-                ArrowType::Triangle,
-            ));
         }
+
+        graph.edges.push(Edge::with_presentation(
+            e.from.clone(),
+            e.to.clone(),
+            e.label.clone(),
+            arrow,
+            from_arrow,
+            line,
+            weight,
+        ));
     }
 
     if errors.is_empty() {
@@ -783,6 +991,20 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             Stmt::DashedEdge(e) => {
                 errors.push(CompileError {
                     message: "dashed edges (`-->`) are not supported in state diagrams; use `->` for transitions".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+            }
+            Stmt::UndirectedEdge(e) => {
+                errors.push(CompileError {
+                    message: "undirected edges (`---`) are not supported in state diagrams; use `->` for transitions".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+            }
+            Stmt::BidirectionalEdge(e) => {
+                errors.push(CompileError {
+                    message: "bidirectional edges (`<->`) are not supported in state diagrams; use `->` for transitions".to_string(),
                     span: e.from_span.start..e.to_span.end,
                     secondary: None,
                 });
@@ -841,7 +1063,18 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     secondary: None,
                 });
             }
-            Stmt::Edge(_) | Stmt::StateTransition(_) => {}
+            Stmt::Edge(e) => {
+                if !e.modifiers.is_empty() {
+                    errors.push(CompileError {
+                        message:
+                            "`line`/`weight` edge modifiers are not supported in state diagrams"
+                                .to_string(),
+                        span: edge_modifiers_span(e),
+                        secondary: None,
+                    });
+                }
+            }
+            Stmt::StateTransition(_) => {}
         }
     }
 
@@ -1008,6 +1241,22 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 });
                 continue;
             }
+            Stmt::UndirectedEdge(e) => {
+                errors.push(CompileError {
+                    message: "undirected edges (`---`) are only valid in graph diagrams; use `->` or `-->` for sequence diagrams".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+                continue;
+            }
+            Stmt::BidirectionalEdge(e) => {
+                errors.push(CompileError {
+                    message: "bidirectional edges (`<->`) are only valid in graph diagrams; use `->` or `-->` for sequence diagrams".to_string(),
+                    span: e.from_span.start..e.to_span.end,
+                    secondary: None,
+                });
+                continue;
+            }
             _ => {}
         }
         if let Stmt::Participant {
@@ -1049,6 +1298,16 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             Stmt::DashedEdge(e) => (e, LineStyle::Dashed),
             _ => continue,
         };
+
+        if !e.modifiers.is_empty() {
+            errors.push(CompileError {
+                message: "`line`/`weight` edge modifiers are not supported in sequence diagrams"
+                    .to_string(),
+                span: edge_modifiers_span(e),
+                secondary: None,
+            });
+            continue;
+        }
 
         let mut valid = true;
         for (endpoint, span) in [(&e.from, &e.from_span), (&e.to, &e.to_span)] {
@@ -1463,7 +1722,11 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
         .filter_map(|(i, s)| {
             if matches!(
                 s,
-                Stmt::Edge(_) | Stmt::DashedEdge(_) | Stmt::StateTransition(_)
+                Stmt::Edge(_)
+                    | Stmt::DashedEdge(_)
+                    | Stmt::UndirectedEdge(_)
+                    | Stmt::BidirectionalEdge(_)
+                    | Stmt::StateTransition(_)
             ) {
                 Some(i)
             } else {
@@ -1593,11 +1856,15 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
                 .unwrap_or(id_span.end);
             (id_span.start, end)
         }
-        Stmt::Edge(e) | Stmt::DashedEdge(e) => {
+        Stmt::Edge(e)
+        | Stmt::DashedEdge(e)
+        | Stmt::UndirectedEdge(e)
+        | Stmt::BidirectionalEdge(e) => {
             let end = e
                 .label_lit_span
                 .as_ref()
                 .map(|s| s.end)
+                .or_else(|| e.modifiers.iter().map(|m| m.span().end).max())
                 .unwrap_or(e.to_span.end);
             (e.from_span.start, end)
         }
@@ -1665,16 +1932,51 @@ fn format_decl_stmt(stmt: &Stmt) -> String {
     }
 }
 
-/// Format an edge statement (Edge or DashedEdge).
+/// Token for a resolved [`LineStyle`] as used in `line <token>` modifiers.
+fn line_style_token(style: LineStyle) -> &'static str {
+    match style {
+        LineStyle::Solid => "solid",
+        LineStyle::Dashed => "dashed",
+        LineStyle::Dotted => "dotted",
+        _ => "solid",
+    }
+}
+
+/// Token for a resolved [`LineWeight`] as used in `weight <token>` modifiers.
+fn line_weight_token(weight: LineWeight) -> &'static str {
+    match weight {
+        LineWeight::Normal => "normal",
+        LineWeight::Thick => "thick",
+        _ => "normal",
+    }
+}
+
+/// Format the canonical `a <op> b [line ...] [weight ...] [: "label"]` body
+/// shared by the three graph edge arrow tokens.
+fn format_graph_edge(e: &EdgeStmt, op: &str) -> String {
+    let (line, weight) = resolve_edge_modifiers(&e.modifiers);
+    let mut out = format!("{} {} {}", e.from, op, e.to);
+    if line != LineStyle::Solid {
+        out.push_str(" line ");
+        out.push_str(line_style_token(line));
+    }
+    if weight != LineWeight::Normal {
+        out.push_str(" weight ");
+        out.push_str(line_weight_token(weight));
+    }
+    if let Some(label_str) = &e.label {
+        out.push_str(" : ");
+        out.push_str(&format_string_lit(label_str));
+    }
+    out
+}
+
+/// Format an edge statement (Edge, DashedEdge, UndirectedEdge, BidirectionalEdge).
 fn format_edge_stmt(stmt: &Stmt) -> String {
     match stmt {
-        Stmt::Edge(e) => {
-            if let Some(label_str) = &e.label {
-                format!("{} -> {} : {}", e.from, e.to, format_string_lit(label_str))
-            } else {
-                format!("{} -> {}", e.from, e.to)
-            }
-        }
+        Stmt::Edge(e) => format_graph_edge(e, "->"),
+        Stmt::UndirectedEdge(e) => format_graph_edge(e, "---"),
+        Stmt::BidirectionalEdge(e) => format_graph_edge(e, "<->"),
         Stmt::DashedEdge(e) => {
             if let Some(label_str) = &e.label {
                 format!("{} --> {} : {}", e.from, e.to, format_string_lit(label_str))
@@ -1843,6 +2145,160 @@ mod tests {
                 .iter()
                 .any(|error| error.message.contains("only valid in graph diagrams")));
         }
+    }
+
+    #[test]
+    fn graph_edge_presentation_tokens_parse() {
+        let source = "graph d {\n a\n b\n c\n a -> b\n b --- c\n c <-> a\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges.len(), 3);
+        assert_eq!(graph.edges[0].arrow, ArrowType::Triangle);
+        assert_eq!(graph.edges[0].from_arrow, ArrowType::None);
+        assert_eq!(graph.edges[1].arrow, ArrowType::None);
+        assert_eq!(graph.edges[1].from_arrow, ArrowType::None);
+        assert_eq!(graph.edges[2].arrow, ArrowType::Triangle);
+        assert_eq!(graph.edges[2].from_arrow, ArrowType::Triangle);
+        for edge in &graph.edges {
+            assert_eq!(edge.line, LineStyle::Solid);
+            assert_eq!(edge.weight, kozue_ir::LineWeight::Normal);
+        }
+    }
+
+    #[test]
+    fn graph_edge_line_and_weight_modifiers_parse_last_wins() {
+        let source = "graph d {\n a\n b\n a -> b line dashed weight thick\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges[0].line, LineStyle::Dashed);
+        assert_eq!(graph.edges[0].weight, kozue_ir::LineWeight::Thick);
+
+        // Last-wins when repeated.
+        let source2 =
+            "graph d {\n a\n b\n a -> b line dashed line dotted weight thick weight normal\n}";
+        let Diagram::Graph(graph2) = parse(source2).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph2.edges[0].line, LineStyle::Dotted);
+        assert_eq!(graph2.edges[0].weight, kozue_ir::LineWeight::Normal);
+    }
+
+    #[test]
+    fn graph_edge_modifiers_apply_to_all_arrow_tokens() {
+        let source = "graph d {\n a\n b\n c\n a -> b line dotted\n b --- c weight thick\n c <-> a line dashed weight thick\n}";
+        let Diagram::Graph(graph) = parse(source).expect("should parse") else {
+            panic!("expected graph")
+        };
+        assert_eq!(graph.edges[0].line, LineStyle::Dotted);
+        assert_eq!(graph.edges[1].weight, kozue_ir::LineWeight::Thick);
+        assert_eq!(graph.edges[2].line, LineStyle::Dashed);
+        assert_eq!(graph.edges[2].weight, kozue_ir::LineWeight::Thick);
+    }
+
+    #[test]
+    fn graph_edge_unknown_line_style_is_error_with_exact_span() {
+        let src = "graph d { a\n b\n a -> b line teal }";
+        let errors = parse(src).expect_err("unknown line style must fail");
+        let error = errors
+            .iter()
+            .find(|e| e.message.contains("unknown edge line style"))
+            .unwrap();
+        assert!(error
+            .message
+            .contains("unknown edge line style `teal`; expected `solid`, `dashed`, or `dotted`"));
+        let start = src.find("teal").unwrap();
+        assert_eq!(error.span, start..start + "teal".len());
+    }
+
+    #[test]
+    fn graph_edge_unknown_weight_is_error_with_exact_span() {
+        let src = "graph d { a\n b\n a -> b weight bold }";
+        let errors = parse(src).expect_err("unknown weight must fail");
+        let error = errors
+            .iter()
+            .find(|e| e.message.contains("unknown edge weight"))
+            .unwrap();
+        assert!(error
+            .message
+            .contains("unknown edge weight `bold`; expected `normal` or `thick`"));
+        let start = src.find("bold").unwrap();
+        assert_eq!(error.span, start..start + "bold".len());
+    }
+
+    #[test]
+    fn state_rejects_new_edge_tokens_and_modifiers() {
+        let cases = [
+            ("state d { state a\n state b\n a --- b }", "undirected"),
+            ("state d { state a\n state b\n a <-> b }", "bidirectional"),
+            (
+                "state d { state a\n state b\n a -> b line dashed }",
+                "modifiers",
+            ),
+        ];
+        for (src, label) in cases {
+            let errors = parse(src).expect_err(&format!("{label} must be rejected in state"));
+            assert!(
+                errors.iter().any(|e| e.message.contains("state diagrams")),
+                "{label}: got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_rejects_new_edge_tokens_and_modifiers() {
+        let cases = [
+            (
+                "sequence d { participant a\n participant b\n a --- b }",
+                "undirected",
+            ),
+            (
+                "sequence d { participant a\n participant b\n a <-> b }",
+                "bidirectional",
+            ),
+            (
+                "sequence d { participant a\n participant b\n a -> b line dashed }",
+                "modifiers",
+            ),
+        ];
+        for (src, label) in cases {
+            let errors = parse(src).expect_err(&format!("{label} must be rejected in sequence"));
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.message.contains("sequence diagrams")),
+                "{label}: got {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fmt_edge_presentation_canonical_output() {
+        let source =
+            "graph d {\n a\n b\n c\n a -> b\n b --- c line dotted\n c <-> a weight thick\n}";
+        let formatted = format_kzd(source).expect("should format");
+        assert!(formatted.contains("a -> b\n"));
+        assert!(formatted.contains("b --- c line dotted\n"));
+        assert!(formatted.contains("c <-> a weight thick\n"));
+    }
+
+    #[test]
+    fn fmt_edge_presentation_is_idempotent() {
+        let source = "graph d {\n a\n b\n c\n a -> b line dashed weight thick : \"L\"\n b --- c\n c <-> a line dotted\n}";
+        let formatted = format_kzd(source).expect("should format");
+        assert_eq!(format_kzd(&formatted).unwrap(), formatted);
+    }
+
+    #[test]
+    fn fmt_default_presentation_edges_are_unchanged() {
+        // Default-presentation directed edges must format exactly as before
+        // this milestone, with no `line`/`weight` tokens emitted.
+        let source = "graph d {\n a\n b\n a -> b : \"L\"\n}";
+        let formatted = format_kzd(source).expect("should format");
+        assert!(formatted.contains("a -> b : \"L\"\n"));
+        assert!(!formatted.contains("line "));
+        assert!(!formatted.contains("weight "));
     }
 
     #[test]

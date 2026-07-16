@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ElementId, LineStyle, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem, Text,
-    TextAlign,
+    ElementId, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem, StrokeStyle,
+    StrokeWeight, Text, TextAlign,
 };
 
 use crate::bounds;
@@ -212,7 +212,8 @@ pub(crate) fn layout_sequence_full(
         items.push(SceneItem::Path(Path {
             points: vec![(cx, lifeline_top), (cx, diagram_bottom)],
             filled: false,
-            dashed: true,
+            stroke: StrokeStyle::Dashed,
+            weight: StrokeWeight::Normal,
         }));
 
         sem_participants.push(semantic::ParticipantLayout {
@@ -249,11 +250,12 @@ pub(crate) fn layout_sequence_full(
             let y0 = y;
             let y1 = y + SELF_MSG_HEIGHT;
 
-            let dashed = matches!(msg.line, LineStyle::Dashed);
+            let stroke = crate::line_style_to_stroke(msg.line);
             items.push(SceneItem::Path(Path {
                 points: vec![(x0, y0), (x1, y0), (x1, y1), (x0 + ARROW_LEN, y1)],
                 filled: false,
-                dashed,
+                stroke,
+                weight: StrokeWeight::Normal,
             }));
 
             // Arrowhead pointing left at (x0, y1).
@@ -263,7 +265,8 @@ pub(crate) fn layout_sequence_full(
             items.push(SceneItem::Path(Path {
                 points: vec![tip, left, right],
                 filled: true,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             }));
 
             // Label to the right of the fold.
@@ -311,13 +314,14 @@ pub(crate) fn layout_sequence_full(
             let going_right = x_to > x_from;
             let ux = if going_right { 1.0 } else { -1.0 };
 
-            let dashed = matches!(msg.line, LineStyle::Dashed);
+            let stroke = crate::line_style_to_stroke(msg.line);
             let line_end_x = x_to - ux * ARROW_LEN;
 
             items.push(SceneItem::Path(Path {
                 points: vec![(x_from, y), (line_end_x, y)],
                 filled: false,
-                dashed,
+                stroke,
+                weight: StrokeWeight::Normal,
             }));
 
             // Arrowhead.
@@ -327,7 +331,8 @@ pub(crate) fn layout_sequence_full(
             items.push(SceneItem::Path(Path {
                 points: vec![tip, base_left, base_right],
                 filled: true,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             }));
 
             // Label above center of line.

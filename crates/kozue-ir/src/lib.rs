@@ -25,12 +25,13 @@ pub enum IrSchemaVersion {
     V2,
     V3,
     V4,
-    #[default]
     V5,
+    #[default]
+    V6,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V5;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V6;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -51,6 +52,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V3 => serializer.serialize_u8(3),
             IrSchemaVersion::V4 => serializer.serialize_u8(4),
             IrSchemaVersion::V5 => serializer.serialize_u8(5),
+            IrSchemaVersion::V6 => serializer.serialize_u8(6),
         }
     }
 }
@@ -67,6 +69,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             3 => Ok(IrSchemaVersion::V3),
             4 => Ok(IrSchemaVersion::V4),
             5 => Ok(IrSchemaVersion::V5),
+            6 => Ok(IrSchemaVersion::V6),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -249,7 +252,10 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
         Direction::Up | Direction::Left => {
             matches!(
                 version,
-                IrSchemaVersion::V3 | IrSchemaVersion::V4 | IrSchemaVersion::V5
+                IrSchemaVersion::V3
+                    | IrSchemaVersion::V4
+                    | IrSchemaVersion::V5
+                    | IrSchemaVersion::V6
             )
         }
     }
@@ -259,10 +265,30 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
     match kind {
         NodeKind::Default => true,
         NodeKind::Rectangle | NodeKind::RoundedRectangle => {
-            matches!(version, IrSchemaVersion::V4 | IrSchemaVersion::V5)
+            matches!(
+                version,
+                IrSchemaVersion::V4 | IrSchemaVersion::V5 | IrSchemaVersion::V6
+            )
         }
-        NodeKind::Circle | NodeKind::Diamond => version == IrSchemaVersion::V5,
+        NodeKind::Circle | NodeKind::Diamond => {
+            matches!(version, IrSchemaVersion::V5 | IrSchemaVersion::V6)
+        }
     }
+}
+
+fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
+    match line {
+        LineStyle::Solid | LineStyle::Dashed => true,
+        LineStyle::Dotted => version == IrSchemaVersion::V6,
+    }
+}
+
+fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
+    let default_presentation = edge.from_arrow == ArrowType::None
+        && edge.line == LineStyle::Solid
+        && edge.weight == LineWeight::Normal;
+    (default_presentation || version == IrSchemaVersion::V6)
+        && line_style_supported_in(version, edge.line)
 }
 
 fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
@@ -273,8 +299,25 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
                     .nodes
                     .values()
                     .all(|node| node_kind_supported_in(version, &node.kind))
+                && graph
+                    .edges
+                    .iter()
+                    .all(|edge| edge_supported_in(version, edge))
         }
-        Diagram::Class(class) => direction_supported_in(version, class.direction),
+        Diagram::Class(class) => {
+            direction_supported_in(version, class.direction)
+                && class
+                    .relations
+                    .iter()
+                    .all(|relation| line_style_supported_in(version, relation.line))
+        }
+        Diagram::Er(er) => er
+            .relations
+            .iter()
+            .all(|relation| line_style_supported_in(version, relation.line)),
+        Diagram::Sequence(sequence) => sequence.items.iter().all(|item| match item {
+            SequenceItem::Message(message) => line_style_supported_in(version, message.line),
+        }),
         _ => true,
     }
 }
@@ -355,8 +398,22 @@ impl<'de> Deserialize<'de> for IrDocument {
                     extensions: wire.extensions,
                 })
             }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V6 => {
+                if !diagram_supported_in(IrSchemaVersion::V6, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 6 does not support this diagram direction, node kind, or edge presentation",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, and 5 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, and 6 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -520,12 +577,23 @@ pub enum SequenceItem {
     Message(Message),
 }
 
-/// The line style of a sequence message arrow.
+/// The line style of a sequence message arrow. Shared by edges, class
+/// relations, and ER relations.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LineStyle {
     Solid,
     Dashed,
+    Dotted,
+}
+
+/// The stroke weight of an edge or relation line.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LineWeight {
+    #[default]
+    Normal,
+    Thick,
 }
 
 /// A message (arrow) between two participants in a sequence diagram.
@@ -609,7 +677,12 @@ pub struct Edge {
     pub from: ElementId,
     pub to: ElementId,
     pub label: Option<String>,
+    /// Legacy target-end arrow marker.
     pub arrow: ArrowType,
+    /// Source-end arrow marker.
+    pub from_arrow: ArrowType,
+    pub line: LineStyle,
+    pub weight: LineWeight,
 }
 
 impl Edge {
@@ -624,6 +697,30 @@ impl Edge {
             to: to.into(),
             label,
             arrow,
+            from_arrow: ArrowType::None,
+            line: LineStyle::Solid,
+            weight: LineWeight::Normal,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_presentation(
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
+        label: Option<String>,
+        arrow: ArrowType,
+        from_arrow: ArrowType,
+        line: LineStyle,
+        weight: LineWeight,
+    ) -> Self {
+        Edge {
+            from: from.into(),
+            to: to.into(),
+            label,
+            arrow,
+            from_arrow,
+            line,
+            weight,
         }
     }
 }
@@ -948,14 +1045,35 @@ pub struct Rect {
     pub rx: f64,
 }
 
+/// The dash pattern of a scene [`Path`] stroke.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StrokeStyle {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+
+/// The stroke weight of a scene [`Path`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum StrokeWeight {
+    #[default]
+    Normal,
+    Thick,
+}
+
 /// A polyline / open path. Optionally filled (used for arrowheads).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     pub points: Vec<(f64, f64)>,
     /// When `true`, the path is closed and filled (e.g. an arrowhead).
     pub filled: bool,
-    /// When `true`, the stroke is rendered as a dashed line.
-    pub dashed: bool,
+    /// The dash pattern the stroke is rendered with.
+    pub stroke: StrokeStyle,
+    /// The stroke weight.
+    pub weight: StrokeWeight,
 }
 
 /// A text run positioned at `(x, y)` with the given alignment, and its
@@ -991,6 +1109,7 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V3: &str = r#"{"schema_version":3,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V4: &str = r#"{"schema_version":4,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V5: &str = r#"{"schema_version":5,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V6: &str = r#"{"schema_version":6,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -1024,10 +1143,15 @@ mod tests {
         assert_eq!(serde_json::to_value(IrSchemaVersion::V3).unwrap(), json!(3));
         assert_eq!(serde_json::to_value(IrSchemaVersion::V4).unwrap(), json!(4));
         assert_eq!(serde_json::to_value(IrSchemaVersion::V5).unwrap(), json!(5));
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(6)).unwrap_err();
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V6).unwrap(), json!(6));
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(6)).unwrap(),
+            IrSchemaVersion::V6
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(7)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 6"));
+            .contains("unsupported IR schema version 7"));
     }
 
     #[test]
@@ -1050,7 +1174,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V5);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V6);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1058,19 +1182,20 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v4_documents_are_upgraded_to_v5() {
+    fn v1_through_v4_documents_are_upgraded_to_v6() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
             EMPTY_GRAPH_DOCUMENT_V3,
             EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V5);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V6);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V5
+                EMPTY_GRAPH_DOCUMENT_V6
             );
         }
 
@@ -1111,6 +1236,7 @@ mod tests {
                     EMPTY_GRAPH_DOCUMENT_V3,
                     EMPTY_GRAPH_DOCUMENT_V4,
                     EMPTY_GRAPH_DOCUMENT_V5,
+                    EMPTY_GRAPH_DOCUMENT_V6,
                 ] {
                     let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
                     value["diagram"] = serde_json::to_value(&diagram).unwrap();
@@ -1144,7 +1270,11 @@ mod tests {
                 assert!(serde_json::from_value::<IrDocument>(value).is_err());
             }
 
-            for fixture in [EMPTY_GRAPH_DOCUMENT_V4, EMPTY_GRAPH_DOCUMENT_V5] {
+            for fixture in [
+                EMPTY_GRAPH_DOCUMENT_V4,
+                EMPTY_GRAPH_DOCUMENT_V5,
+                EMPTY_GRAPH_DOCUMENT_V6,
+            ] {
                 let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
                 value["diagram"] = serde_json::to_value(&diagram).unwrap();
                 assert_eq!(
@@ -1177,8 +1307,85 @@ mod tests {
                 assert!(serde_json::from_value::<IrDocument>(value).is_err());
             }
 
+            for fixture in [EMPTY_GRAPH_DOCUMENT_V5, EMPTY_GRAPH_DOCUMENT_V6] {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<IrDocument>(value)
+                        .unwrap()
+                        .into_diagram(),
+                    diagram
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edge_presentation_requires_schema_v6() {
+        let legacy_fixtures = [
+            EMPTY_GRAPH_DOCUMENT_V1,
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+        ];
+
+        let variants = [
+            Edge::with_presentation(
+                "a",
+                "a",
+                None,
+                ArrowType::Triangle,
+                ArrowType::Triangle,
+                LineStyle::Solid,
+                LineWeight::Normal,
+            ),
+            Edge::with_presentation(
+                "a",
+                "a",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Dashed,
+                LineWeight::Normal,
+            ),
+            Edge::with_presentation(
+                "a",
+                "a",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Dotted,
+                LineWeight::Normal,
+            ),
+            Edge::with_presentation(
+                "a",
+                "a",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Thick,
+            ),
+        ];
+
+        for edge in variants {
+            let mut graph = GraphDiagram::new(Direction::Down);
+            graph.nodes.insert("a".into(), Node::new("a", "A"));
+            graph.edges.push(edge.clone());
+            let diagram = Diagram::Graph(graph);
+
+            for fixture in legacy_fixtures {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert!(
+                    serde_json::from_value::<IrDocument>(value).is_err(),
+                    "legacy schema accepted {edge:?}"
+                );
+            }
+
             let mut value: serde_json::Value =
-                serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V5).unwrap();
+                serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V6).unwrap();
             value["diagram"] = serde_json::to_value(&diagram).unwrap();
             assert_eq!(
                 serde_json::from_value::<IrDocument>(value)
@@ -1190,7 +1397,26 @@ mod tests {
     }
 
     #[test]
-    fn v5_annotations_round_trip_in_declaration_order() {
+    fn all_line_styles_and_weights_round_trip() {
+        for line in [LineStyle::Solid, LineStyle::Dashed, LineStyle::Dotted] {
+            for weight in [LineWeight::Normal, LineWeight::Thick] {
+                let edge = Edge::with_presentation(
+                    "a",
+                    "b",
+                    Some("e".to_string()),
+                    ArrowType::Triangle,
+                    ArrowType::None,
+                    line,
+                    weight,
+                );
+                let json = serde_json::to_string(&edge).unwrap();
+                assert_eq!(serde_json::from_str::<Edge>(&json).unwrap(), edge);
+            }
+        }
+    }
+
+    #[test]
+    fn v6_annotations_round_trip_in_declaration_order() {
         let mut document = IrDocument::new(Diagram::Graph(GraphDiagram::new(Direction::Down)));
         document.annotations = vec![
             Annotation::new(
@@ -1273,9 +1499,9 @@ mod tests {
 
     #[test]
     fn document_rejects_unknown_versions_and_missing_required_fields() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V5).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V6).unwrap();
 
-        for version in [0, 1, 6] {
+        for version in [0, 1, 7] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -1319,8 +1545,8 @@ mod tests {
     }
 
     #[test]
-    fn v5_rejects_nested_unknown_fields_and_missing_tag_value() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V5).unwrap();
+    fn v6_rejects_nested_unknown_fields_and_missing_tag_value() {
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V6).unwrap();
         let with_tag = |mut value: serde_json::Value| {
             value["annotations"] = json!([{
                 "id": "tag-1",
@@ -1463,7 +1689,7 @@ mod tests {
         let fixtures = [
             (
                 Diagram::Graph(graph),
-                r#"{"Graph":{"direction":"Down","nodes":{"a":{"id":"a","label":"A","kind":"Default"}},"edges":[{"from":"a","to":"a","label":"loop","arrow":"Triangle"}]}}"#,
+                r#"{"Graph":{"direction":"Down","nodes":{"a":{"id":"a","label":"A","kind":"Default"}},"edges":[{"from":"a","to":"a","label":"loop","arrow":"Triangle","from_arrow":"None","line":"Solid","weight":"Normal"}]}}"#,
             ),
             (
                 Diagram::Sequence(sequence),

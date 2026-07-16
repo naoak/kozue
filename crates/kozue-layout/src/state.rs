@@ -1,6 +1,9 @@
 //! State-diagram layout (M7a).
 
-use kozue_ir::{ArrowType, ElementId, Path, Rect, Scene, SceneItem, StateDiagram, Text, TextAlign};
+use kozue_ir::{
+    ArrowType, ElementId, LineStyle, LineWeight, Path, Rect, Scene, SceneItem, StateDiagram,
+    StrokeStyle, StrokeWeight, Text, TextAlign,
+};
 
 use super::{
     bounds, coords, cycle, layering, ordering, semantic, LayoutError, Placed, ARROW_HALF_W,
@@ -315,6 +318,9 @@ pub(crate) fn layout_state_full(
             &geom,
             trans_label,
             ArrowType::Triangle,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal,
             offsets[k],
         );
 
@@ -375,7 +381,8 @@ pub(crate) fn layout_state_full(
         items.push(SceneItem::Path(Path {
             points: line_pts,
             filled: false,
-            dashed: false,
+            stroke: StrokeStyle::Solid,
+            weight: StrokeWeight::Normal,
         }));
 
         let px = -uy;
@@ -391,7 +398,8 @@ pub(crate) fn layout_state_full(
         items.push(SceneItem::Path(Path {
             points: vec![end, left, right],
             filled: true,
-            dashed: false,
+            stroke: StrokeStyle::Solid,
+            weight: StrokeWeight::Normal,
         }));
 
         let label_anchor = if let Some(label) = t.label.as_deref() {

@@ -1,0 +1,12 @@
+digraph {
+  rankdir=TB;
+  node [shape=box style=rounded];
+  "a" [label="A"];
+  "b" [label="B"];
+  "c" [label="C"];
+  "d" [label="D"];
+  "a" -> "b" [style=dashed];
+  "b" -> "c" [penwidth=2 style="dotted,bold"];
+  "a" -> "c" [dir=none];
+  "b" -> "d" [dir=both penwidth=2 style=bold];
+}

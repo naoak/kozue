@@ -47,8 +47,8 @@ use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, Edge, EndMarker,
     Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument, LineStyle,
-    Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State, StateDiagram,
-    Transition,
+    LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem, State,
+    StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -210,6 +210,9 @@ fn parse_flowchart(
         to: String,
         label: Option<String>,
         arrow: ArrowType,
+        from_arrow: ArrowType,
+        line: LineStyle,
+        weight: LineWeight,
         span: Range<usize>,
     }
     let mut raw_edges: Vec<RawEdge> = Vec::new();
@@ -297,24 +300,17 @@ fn parse_flowchart(
         if let Some(chain) = try_parse_edge_chain(trimmed, offset + trimmed_offset) {
             match chain {
                 Ok(edges) => {
-                    for (
-                        from_id,
-                        from_label,
-                        from_kind,
-                        to_id,
-                        to_label,
-                        to_kind,
-                        edge_label,
-                        arrow,
-                    ) in edges
-                    {
-                        ensure_node(&from_id, from_label.as_deref(), from_kind);
-                        ensure_node(&to_id, to_label.as_deref(), to_kind);
+                    for edge in edges {
+                        ensure_node(&edge.from_id, edge.from_label.as_deref(), edge.from_kind);
+                        ensure_node(&edge.to_id, edge.to_label.as_deref(), edge.to_kind);
                         raw_edges.push(RawEdge {
-                            from: from_id,
-                            to: to_id,
-                            label: edge_label,
-                            arrow,
+                            from: edge.from_id,
+                            to: edge.to_id,
+                            label: edge.edge_label,
+                            arrow: edge.arrow,
+                            from_arrow: edge.from_arrow,
+                            line: edge.line,
+                            weight: edge.weight,
                             span: span.clone(),
                         });
                     }
@@ -361,11 +357,14 @@ fn parse_flowchart(
             ));
             continue;
         }
-        graph.edges.push(Edge::new(
+        graph.edges.push(Edge::with_presentation(
             re.from.clone(),
             re.to.clone(),
             re.label.clone(),
             re.arrow,
+            re.from_arrow,
+            re.line,
+            re.weight,
         ));
     }
 
@@ -837,30 +836,106 @@ fn strip_keyword_ci<'a>(s: &'a str, keyword: &str) -> Option<&'a str> {
 // Node / edge line parsers
 // ---------------------------------------------------------------------------
 
-/// (from_id, from_label, to_id, to_label, edge_label, arrow)
-type EdgeParseResult = (
-    String,
-    Option<String>,
-    NodeKind,
-    String,
-    Option<String>,
-    NodeKind,
-    Option<String>,
-    ArrowType,
-);
+/// A fully parsed flowchart edge (one hop of a possibly-chained `A --> B --> C` line).
+struct FlowchartEdge {
+    from_id: String,
+    from_label: Option<String>,
+    from_kind: NodeKind,
+    to_id: String,
+    to_label: Option<String>,
+    to_kind: NodeKind,
+    edge_label: Option<String>,
+    arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
+}
 
 /// (from, to, label, line_style, arrow)
 type SeqMsgResult = (String, String, Option<String>, LineStyle, ArrowType);
 
-/// (to_id, to_label, edge_label, arrow, remainder) — result of one edge segment parse.
-type SegmentResult<'a> = (
-    String,
-    Option<String>,
-    NodeKind,
-    Option<String>,
-    ArrowType,
-    &'a str,
-);
+/// Result of parsing one edge operator+target segment (e.g. the `--> B` part
+/// of `A --> B`).
+struct EdgeSegment<'a> {
+    to_id: String,
+    to_label: Option<String>,
+    to_kind: NodeKind,
+    edge_label: Option<String>,
+    arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
+    remainder: &'a str,
+}
+
+/// Every flowchart edge operator token, in the order they must be tried:
+/// tokens that are a byte-prefix of another token (`-.-` is a prefix of
+/// `-.->`) must come after the longer/more-specific one, otherwise the
+/// shorter token would shadow it and mis-consume the following `>` as part of
+/// the target node. `<-->`/`==>`/`===` don't overlap with anything else but
+/// are kept in the same list for a single source of truth.
+///
+/// `(token, arrow, from_arrow, line, weight)`
+const EDGE_OPERATORS: &[(&str, ArrowType, ArrowType, LineStyle, LineWeight)] = &[
+    (
+        "<-->",
+        ArrowType::Triangle,
+        ArrowType::Triangle,
+        LineStyle::Solid,
+        LineWeight::Normal,
+    ),
+    (
+        "-.->",
+        ArrowType::Triangle,
+        ArrowType::None,
+        LineStyle::Dotted,
+        LineWeight::Normal,
+    ),
+    (
+        "-.-",
+        ArrowType::None,
+        ArrowType::None,
+        LineStyle::Dotted,
+        LineWeight::Normal,
+    ),
+    (
+        "==>",
+        ArrowType::Triangle,
+        ArrowType::None,
+        LineStyle::Solid,
+        LineWeight::Thick,
+    ),
+    (
+        "===",
+        ArrowType::None,
+        ArrowType::None,
+        LineStyle::Solid,
+        LineWeight::Thick,
+    ),
+    (
+        "-->",
+        ArrowType::Triangle,
+        ArrowType::None,
+        LineStyle::Solid,
+        LineWeight::Normal,
+    ),
+    (
+        "---",
+        ArrowType::None,
+        ArrowType::None,
+        LineStyle::Solid,
+        LineWeight::Normal,
+    ),
+];
+
+/// Whether `s` starts with a recognised edge operator token (any of
+/// [`EDGE_OPERATORS`], or the `-- label -->`/`-- label ---` space-label form).
+fn starts_with_edge_operator(s: &str) -> bool {
+    EDGE_OPERATORS
+        .iter()
+        .any(|(token, ..)| s.starts_with(token))
+        || s.starts_with("-- ")
+}
 
 /// Try to parse a node identifier possibly followed by a shape label: `A[label]`, `A(label)`, or `A`.
 ///
@@ -873,7 +948,9 @@ fn try_parse_node_decl(line: &str) -> Option<(String, Option<String>, NodeKind)>
         || line.contains("->>")
         || line.contains("-->>")
         || line.contains("->")
-        || line.contains("-->")
+        || line.contains("-.-")
+        || line.contains("==>")
+        || line.contains("===")
     {
         return None;
     }
@@ -938,181 +1015,147 @@ fn unsupported_segment_error(segment: &str, node: &str) -> Option<SegmentParseEr
     })
 }
 
-fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, SegmentParseError>> {
+fn multi_target_error() -> SegmentParseError {
+    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
+        .to_string()
+        .into()
+}
+
+/// Parse the target node (and optional trailing `|label|`) after an edge
+/// operator has already been stripped. `rest` is the full segment (operator
+/// included) — only used for unsupported-shape span calculations. `op_rest`
+/// is everything after the operator token. `token` is the operator token
+/// itself, used only for the pipe-label error message.
+#[allow(clippy::too_many_arguments)]
+fn parse_edge_target<'a>(
+    rest: &'a str,
+    op_rest: &'a str,
+    token: &str,
+    arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
+) -> Option<Result<EdgeSegment<'a>, SegmentParseError>> {
+    let op_rest = op_rest.trim_start();
+
+    if op_rest.starts_with('|') {
+        // `<op>|label| to_node`
+        let (edge_label, rest3) = extract_pipe_label(op_rest)?;
+        let rest3 = rest3.trim_start();
+        if let Some(error) = unsupported_segment_error(rest, rest3) {
+            return Some(Err(error));
+        }
+        let (to_id, to_label, to_kind, after) = match parse_node_with_label(rest3) {
+            Some(r) => r,
+            None => {
+                return Some(Err(format!(
+                    "syntax error: expected node identifier after `{token}|{edge_label}|`, got `{}`",
+                    rest3.chars().take(20).collect::<String>()
+                )
+                .into()));
+            }
+        };
+        let after = after.trim_start();
+        if after.starts_with('&') {
+            return Some(Err(multi_target_error()));
+        }
+        return Some(Ok(EdgeSegment {
+            to_id,
+            to_label,
+            to_kind,
+            edge_label: Some(edge_label),
+            arrow,
+            from_arrow,
+            line,
+            weight,
+            remainder: after,
+        }));
+    }
+
+    // Check for `&` (multi-target) before to-node.
+    if op_rest.starts_with('&') {
+        return Some(Err(multi_target_error()));
+    }
+    if let Some(error) = unsupported_segment_error(rest, op_rest) {
+        return Some(Err(error));
+    }
+    let (to_id, to_label, to_kind, after) = parse_node_with_label(op_rest)?;
+    let after = after.trim_start();
+    if after.starts_with('&') {
+        return Some(Err(multi_target_error()));
+    }
+    Some(Ok(EdgeSegment {
+        to_id,
+        to_label,
+        to_kind,
+        edge_label: None,
+        arrow,
+        from_arrow,
+        line,
+        weight,
+        remainder: after,
+    }))
+}
+
+fn parse_one_edge_segment(rest: &str) -> Option<Result<EdgeSegment<'_>, SegmentParseError>> {
     let rest = rest.trim_start();
 
     // Check for multi-target `&` — must error explicitly.
     if rest.starts_with('&') {
-        return Some(Err(
-            "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                .to_string()
-                .into(),
-        ));
+        return Some(Err(multi_target_error()));
     }
 
-    // Try `-->|label|` first (pipe-label form with arrow).
-    if let Some(rest2) = rest.strip_prefix("-->") {
-        let rest2 = rest2.trim_start();
-        if rest2.starts_with('|') {
-            // `-->|label| to_node`
-            let (edge_label, rest3) = extract_pipe_label(rest2)?;
-            let rest3 = rest3.trim_start();
-            if let Some(error) = unsupported_segment_error(rest, rest3) {
-                return Some(Err(error));
-            }
-            // Strictly validate: rest3 must start with a valid node identifier.
-            // parse_node_with_label will return None if it cannot parse a node.
-            let (to_id, to_label, to_kind, after) = match parse_node_with_label(rest3) {
-                Some(r) => r,
-                None => {
-                    return Some(Err(format!(
-                        "syntax error: expected node identifier after `-->|{}|`, got `{}`",
-                        edge_label,
-                        rest3.chars().take(20).collect::<String>()
-                    )
-                    .into()));
-                }
-            };
-            let after = after.trim_start();
-            // Check for multi-target `&` after the to-node.
-            if after.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
-            return Some(Ok((
-                to_id,
-                to_label,
-                to_kind,
-                Some(edge_label),
-                ArrowType::Triangle,
-                after,
-            )));
-        } else {
-            // Check for `&` (multi-target) before to-node.
-            if rest2.trim_start().starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
-            // `-->  to_node` (no label)
-            if let Some(error) = unsupported_segment_error(rest, rest2) {
-                return Some(Err(error));
-            }
-            let (to_id, to_label, to_kind, after) = parse_node_with_label(rest2)?;
-            let after = after.trim_start();
-            if after.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
-            return Some(Ok((
-                to_id,
-                to_label,
-                to_kind,
-                None,
-                ArrowType::Triangle,
-                after,
-            )));
+    // Try each single-token operator, longest/most-specific first (see
+    // `EDGE_OPERATORS` docs for why order matters).
+    for &(token, arrow, from_arrow, line, weight) in EDGE_OPERATORS {
+        if let Some(op_rest) = rest.strip_prefix(token) {
+            return parse_edge_target(rest, op_rest, token, arrow, from_arrow, line, weight);
         }
     }
 
-    // Try `---` (no-arrow line).
-    if let Some(rest2) = rest.strip_prefix("---") {
-        let rest2 = rest2.trim_start();
-        if rest2.starts_with('&') {
-            return Some(Err(
-                "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                    .to_string()
-                    .into(),
-            ));
-        }
-        if let Some(error) = unsupported_segment_error(rest, rest2) {
-            return Some(Err(error));
-        }
-        let (to_id, to_label, to_kind, after) = parse_node_with_label(rest2)?;
-        let after = after.trim_start();
-        if after.starts_with('&') {
-            return Some(Err(
-                "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                    .to_string()
-                    .into(),
-            ));
-        }
-        return Some(Ok((to_id, to_label, to_kind, None, ArrowType::None, after)));
-    }
-
-    // Try `-- label -->` form (space label with arrow).
+    // Try `-- label -->` / `-- label ---` (space-label form; legacy operators
+    // only — Mermaid's middle-label form is not extended to the new dotted /
+    // thick / bidirectional operators this milestone).
     if let Some(rest2) = rest.strip_prefix("-- ") {
         if let Some(arrow_idx) = rest2.find("-->") {
             let label = rest2[..arrow_idx].trim().to_string();
-            let rest3 = rest2[arrow_idx + 3..].trim();
-            if rest3.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
-            if let Some(error) = unsupported_segment_error(rest, rest3) {
-                return Some(Err(error));
-            }
-            let (to_id, to_label, to_kind, after) = parse_node_with_label(rest3)?;
-            let after = after.trim_start();
-            if after.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
+            let rest3 = &rest2[arrow_idx + 3..];
             let edge_label = if label.is_empty() { None } else { Some(label) };
-            return Some(Ok((
-                to_id,
-                to_label,
-                to_kind,
-                edge_label,
+            return parse_edge_target(
+                rest,
+                rest3,
+                "-->",
                 ArrowType::Triangle,
-                after,
-            )));
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal,
+            )
+            .map(|result| {
+                result.map(|segment| EdgeSegment {
+                    edge_label,
+                    ..segment
+                })
+            });
         }
         if let Some(arrow_idx) = rest2.find("---") {
             let label = rest2[..arrow_idx].trim().to_string();
-            let rest3 = rest2[arrow_idx + 3..].trim();
-            if rest3.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
-            if let Some(error) = unsupported_segment_error(rest, rest3) {
-                return Some(Err(error));
-            }
-            let (to_id, to_label, to_kind, after) = parse_node_with_label(rest3)?;
-            let after = after.trim_start();
-            if after.starts_with('&') {
-                return Some(Err(
-                    "unsupported: multi-target edge (`&`); split into separate edge lines instead"
-                        .to_string()
-                        .into(),
-                ));
-            }
+            let rest3 = &rest2[arrow_idx + 3..];
             let edge_label = if label.is_empty() { None } else { Some(label) };
-            return Some(Ok((
-                to_id,
-                to_label,
-                to_kind,
-                edge_label,
+            return parse_edge_target(
+                rest,
+                rest3,
+                "---",
                 ArrowType::None,
-                after,
-            )));
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal,
+            )
+            .map(|result| {
+                result.map(|segment| EdgeSegment {
+                    edge_label,
+                    ..segment
+                })
+            });
         }
     }
 
@@ -1128,7 +1171,7 @@ fn parse_one_edge_segment(rest: &str) -> Option<Result<SegmentResult<'_>, Segmen
 fn try_parse_edge_chain(
     line: &str,
     offset: usize,
-) -> Option<Result<Vec<EdgeParseResult>, Diagnostic>> {
+) -> Option<Result<Vec<FlowchartEdge>, Diagnostic>> {
     if let Some((delimiter, relative_start)) = unsupported_node_shape_after_id(line) {
         return Some(Err(Diagnostic::new(
             unsupported_node_shape_message(),
@@ -1139,11 +1182,11 @@ fn try_parse_edge_chain(
     let rest = rest.trim_start();
 
     // Must look like an edge (starts with an operator).
-    if !rest.starts_with("-->") && !rest.starts_with("---") && !rest.starts_with("-- ") {
+    if !starts_with_edge_operator(rest) {
         return None;
     }
 
-    let mut results: Vec<EdgeParseResult> = Vec::new();
+    let mut results: Vec<FlowchartEdge> = Vec::new();
     let mut from_id = first_id;
     let mut from_label = first_label;
     let mut from_kind = first_kind;
@@ -1179,29 +1222,29 @@ fn try_parse_edge_chain(
                     start..start + delimiter_len,
                 )));
             }
-            Some(Ok((to_id, to_label, to_kind, edge_label, arrow, remainder))) => {
-                results.push((
-                    from_id.clone(),
-                    from_label.clone(),
-                    from_kind.clone(),
-                    to_id.clone(),
-                    to_label.clone(),
-                    to_kind.clone(),
-                    edge_label,
-                    arrow,
-                ));
-                from_id = to_id;
-                from_label = to_label;
-                from_kind = to_kind;
-                current_rest = remainder.trim_start();
+            Some(Ok(segment)) => {
+                results.push(FlowchartEdge {
+                    from_id: from_id.clone(),
+                    from_label: from_label.clone(),
+                    from_kind: from_kind.clone(),
+                    to_id: segment.to_id.clone(),
+                    to_label: segment.to_label.clone(),
+                    to_kind: segment.to_kind.clone(),
+                    edge_label: segment.edge_label,
+                    arrow: segment.arrow,
+                    from_arrow: segment.from_arrow,
+                    line: segment.line,
+                    weight: segment.weight,
+                });
+                from_id = segment.to_id;
+                from_label = segment.to_label;
+                from_kind = segment.to_kind;
+                current_rest = segment.remainder.trim_start();
                 if current_rest.is_empty() {
                     break;
                 }
                 // If remainder doesn't start with an operator, it's an error.
-                if !current_rest.starts_with("-->")
-                    && !current_rest.starts_with("---")
-                    && !current_rest.starts_with("-- ")
-                {
+                if !starts_with_edge_operator(current_rest) {
                     return Some(Err(Diagnostic::new(
                         format!(
                             "syntax error: unexpected tokens after edge: `{}`",
@@ -2306,6 +2349,148 @@ mod tests {
         let d = parse(src).expect("should parse");
         let Diagram::Graph(g) = d else { panic!() };
         assert_eq!(g.edges[0].arrow, ArrowType::None);
+    }
+
+    #[test]
+    fn dotted_directed_edge() {
+        let src = "flowchart TD\n  A -.-> B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[0].from_arrow, ArrowType::None);
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+        assert_eq!(g.edges[0].weight, LineWeight::Normal);
+    }
+
+    #[test]
+    fn dotted_directed_edge_with_pipe_label() {
+        let src = "flowchart TD\n  A -.->|maybe| B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].label.as_deref(), Some("maybe"));
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+        assert_eq!(g.edges[0].arrow, ArrowType::Triangle);
+    }
+
+    #[test]
+    fn dotted_undirected_edge() {
+        let src = "flowchart TD\n  A -.- B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].from_arrow, ArrowType::None);
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+    }
+
+    #[test]
+    fn dotted_undirected_edge_with_pipe_label() {
+        let src = "flowchart TD\n  A -.-|note| B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].label.as_deref(), Some("note"));
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+    }
+
+    #[test]
+    fn thick_directed_edge() {
+        let src = "flowchart TD\n  A ==> B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[0].line, LineStyle::Solid);
+        assert_eq!(g.edges[0].weight, LineWeight::Thick);
+    }
+
+    #[test]
+    fn thick_directed_edge_with_pipe_label() {
+        let src = "flowchart TD\n  A ==>|go| B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].label.as_deref(), Some("go"));
+        assert_eq!(g.edges[0].weight, LineWeight::Thick);
+    }
+
+    #[test]
+    fn thick_undirected_edge() {
+        let src = "flowchart TD\n  A === B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].weight, LineWeight::Thick);
+    }
+
+    #[test]
+    fn thick_undirected_edge_with_pipe_label() {
+        let src = "flowchart TD\n  A ===|link| B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].label.as_deref(), Some("link"));
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].weight, LineWeight::Thick);
+    }
+
+    #[test]
+    fn bidirectional_edge() {
+        let src = "flowchart TD\n  A <--> B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[0].from_arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[0].line, LineStyle::Solid);
+        assert_eq!(g.edges[0].weight, LineWeight::Normal);
+    }
+
+    #[test]
+    fn bidirectional_edge_with_pipe_label() {
+        let src = "flowchart TD\n  A <-->|both| B\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].label.as_deref(), Some("both"));
+        assert_eq!(g.edges[0].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[0].from_arrow, ArrowType::Triangle);
+    }
+
+    #[test]
+    fn dotted_undirected_is_not_shadowed_by_dotted_directed_prefix_overlap() {
+        // `-.-` is a byte-prefix of `-.->`; both forms must resolve correctly.
+        let src = "flowchart TD\n  A -.- B\n  C -.-> D\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+        assert_eq!(g.edges[1].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[1].line, LineStyle::Dotted);
+    }
+
+    #[test]
+    fn thick_undirected_is_not_shadowed_by_thick_directed_prefix_overlap() {
+        let src = "flowchart TD\n  A === B\n  C ==> D\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].arrow, ArrowType::None);
+        assert_eq!(g.edges[0].weight, LineWeight::Thick);
+        assert_eq!(g.edges[1].arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[1].weight, LineWeight::Thick);
+    }
+
+    #[test]
+    fn bidirectional_is_not_shadowed_by_directed_arrow() {
+        let src = "flowchart TD\n  A <--> B\n  C --> D\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges[0].from_arrow, ArrowType::Triangle);
+        assert_eq!(g.edges[1].from_arrow, ArrowType::None);
+    }
+
+    #[test]
+    fn new_edge_operators_are_recognised_in_chains() {
+        let src = "flowchart TD\n  A -.-> B ==> C\n";
+        let d = parse(src).expect("should parse");
+        let Diagram::Graph(g) = d else { panic!() };
+        assert_eq!(g.edges.len(), 2);
+        assert_eq!(g.edges[0].line, LineStyle::Dotted);
+        assert_eq!(g.edges[1].weight, LineWeight::Thick);
     }
 
     #[test]

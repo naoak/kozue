@@ -46,7 +46,7 @@
 
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErDiagram,
-    ErRelation, GraphDiagram, LineStyle, NodeKind, StateDiagram, Transition,
+    ErRelation, GraphDiagram, LineStyle, LineWeight, NodeKind, StateDiagram, Transition,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,8 @@ pub enum RenderError {
     UnknownArrowType { arrow: String },
     /// A future relation line style has no defined DOT mapping.
     UnknownLineStyle { line: String },
+    /// A future edge/relation line weight has no defined DOT mapping.
+    UnknownLineWeight { weight: String },
     /// A future relation end marker has no defined DOT mapping.
     UnknownEndMarker { marker: String },
 }
@@ -114,6 +116,9 @@ impl std::fmt::Display for RenderError {
             }
             RenderError::UnknownLineStyle { line } => {
                 write!(f, "unsupported DOT line style: {line}")
+            }
+            RenderError::UnknownLineWeight { weight } => {
+                write!(f, "unsupported DOT line weight: {weight}")
             }
             RenderError::UnknownEndMarker { marker } => {
                 write!(f, "unsupported DOT end marker: {marker}")
@@ -192,6 +197,9 @@ fn render_graph(g: &GraphDiagram) -> Result<String, RenderError> {
             edge.to.as_str(),
             edge.label.as_deref(),
             edge.arrow,
+            edge.from_arrow,
+            edge.line,
+            edge.weight,
         )?);
     }
 
@@ -215,25 +223,74 @@ fn rankdir(direction: Direction) -> Result<&'static str, RenderError> {
 }
 
 /// Format a single `a -> b [attrs];` statement.
+///
+/// `arrow` is the target-end (legacy) arrowhead, `from_arrow` the source-end
+/// one. Graphviz only supports `arrowtail` (the source-end marker) alongside
+/// `dir=both`/`dir=back`, so the two booleans are collapsed into a `dir`
+/// attribute rather than separate `arrowhead`/`arrowtail` attrs:
+/// - both ends drawn: `dir=both`
+/// - only the source end drawn: `dir=back`
+/// - neither end drawn: `dir=none` (unchanged from before `from_arrow` existed)
+/// - only the target end drawn (the common case): no `dir` attr, matching the
+///   Graphviz default.
 fn edge_stmt(
     from: &str,
     to: &str,
     label: Option<&str>,
     arrow: ArrowType,
+    from_arrow: ArrowType,
+    line: LineStyle,
+    weight: LineWeight,
 ) -> Result<String, RenderError> {
     let mut attrs: Vec<String> = Vec::new();
     if let Some(l) = label {
         attrs.push(format!("label={}", quote(l)));
     }
-    match arrow {
-        ArrowType::Triangle => {}
-        ArrowType::None => attrs.push("dir=none".to_string()),
-        _ => {
+    for a in [arrow, from_arrow] {
+        if !matches!(a, ArrowType::Triangle | ArrowType::None) {
             return Err(RenderError::UnknownArrowType {
-                arrow: format!("{arrow:?}"),
+                arrow: format!("{a:?}"),
+            });
+        }
+    }
+    let to_drawn = matches!(arrow, ArrowType::Triangle);
+    let from_drawn = matches!(from_arrow, ArrowType::Triangle);
+    match (from_drawn, to_drawn) {
+        (true, true) => attrs.push("dir=both".to_string()),
+        (true, false) => attrs.push("dir=back".to_string()),
+        (false, false) => attrs.push("dir=none".to_string()),
+        (false, true) => {}
+    }
+
+    let mut style_tokens: Vec<&str> = Vec::new();
+    match line {
+        LineStyle::Solid => {}
+        LineStyle::Dashed => style_tokens.push("dashed"),
+        LineStyle::Dotted => style_tokens.push("dotted"),
+        _ => {
+            return Err(RenderError::UnknownLineStyle {
+                line: format!("{line:?}"),
             })
         }
     }
+    match weight {
+        LineWeight::Normal => {}
+        LineWeight::Thick => {
+            style_tokens.push("bold");
+            attrs.push("penwidth=2".to_string());
+        }
+        _ => {
+            return Err(RenderError::UnknownLineWeight {
+                weight: format!("{weight:?}"),
+            })
+        }
+    }
+    match style_tokens.len() {
+        0 => {}
+        1 => attrs.push(format!("style={}", style_tokens[0])),
+        _ => attrs.push(format!("style={}", quote(&style_tokens.join(",")))),
+    }
+
     if attrs.is_empty() {
         Ok(format!("  {} -> {};\n", quote(from), quote(to)))
     } else {
@@ -305,7 +362,15 @@ fn render_state(s: &StateDiagram) -> Result<String, RenderError> {
 fn transition_stmt(s: &StateDiagram, t: &Transition) -> Result<String, RenderError> {
     let from = endpoint_id(s, &t.from)?;
     let to = endpoint_id(s, &t.to)?;
-    edge_stmt(&from, &to, t.label.as_deref(), ArrowType::Triangle)
+    edge_stmt(
+        &from,
+        &to,
+        t.label.as_deref(),
+        ArrowType::Triangle,
+        ArrowType::None,
+        LineStyle::Solid,
+        LineWeight::Normal,
+    )
 }
 
 /// Resolve a transition endpoint to a DOT node identifier.
@@ -650,12 +715,29 @@ mod tests {
     #[test]
     fn known_arrow_line_and_marker_mappings_are_preserved() {
         assert_eq!(
-            edge_stmt("a", "b", None, ArrowType::Triangle).unwrap(),
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
             "  \"a\" -> \"b\";\n"
         );
-        assert!(edge_stmt("a", "b", None, ArrowType::None)
-            .unwrap()
-            .contains("dir=none"));
+        assert!(edge_stmt(
+            "a",
+            "b",
+            None,
+            ArrowType::None,
+            ArrowType::None,
+            LineStyle::Solid,
+            LineWeight::Normal
+        )
+        .unwrap()
+        .contains("dir=none"));
         for (marker, expected) in [
             (EndMarker::None, "none"),
             (EndMarker::HollowTriangle, "empty"),
@@ -912,6 +994,108 @@ mod tests {
         g.edges.push(Edge::new("a", "b", None, ArrowType::None));
         let dot = render(&Diagram::Graph(g)).unwrap();
         assert!(dot.contains("  \"a\" -> \"b\" [dir=none];\n"));
+    }
+
+    #[test]
+    fn default_presentation_edge_is_byte_identical() {
+        // No `dir`, `style`, or `penwidth` attribute at all for the common
+        // case (target-only Triangle arrow, Solid, Normal weight).
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\";\n"
+        );
+    }
+
+    #[test]
+    fn from_arrow_maps_to_dir_both_or_dir_back() {
+        // Both ends drawn.
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::Triangle,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\" [dir=both];\n"
+        );
+        // Source-only drawn.
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::None,
+                ArrowType::Triangle,
+                LineStyle::Solid,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\" [dir=back];\n"
+        );
+    }
+
+    #[test]
+    fn dotted_line_maps_to_style_dotted() {
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Dotted,
+                LineWeight::Normal
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\" [style=dotted];\n"
+        );
+    }
+
+    #[test]
+    fn thick_weight_maps_to_bold_style_and_penwidth() {
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Solid,
+                LineWeight::Thick
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\" [penwidth=2 style=bold];\n"
+        );
+    }
+
+    #[test]
+    fn dashed_and_thick_combine_into_one_quoted_style_attr() {
+        assert_eq!(
+            edge_stmt(
+                "a",
+                "b",
+                None,
+                ArrowType::Triangle,
+                ArrowType::None,
+                LineStyle::Dashed,
+                LineWeight::Thick
+            )
+            .unwrap(),
+            "  \"a\" -> \"b\" [penwidth=2 style=\"dashed,bold\"];\n"
+        );
     }
 
     #[test]

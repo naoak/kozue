@@ -13,7 +13,7 @@
 //! for arrowheads (see the M1 module doc) so the SVG/PNG/term renderers need
 //! no changes.
 
-use kozue_ir::{EndMarker, Path, SceneItem};
+use kozue_ir::{EndMarker, Path, SceneItem, StrokeStyle, StrokeWeight};
 
 use crate::circle_path;
 
@@ -52,7 +52,8 @@ pub(crate) fn push_end_marker(
             items.push(SceneItem::Path(Path {
                 points: vec![tip, left, right, tip],
                 filled: false,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             }));
             TRIANGLE_LEN
         }
@@ -68,7 +69,8 @@ pub(crate) fn push_end_marker(
             items.push(SceneItem::Path(Path {
                 points: vec![tip, left, back, right, tip],
                 filled,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             }));
             DIAMOND_LEN
         }
@@ -85,7 +87,8 @@ pub(crate) fn push_end_marker(
             items.push(SceneItem::Path(Path {
                 points: vec![left, tip, right],
                 filled: false,
-                dashed: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
             }));
             0.0
         }
@@ -149,7 +152,8 @@ fn push_bar(
     items.push(SceneItem::Path(Path {
         points: vec![a, b],
         filled: false,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     }));
 }
 
@@ -166,11 +170,13 @@ fn push_crow(items: &mut Vec<SceneItem>, tip: (f64, f64), dir: (f64, f64), perp:
     items.push(SceneItem::Path(Path {
         points: vec![tip, left],
         filled: false,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     }));
     items.push(SceneItem::Path(Path {
         points: vec![tip, right],
         filled: false,
-        dashed: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
     }));
 }
