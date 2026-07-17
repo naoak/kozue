@@ -71,7 +71,7 @@ annotation を生成するマイルストーンで追加する。
 
 ### M3: Existing diagram semantics
 
-状態: **M3b2（sequence message arrow / async）実装済み**
+状態: **M3b3（note ＋ SemanticLayout item 列一般化、schema V11）実装済み**
 
 既存5種を frontend ごとの最小 subset から、意味を保持できる IR へ拡張する。
 
@@ -232,7 +232,45 @@ annotation を生成するマイルストーンで追加する。
      - 既存 golden 差分0、新規 `seq_message_arrows`（`.kzd` / `.svg` / `.txt` /
        `.png` / `.drawio` / `.excalidraw` / `.pptx`）・`mermaid_seq_arrows`
        （`.mmd` / `.svg`）・`plantuml_seq_arrows`（`.puml` / `.svg`）golden のみ追加
-   - note、activation、create / destroy
+   - **M3b3 実装済み**: note ＋ SemanticLayout item 列一般化
+     - schema V11。旧 document は note なし body へ lossless upgrade、V2-V10 で
+       Note item を明示拒否（`sequence_note_supported_in` gate、V1 は wire arm が
+       先に拒否）。全 `*_supported_in` gate に V11 を追加
+     - `SequenceItem` に `Note(Note)` を追加。`Note { text, position, targets:
+       Vec<ElementId> }`。位置は annotation 系 `NotePlacement`（Auto/Above/Below を
+       含み sequence に不整合）とは別に **専用 `NotePosition`（LeftOf / RightOf /
+       Over、`#[non_exhaustive]`）** を新設（`MessageArrow` を `ArrowType` と分けた
+       のと同じ思想）。個数不変条件は LeftOf/RightOf==1・Over>=1（frontend と layout で検証）
+     - **転換点**: `SemanticLayout` の sequence を「message 専用 1:1」から
+       **item 列一般化**へ再設計。`SequenceLayout.messages: Vec<MessageLayout>` を
+       `items: Vec<SequenceItemLayout>`（`Message(MessageLayout)` /
+       `Note(NoteLayout)`）へ置換。exchange contract の
+       `items.len()==messages.len()` 前提を **item-parity**（diagram.items[i] と
+       layout.items[i] の variant 一致で zip 突合、交差は明示 mismatch）へ変更。
+       後続 M3b7（fragment 再帰木）の布石
+     - native DSL: `note over a[, b...] : "text"` / `note left of a : "text"` /
+       `note right of a : "text"`。`note`/`over`/`left`/`right`/`of` は非予約語
+       （lookahead 外れで他 alt へ fall-through）、item は宣言順で message と interleave、
+       graph / state での使用は明示エラー、formatter は canonical 出力で idempotent
+     - Mermaid: `Note over/left of/right of`（`Note`/`note` 両許容）を unsupported
+       から格上げ、source 行順で items へ push
+     - PlantUML: 単一行 `note over/left of/right of ... : text` を格上げ。
+       複数行 `note ... end note` block / `hnote` / `rnote` は今回スコープ外で
+       従来通り明示 unsupported error（silent drop なし。features 表も更新）
+     - layout: note は 1 行占有し、UML dog-ear（折れ角）の Path outline + 中央 Text を
+       Scene に描画。列幅は note 幅を既存の label-width / self-overhang 機構へ
+       **加算的に**折り込む（note が無いとき col_x は現状と式レベルで一致 →
+       既存 golden bytes 不変）。`NoteLayout { index, text, position, targets, rect,
+       text_anchor }`。塗り無しのため lifeline は透過（M4 の paint primitive まで暫定）
+     - 全 backend 伝播: SVG / PNG / terminal は Scene 経由でコード変更なし、
+       draw.io は `shape=note` vertex、Excalidraw は rectangle 近似（UML note 図形が
+       無いため doc-comment で損失明示）、PPTX は rect + text。DOT は sequence 非対応維持
+     - contract に item-parity 突合・note geometry 検証・`NotePosition` future variant
+       拒否を追加
+     - 既存 golden 差分0、新規 `seq_notes`（`.kzd` / `.svg` / `.txt` / `.png` /
+       `.drawio` / `.excalidraw` / `.pptx`）・`mermaid_seq_notes`（`.mmd` / `.svg`）・
+       `plantuml_seq_notes`（`.puml` / `.svg`）golden のみ追加
+   - activation、create / destroy
    - divider、delay、reference
    - `loop` / `alt` / `opt` / `par` / `critical` / `break` の再帰 fragment
    - open / filled / cross / circle / async / bidirectional arrow
@@ -556,14 +594,48 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
   future-variant fallback に意図コメントを追加、PlantUML `->x` word-boundary は
   テスト済みトレードオフとして据え置き
 
+## M3b3 の検証状況
+
+- schema V11 migration と V2-V10 の Note item 明示拒否
+  （`sequence_notes_require_schema_v11`、LeftOf / RightOf / Over 網羅）、V11
+  round-trip、CURRENT=V11 に伴う numeric 境界 / upgrade tests 更新: 成功
+- 全 9 個の `*_supported_in` gate に V11 が入っていることを確認（漏れなし）
+- native DSL の `note over / left of / right of`、宣言順 interleave、graph / state
+  での使用禁止、left/right の複数 target 拒否、unknown participant、formatter
+  idempotency tests: 成功
+- Mermaid `notes_parse_and_preserve_source_order` / `note_left_of_rejects_multiple_targets`、
+  PlantUML `single_line_note_is_supported_and_ordered` /
+  `multi_line_note_block_is_unsupported` / `hnote_is_unsupported`: 成功
+- `native_mermaid_plantuml_notes_produce_equivalent_ir`（3 frontend が同一 note IR）:
+  成功
+- contract の item-parity 突合（length + variant 一致 zip）、note geometry 検証、
+  `NotePosition` future variant 拒否と既存 sequence contract テスト更新: 成功
+- `notes_map_across_all_backends`（drawio `shape=note`×3・excalidraw rectangle+text・
+  pptx rect+text・SVG / terminal に note text）: 成功
+- 新規 `seq_notes`（`.kzd` / `.svg` / `.txt` / `.png` / `.drawio` / `.excalidraw` /
+  `.pptx`）・`mermaid_seq_notes`（`.mmd` / `.svg`）・`plantuml_seq_notes`
+  （`.puml` / `.svg`）golden 追加。既存 golden bytes は変更なし
+  （`git status` は新規 untracked のみ）
+- `cargo fmt --all --check` / `cargo check --workspace` /
+  `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace`（`UPDATE_GOLDEN` なし、741 tests・33 binaries 緑） /
+  `git diff --check`: すべて成功
+- 独立レビュー（Opus）: blocking / major finding なし。IR gate 全数 V11 確認、
+  item-parity 契約の fail-closed（variant 交差は明示 mismatch）、note 無し経路の
+  col_x 式レベル不変（既存 golden byte 一致で裏付け）、bounds 正規化で note rect /
+  text_anchor も平行移動、を確認。ロードマップ契約要件の frontend 等価テストが
+  未実装だったため review 側で追加。既知の制限: Excalidraw note は矩形近似
+  （doc-comment 明示）、PlantUML block note 未対応、note 塗り無しで lifeline 透過
+  （M4 の paint primitive 送り）
+
 ## 再開時の確認事項
 
-1. M3b1 / M3b2 は実装・検証・独立レビュー・コミット済み
-2. 次は **M3b3（note ＋ SemanticLayout item 列一般化、schema V11）** の詳細設計から
-   開始する
-3. **M3b3 が転換点**: contract の `items.len()==messages.len()` 1:1 前提と
-   `SequenceLayout{participants, messages}` を、diagram.items 順に対応する統一
-   item 列へ一度だけ再設計する（geometry 不変なので既存 golden bytes は不変）。
-   note は既存 `NotePlacement`（M2）の再利用を検討
+1. M3b1 / M3b2 / M3b3 は実装・検証・独立レビュー済み（M3b3 は未コミット、作業ツリー上）
+2. 次は **M3b4（divider / delay / reference、schema V12）**。item 列一般化は
+   M3b3 で完了しているので、新 item variant を `SequenceItem` /
+   `SequenceItemLayout` に足す形で載る
+3. M3b5 activation bar（V13、活性区間モデル新設） / M3b6 create / destroy（V14） /
+   M3b7 fragment loop/alt/opt/par/critical/break（V15、items 平坦 Vec→再帰木、
+   最も侵襲的で最後）
 4. 実装後は別担当の独立レビューと root 総合レビューを行い、既存 golden 差分0を確認する
 5. Sequence（M3b1-b7）-> State -> Class -> ER の順で M3 を完了する
