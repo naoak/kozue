@@ -2666,6 +2666,91 @@ mod tests {
         );
     }
 
+    /// Fix 1 regression: depth-2 left-going message endpoint must land on the
+    /// *left* edge of the source inner activation bar, not float further left.
+    ///
+    /// Layout:
+    ///   participant a (left), participant b (right)
+    ///   activate b (depth 0→1, bar_x_b = col_x[b] - BAR_WIDTH/2)
+    ///   activate b (depth 1→2, bar_x_b = col_x[b] - BAR_WIDTH/2 + BAR_NEST_OFFSET)
+    ///   b -> a : "nested left"    ← going_left, depth_from=2
+    ///   deactivate b
+    ///   deactivate b
+    ///
+    /// x_from (source endpoint at b, going left) must clamp to b's inner bar
+    /// LEFT edge:  col_x[b] - BAR_WIDTH/2 + (depth_from-1)*BAR_NEST_OFFSET.
+    /// Before the fix the nest term was subtracted, placing x_from 2*NEST to
+    /// the left of the bar's left edge (into empty space).
+    #[test]
+    fn nested_left_message_source_endpoint_is_on_inner_bar_left_edge() {
+        use crate::semantic::{SemanticLayout, SequenceItemLayout};
+        use kozue_ir::{Activation, LineStyle, Message, MessageArrow, SequenceItem};
+
+        let mut seq = kozue_ir::SequenceDiagram::new();
+        seq.participants
+            .insert("a".into(), kozue_ir::Participant::new("a", "A"));
+        seq.participants
+            .insert("b".into(), kozue_ir::Participant::new("b", "B"));
+
+        // activate b twice to reach depth 2
+        seq.items.push(SequenceItem::Activate(Activation::new("b")));
+        seq.items.push(SequenceItem::Activate(Activation::new("b")));
+        // left-going message: b -> a (going_right = false, depth_from = 2)
+        seq.items.push(SequenceItem::Message(Message::with_arrows(
+            "b",
+            "a",
+            Some("nested left".to_string()),
+            LineStyle::Solid,
+            MessageArrow::Filled,
+            MessageArrow::None,
+        )));
+        // close the two activations
+        seq.items
+            .push(SequenceItem::Deactivate(Activation::new("b")));
+        seq.items
+            .push(SequenceItem::Deactivate(Activation::new("b")));
+
+        let out = layout_full(&Diagram::Sequence(seq)).expect("layout must succeed");
+        let SemanticLayout::Sequence(sem) = &out.semantic else {
+            panic!("expected SemanticLayout::Sequence");
+        };
+
+        // Find the message layout.
+        let msg = sem.items.iter().find_map(|it| {
+            if let SequenceItemLayout::Message(m) = it {
+                Some(m)
+            } else {
+                None
+            }
+        });
+        let msg = msg.expect("message layout must exist");
+
+        // Find bars for participant "b".
+        let bars_b: Vec<_> = sem
+            .bars
+            .iter()
+            .filter(|b| b.participant.as_str() == "b")
+            .collect();
+        assert_eq!(bars_b.len(), 2, "should have 2 bars for participant b");
+
+        // The inner bar (depth 1) left edge is bar.rect.x.
+        let inner_bar = bars_b.iter().find(|b| b.depth == 1).expect("depth-1 bar");
+        let inner_left_edge = inner_bar.rect.x;
+
+        // x_from is the first point in the route (source at participant b, going left).
+        // For a left-going message, the source endpoint clings to the bar's LEFT edge.
+        let x_from = msg.route[0].x;
+
+        // The source endpoint must be at the inner bar's left edge (± translation).
+        assert!(
+            (x_from - inner_left_edge).abs() < 1.0,
+            "left-going depth-2 message source (x={x_from:.3}) must lie on inner bar left edge \
+             (x={inner_left_edge:.3}); if the nest term was subtracted (old bug) x_from would be \
+             {:.3}",
+            inner_left_edge - 2.0 * 3.0 /* 2*BAR_NEST_OFFSET */
+        );
+    }
+
     // --- Class / ER diagram layout smoke tests (Phase A) ---
 
     fn sample_class_diagram() -> kozue_ir::ClassDiagram {

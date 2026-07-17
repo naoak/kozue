@@ -247,6 +247,36 @@ pub struct ReferenceLayout {
     pub text_anchor: Point,
 }
 
+/// Layout marker for an activation bar start/end point in a sequence diagram.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivationMarkerLayout {
+    /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
+    pub index: usize,
+    /// The participant whose bar this marker belongs to.
+    pub participant: ElementId,
+    /// X coordinate of the bar center.
+    pub x: f64,
+    /// Y coordinate of this marker (the row y for this activate/deactivate item).
+    pub y: f64,
+    /// `true` for an `activate` item, `false` for a `deactivate` item.
+    pub is_start: bool,
+    /// Nesting depth of this bar (0-based, depth 0 = outermost bar).
+    pub depth: u32,
+}
+
+/// Layout for one activation bar rectangle on a lifeline.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivationBarLayout {
+    /// The participant whose lifeline this bar is on.
+    pub participant: ElementId,
+    /// Bounding rectangle of the bar (filled white rect over the dashed lifeline).
+    pub rect: Rect,
+    /// Nesting depth (0 = outermost).
+    pub depth: u32,
+}
+
 /// One laid-out sequence body item. Item-parity with
 /// [`SequenceDiagram::items`](kozue_ir::SequenceDiagram): the i-th layout item
 /// corresponds to the i-th diagram item and shares its variant.
@@ -258,6 +288,7 @@ pub enum SequenceItemLayout {
     Divider(DividerLayout),
     Delay(DelayLayout),
     Reference(ReferenceLayout),
+    Activation(ActivationMarkerLayout),
 }
 
 /// Semantic layout for a sequence diagram.
@@ -269,6 +300,9 @@ pub struct SequenceLayout {
     /// Body items in declaration order (item-parity with the diagram).
     /// Unsupported future item types are rejected by layout.
     pub items: Vec<SequenceItemLayout>,
+    /// Activation bars, one per paired activate/deactivate, in the order they
+    /// are closed (deactivate order). Empty when no activations are present.
+    pub bars: Vec<ActivationBarLayout>,
 }
 
 // ---------------------------------------------------------------------------

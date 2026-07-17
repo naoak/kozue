@@ -249,7 +249,12 @@ pub const FEATURES: &[Feature] = &[
         note: "silently skipped (closes unsupported alt/loop/opt blocks); same as kozue-mermaid behaviour",
     },
     Feature {
-        name: "activate / deactivate / destroy / create / return",
+        name: "activate / deactivate",
+        support: Support::Supported,
+        note: "activation bars fully supported",
+    },
+    Feature {
+        name: "destroy / create / return",
         support: Support::Unsupported,
         note: "reports an unsupported error",
     },

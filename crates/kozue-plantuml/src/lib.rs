@@ -53,10 +53,10 @@ use std::ops::Range;
 
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
-    ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErAttribute,
-    ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, MessageArrow, Note,
-    NotePosition, Participant, ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram,
-    Transition,
+    Activation, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
+    ErAttribute, ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, MessageArrow,
+    Note, NotePosition, Participant, ParticipantKind, SequenceDiagram, SequenceItem, State,
+    StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -439,6 +439,28 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
             None => {}
         }
 
+        // `activate`/`deactivate` lines.
+        if let Some(id) = try_parse_plantuml_activate(trimmed) {
+            // Just validate the ID is a valid identifier; participant existence
+            // checked later during clean parse.
+            if id.is_empty() {
+                errors.push(Diagnostic::new(
+                    "activate: missing participant id",
+                    span.clone(),
+                ));
+            }
+            continue;
+        }
+        if let Some(id) = try_parse_plantuml_deactivate(trimmed) {
+            if id.is_empty() {
+                errors.push(Diagnostic::new(
+                    "deactivate: missing participant id",
+                    span.clone(),
+                ));
+            }
+            continue;
+        }
+
         // Unsupported keywords — word-boundary matched so `participant` isn't caught by `par`.
         let unsupported_kw: &[(&str, &str)] = &[
             (
@@ -476,14 +498,7 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
                 "group",
                 "unsupported: group (kozue does not support this yet)",
             ),
-            (
-                "activate",
-                "unsupported: activate (kozue does not support this yet)",
-            ),
-            (
-                "deactivate",
-                "unsupported: deactivate (kozue does not support this yet)",
-            ),
+
             (
                 "destroy",
                 "unsupported: destroy (kozue does not support this yet)",
@@ -620,6 +635,23 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
             }
             seq.items
                 .push(SequenceItem::Reference(kozue_ir::Reference::new(text, ids)));
+            continue;
+        }
+
+        // `activate <id>` / `deactivate <id>`
+        // Auto-declare undeclared participants (same as message endpoints) so
+        // that `activate C` is never silently dropped when C hasn't been declared
+        // yet — consistent with PlantUML's own behaviour and the project invariant
+        // that there are no silent drops.
+        if let Some(id) = try_parse_plantuml_activate(trimmed) {
+            ensure_participant(&mut seq, id, None, ParticipantKind::Default);
+            seq.items.push(SequenceItem::Activate(Activation::new(id)));
+            continue;
+        }
+        if let Some(id) = try_parse_plantuml_deactivate(trimmed) {
+            ensure_participant(&mut seq, id, None, ParticipantKind::Default);
+            seq.items
+                .push(SequenceItem::Deactivate(Activation::new(id)));
             continue;
         }
 
@@ -2176,6 +2208,28 @@ fn try_parse_plantuml_delay(line: &str) -> Option<Option<String>> {
     }
 }
 
+/// Parses an `activate <id>` line. Returns the participant id if matched.
+fn try_parse_plantuml_activate(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("activate")?;
+    let rest = rest.strip_prefix(|c: char| c.is_ascii_whitespace())?;
+    let id = rest.trim();
+    if id.is_empty() || id.contains(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    Some(id)
+}
+
+/// Parses a `deactivate <id>` line. Returns the participant id if matched.
+fn try_parse_plantuml_deactivate(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("deactivate")?;
+    let rest = rest.strip_prefix(|c: char| c.is_ascii_whitespace())?;
+    let id = rest.trim();
+    if id.is_empty() || id.contains(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    Some(id)
+}
+
 /// Parses a single-line `ref over a[, b...] : text` reference frame. Returns
 /// `None` if `line` is not a `ref` line. `Some(Err(..))` for a `ref` line that
 /// is not a valid single-line form (e.g. a multi-line `ref over a` block opener
@@ -3272,6 +3326,48 @@ mod tests {
         assert!(
             errs.iter().any(|e| e.message.contains("ambiguous")),
             "got: {errs:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 3 regression: undeclared participant in activate/deactivate
+    // -----------------------------------------------------------------------
+
+    /// `activate C` where C has not been declared as a participant must
+    /// auto-declare C (matching message-endpoint behaviour) and emit a
+    /// `SequenceItem::Activate`, never silently drop the item.
+    #[test]
+    fn activate_undeclared_participant_auto_declares() {
+        let src = "@startuml\nA -> B : hello\nactivate C\ndeactivate C\n@enduml\n";
+        let d = parse(src).expect("should parse without errors");
+        let seq = match d {
+            Diagram::Sequence(s) => s,
+            other => panic!("expected Sequence, got {other:?}"),
+        };
+        // C must be auto-declared as a participant.
+        assert!(
+            seq.participants.contains_key("C"),
+            "C must be auto-declared; participants: {:?}",
+            seq.participants.keys().collect::<Vec<_>>()
+        );
+        // The item list must contain Activate and Deactivate for C.
+        let has_activate = seq
+            .items
+            .iter()
+            .any(|it| matches!(it, SequenceItem::Activate(a) if a.participant.as_str() == "C"));
+        let has_deactivate = seq
+            .items
+            .iter()
+            .any(|it| matches!(it, SequenceItem::Deactivate(a) if a.participant.as_str() == "C"));
+        assert!(
+            has_activate,
+            "Activate(C) must be in items; items: {:?}",
+            seq.items
+        );
+        assert!(
+            has_deactivate,
+            "Deactivate(C) must be in items; items: {:?}",
+            seq.items
         );
     }
 }

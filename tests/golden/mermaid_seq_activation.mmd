@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant A
+  participant B
+  A->>B: request
+  activate B
+  B-->>A: response
+  deactivate B
+  A->>B: call
+  activate B
+  B->>B: process
+  activate B
+  B-->>B: done
+  deactivate B
+  B-->>A: reply
+  deactivate B

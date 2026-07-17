@@ -1,0 +1,63 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="Alice" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="20.00" width="78.48" height="680.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="Bob" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="178.48" y="20.00" width="70.92" height="680.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="e0" value="request" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.117647;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.117647;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e2" value="response" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.258824;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.258824;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e4" value="call" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.400000;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.400000;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e6" value="" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.541176;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.576471;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="248.94" y="388.00"/>
+              <mxPoint x="248.94" y="412.00"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e6_label" value="process" style="edgeLabel;html=1;align=center;verticalAlign=middle;" vertex="1" connectable="0" parent="e6">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.682353;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.717647;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="251.94" y="484.00"/>
+              <mxPoint x="251.94" y="508.00"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8_label" value="done" style="edgeLabel;html=1;align=center;verticalAlign=middle;" vertex="1" connectable="0" parent="e8">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="reply" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.823529;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.823529;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="actbar0" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="208.94" y="148.00" width="10.00" height="96.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="actbar1" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="208.94" y="340.00" width="10.00" height="288.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="actbar2" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="211.94" y="436.00" width="10.00" height="96.00" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

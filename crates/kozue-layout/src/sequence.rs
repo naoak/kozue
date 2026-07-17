@@ -1,5 +1,7 @@
 //! Deterministic arithmetic layout for sequence diagrams.
 
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use kozue_ir::{
     ElementId, MessageArrow, NotePosition, ParticipantKind, Path, Rect, Scene, SceneItem,
@@ -40,6 +42,8 @@ const REF_EXTEND: f64 = 8.0; // extra half-width past the outer lifelines for a 
 const REF_TAB_W: f64 = 34.0; // width of the "ref" tab in a reference frame
 const REF_TAB_H: f64 = 16.0; // height of the "ref" tab in a reference frame
 const REF_PAD_Y: f64 = 8.0; // vertical padding inside a reference frame
+const BAR_WIDTH: f64 = 10.0; // activation bar width
+const BAR_NEST_OFFSET: f64 = 3.0; // offset per nesting depth
 
 /// Returns the guillemet stereotype string for a non-Default participant kind.
 /// Returns `None` for `Default`.
@@ -515,6 +519,16 @@ pub(crate) fn layout_sequence_full(
                     }
                 }
             }
+            SequenceItem::Activate(a) | SequenceItem::Deactivate(a) => {
+                if !seq.participants.contains_key(&a.participant) {
+                    return Err(crate::LayoutError {
+                        message: format!(
+                            "sequence activation references unknown participant ({})",
+                            a.participant
+                        ),
+                    });
+                }
+            }
             // `SequenceItem` is `#[non_exhaustive]`: reject unknown variants.
             _ => {
                 return Err(crate::LayoutError {
@@ -849,6 +863,21 @@ pub(crate) fn layout_sequence_full(
         });
     }
 
+    // Per-participant stack of y_starts for open activation bars.
+    let mut active_stacks: HashMap<&str, Vec<f64>> = HashMap::new();
+    let mut sem_bars: Vec<semantic::ActivationBarLayout> = Vec::new();
+
+    // Record the index at which to splice activation bar rects.  All bar rects
+    // must appear *after* lifelines (so they are drawn on top of the dashed
+    // lines) but *before* messages and notes (so messages are painted on top of
+    // bars).  We also sort bars by depth ascending (outer first, inner last) so
+    // the inner bar's filled rectangle occludes the outer one — painter's order.
+    let bars_insert_idx = items.len();
+
+    // Temporary storage for bar rects collected during deactivation.
+    // Each entry is (depth, Rect) so we can sort before splicing.
+    let mut pending_bar_rects: Vec<(u32, Rect)> = Vec::new();
+
     // Draw body items (messages and notes) in declaration order.
     for (row, item) in seq.items.iter().enumerate() {
         let msg = match item {
@@ -877,6 +906,73 @@ pub(crate) fn layout_sequence_full(
                 draw_reference(&mut items, &mut sem_items, reference, row, &col_x, &idx_of);
                 continue;
             }
+            SequenceItem::Activate(act) => {
+                let y = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+                let ci = idx_of[act.participant.as_str()];
+                let cx = col_x[ci];
+                let stack = active_stacks.entry(act.participant.as_str()).or_default();
+                let depth = stack.len() as u32;
+                stack.push(y);
+                sem_items.push(SequenceItemLayout::Activation(
+                    semantic::ActivationMarkerLayout {
+                        index: row,
+                        participant: act.participant.clone(),
+                        x: cx,
+                        y,
+                        is_start: true,
+                        depth,
+                    },
+                ));
+                continue;
+            }
+            SequenceItem::Deactivate(act) => {
+                let y = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+                let ci = idx_of[act.participant.as_str()];
+                let cx = col_x[ci];
+                let stack = active_stacks.get_mut(act.participant.as_str());
+                let y0 = match stack.and_then(|s| s.pop()) {
+                    Some(v) => v,
+                    None => {
+                        return Err(crate::LayoutError {
+                            message: format!(
+                                "deactivate {} has no matching activate",
+                                act.participant
+                            ),
+                        });
+                    }
+                };
+                let depth = active_stacks
+                    .get(act.participant.as_str())
+                    .map(|s| s.len() as u32)
+                    .unwrap_or(0);
+                let bar_x = cx - BAR_WIDTH / 2.0 + depth as f64 * BAR_NEST_OFFSET;
+                let bar_rect = Rect {
+                    x: bar_x,
+                    y: y0,
+                    width: BAR_WIDTH,
+                    height: y - y0,
+                    rx: 0.0,
+                };
+                sem_bars.push(semantic::ActivationBarLayout {
+                    participant: act.participant.clone(),
+                    rect: bar_rect,
+                    depth,
+                });
+                // Collect bar rect for deferred, depth-ordered insertion.
+                // (Actual items.push happens after the loop — see below.)
+                pending_bar_rects.push((depth, sem_bars.last().unwrap().rect.clone()));
+                sem_items.push(SequenceItemLayout::Activation(
+                    semantic::ActivationMarkerLayout {
+                        index: row,
+                        participant: act.participant.clone(),
+                        x: cx,
+                        y,
+                        is_start: false,
+                        depth,
+                    },
+                ));
+                continue;
+            }
             _ => continue,
         };
         let y = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
@@ -887,8 +983,17 @@ pub(crate) fn layout_sequence_full(
         if fi == ti {
             // Self-message: コの字型 (right, down, left with arrowhead).
             let cx = col_x[fi];
-            let x0 = cx;
-            let x1 = cx + SELF_MSG_WIDTH;
+            let depth_fi = active_stacks
+                .get(msg.from.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            let self_offset = if depth_fi > 0 {
+                BAR_WIDTH / 2.0 + (depth_fi - 1) as f64 * BAR_NEST_OFFSET
+            } else {
+                0.0
+            };
+            let x0 = cx + self_offset;
+            let x1 = cx + self_offset + SELF_MSG_WIDTH;
             let y0 = y;
             let y1 = y + SELF_MSG_HEIGHT;
 
@@ -952,9 +1057,48 @@ pub(crate) fn layout_sequence_full(
             }));
         } else {
             // Horizontal arrow from fi to ti.
-            let x_from = col_x[fi];
-            let x_to = col_x[ti];
-            let going_right = x_to > x_from;
+            let raw_from = col_x[fi];
+            let raw_to = col_x[ti];
+            let going_right = raw_to > raw_from;
+            let depth_from = active_stacks
+                .get(msg.from.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            let depth_to = active_stacks
+                .get(msg.to.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            // Endpoint clings to the edge of the open activation bar.
+            // Bar geometry: bar_x = cx - BAR_WIDTH/2 + depth*BAR_NEST_OFFSET (right-shifts
+            // with each nesting level). The bar's right edge is bar_x + BAR_WIDTH =
+            // cx + BAR_WIDTH/2 + (depth-1)*BAR_NEST_OFFSET.  The bar's left edge is
+            // bar_x = cx - BAR_WIDTH/2 + (depth-1)*BAR_NEST_OFFSET.
+            // The nest term (depth-1)*BAR_NEST_OFFSET is always *added* (bar shifts right);
+            // only the BAR_WIDTH/2 half-width flips sign depending on which edge we pick.
+            let x_from = if depth_from > 0 {
+                let nest = (depth_from - 1) as f64 * BAR_NEST_OFFSET;
+                if going_right {
+                    // Message leaves from the right edge of the bar.
+                    raw_from + BAR_WIDTH / 2.0 + nest
+                } else {
+                    // Message leaves from the left edge of the bar.
+                    raw_from - BAR_WIDTH / 2.0 + nest
+                }
+            } else {
+                raw_from
+            };
+            let x_to = if depth_to > 0 {
+                let nest = (depth_to - 1) as f64 * BAR_NEST_OFFSET;
+                if going_right {
+                    // Message arrives at the left edge of the bar.
+                    raw_to - BAR_WIDTH / 2.0 + nest
+                } else {
+                    // Message arrives at the right edge of the bar.
+                    raw_to + BAR_WIDTH / 2.0 + nest
+                }
+            } else {
+                raw_to
+            };
             let ux = if going_right { 1.0 } else { -1.0 };
 
             // Retract the shaft where a filled head/tail covers the line end.
@@ -1015,6 +1159,29 @@ pub(crate) fn layout_sequence_full(
         }
     }
 
+    // Check for unclosed activations.
+    for (pid, stack) in &active_stacks {
+        if !stack.is_empty() {
+            return Err(crate::LayoutError {
+                message: format!("participant {} has unclosed activate", pid),
+            });
+        }
+    }
+
+    // Splice collected bar rects into the scene at `bars_insert_idx` (after all
+    // lifelines but before all messages/notes).  Sort depth ascending so outer
+    // bars (smaller depth) are painted first and inner bars appear on top.
+    pending_bar_rects.sort_by_key(|&(depth, _)| depth);
+    let bar_scene_items: Vec<SceneItem> = pending_bar_rects
+        .into_iter()
+        .map(|(_, rect)| SceneItem::Rect(rect))
+        .collect();
+    items.splice(bars_insert_idx..bars_insert_idx, bar_scene_items);
+
+    // Also sort sem_bars depth ascending so backend renderers (drawio/excalidraw/…)
+    // draw outer bars before inner bars, matching the scene painter's order.
+    sem_bars.sort_by_key(|b| b.depth);
+
     // Normalize bounds.
     let (min_x, min_y, max_x, max_y) = bounds::scene_bounds(&items);
     bounds::translate(&mut items, -min_x, -min_y);
@@ -1065,7 +1232,17 @@ pub(crate) fn layout_sequence_full(
                 reference.text_anchor.x -= min_x;
                 reference.text_anchor.y -= min_y;
             }
+            SequenceItemLayout::Activation(marker) => {
+                marker.x -= min_x;
+                marker.y -= min_y;
+            }
         }
+    }
+
+    // Apply the same translation to bars.
+    for bar in &mut sem_bars {
+        bar.rect.x -= min_x;
+        bar.rect.y -= min_y;
     }
 
     let scene = Scene {
@@ -1076,6 +1253,7 @@ pub(crate) fn layout_sequence_full(
     let sem = crate::semantic::SemanticLayout::Sequence(semantic::SequenceLayout {
         participants: sem_participants,
         items: sem_items,
+        bars: sem_bars,
     });
 
     Ok(crate::LayoutOutput {

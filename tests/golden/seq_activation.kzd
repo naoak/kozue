@@ -1,0 +1,16 @@
+sequence activations {
+  participant a: "Alice"
+  participant b: "Bob"
+  a -> b : "request"
+  activate b
+  b --> a : "response"
+  deactivate b
+  a -> b : "call"
+  activate b
+  b -> b : "process"
+  activate b
+  b --> b : "done"
+  deactivate b
+  b --> a : "reply"
+  deactivate b
+}

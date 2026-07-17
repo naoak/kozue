@@ -1416,6 +1416,15 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
         }
     }
 
+    // Activation bars — plain white rect over the lifeline.
+    for (bi, bar) in s.bars.iter().enumerate() {
+        let r = &bar.rect;
+        let bar_id = format!("actbar{bi}");
+        let rect =
+            make_rect_with_roundness(&bar_id, r.x + MARGIN, r.y + MARGIN, r.width, r.height, None);
+        elements.push(AnyElement::Shape(rect));
+    }
+
     Ok(elements)
 }
 

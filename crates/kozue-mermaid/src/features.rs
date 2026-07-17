@@ -250,8 +250,8 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "activate / deactivate",
-        support: Support::Unsupported,
-        note: "reports an unsupported error",
+        support: Support::Supported,
+        note: "activation bars supported; the `->>+`/`->>-` message shorthand is not (explicit error)",
     },
     // --- State diagram ---
     Feature {

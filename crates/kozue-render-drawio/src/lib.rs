@@ -842,6 +842,21 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
         }
     }
 
+    // Activation bars — plain white rect over the lifeline.
+    for (bi, bar) in s.bars.iter().enumerate() {
+        let r = &bar.rect;
+        out.push_str(&format!(
+            "        <mxCell id=\"actbar{bi}\" value=\"\" \
+             style=\"rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;\" vertex=\"1\" parent=\"1\">\n\
+             \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+             \x20       </mxCell>\n",
+            f(r.x + MARGIN),
+            f(r.y + MARGIN),
+            f(r.width),
+            f(r.height),
+        ));
+    }
+
     out.push_str(mxfile_footer());
     Ok(out)
 }

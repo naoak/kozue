@@ -32,12 +32,13 @@ pub enum IrSchemaVersion {
     V9,
     V10,
     V11,
-    #[default]
     V12,
+    #[default]
+    V13,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V12;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V13;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -65,6 +66,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V10 => serializer.serialize_u8(10),
             IrSchemaVersion::V11 => serializer.serialize_u8(11),
             IrSchemaVersion::V12 => serializer.serialize_u8(12),
+            IrSchemaVersion::V13 => serializer.serialize_u8(13),
         }
     }
 }
@@ -88,6 +90,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             10 => Ok(IrSchemaVersion::V10),
             11 => Ok(IrSchemaVersion::V11),
             12 => Ok(IrSchemaVersion::V12),
+            13 => Ok(IrSchemaVersion::V13),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -280,6 +283,7 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
                     | IrSchemaVersion::V10
                     | IrSchemaVersion::V11
                     | IrSchemaVersion::V12
+                    | IrSchemaVersion::V13
             )
         }
     }
@@ -300,6 +304,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V10
                     | IrSchemaVersion::V11
                     | IrSchemaVersion::V12
+                    | IrSchemaVersion::V13
             )
         }
         NodeKind::Circle | NodeKind::Diamond => {
@@ -313,6 +318,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V10
                     | IrSchemaVersion::V11
                     | IrSchemaVersion::V12
+                    | IrSchemaVersion::V13
             )
         }
     }
@@ -334,6 +340,7 @@ fn participant_kind_supported_in(version: IrSchemaVersion, kind: &ParticipantKin
                     | IrSchemaVersion::V10
                     | IrSchemaVersion::V11
                     | IrSchemaVersion::V12
+                    | IrSchemaVersion::V13
             )
         }
     }
@@ -348,32 +355,44 @@ fn message_arrows_supported_in(version: IrSchemaVersion, message: &Message) -> b
         && message.tail == MessageArrow::None)
         || matches!(
             version,
-            IrSchemaVersion::V10 | IrSchemaVersion::V11 | IrSchemaVersion::V12
+            IrSchemaVersion::V10
+                | IrSchemaVersion::V11
+                | IrSchemaVersion::V12
+                | IrSchemaVersion::V13
         )
 }
 
 /// Whether free-standing sequence notes are expressible in the given schema
 /// version. Notes were introduced in V11.
 fn sequence_note_supported_in(version: IrSchemaVersion) -> bool {
-    matches!(version, IrSchemaVersion::V11 | IrSchemaVersion::V12)
+    matches!(
+        version,
+        IrSchemaVersion::V11 | IrSchemaVersion::V12 | IrSchemaVersion::V13
+    )
 }
 
 /// Whether full-width labeled dividers are expressible in the given schema
 /// version. Dividers were introduced in V12.
 fn sequence_divider_supported_in(version: IrSchemaVersion) -> bool {
-    matches!(version, IrSchemaVersion::V12)
+    matches!(version, IrSchemaVersion::V12 | IrSchemaVersion::V13)
 }
 
 /// Whether time-gap delay markers are expressible in the given schema version.
 /// Delays were introduced in V12.
 fn sequence_delay_supported_in(version: IrSchemaVersion) -> bool {
-    matches!(version, IrSchemaVersion::V12)
+    matches!(version, IrSchemaVersion::V12 | IrSchemaVersion::V13)
 }
 
 /// Whether reference frames are expressible in the given schema version.
 /// References were introduced in V12.
 fn sequence_reference_supported_in(version: IrSchemaVersion) -> bool {
-    matches!(version, IrSchemaVersion::V12)
+    matches!(version, IrSchemaVersion::V12 | IrSchemaVersion::V13)
+}
+
+/// Whether activation bars are expressible in the given schema version.
+/// Activation bars were introduced in V13.
+fn sequence_activation_supported_in(version: IrSchemaVersion) -> bool {
+    matches!(version, IrSchemaVersion::V13)
 }
 
 fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
@@ -388,6 +407,7 @@ fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
                 | IrSchemaVersion::V10
                 | IrSchemaVersion::V11
                 | IrSchemaVersion::V12
+                | IrSchemaVersion::V13
         ),
     }
 }
@@ -406,6 +426,7 @@ fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
                 | IrSchemaVersion::V10
                 | IrSchemaVersion::V11
                 | IrSchemaVersion::V12
+                | IrSchemaVersion::V13
         ))
         && line_style_supported_in(version, edge.line)
 }
@@ -419,6 +440,7 @@ fn edge_ports_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
                 | IrSchemaVersion::V10
                 | IrSchemaVersion::V11
                 | IrSchemaVersion::V12
+                | IrSchemaVersion::V13
         )
 }
 
@@ -432,6 +454,7 @@ fn containers_supported_in(version: IrSchemaVersion, containers: &[Container]) -
                 | IrSchemaVersion::V10
                 | IrSchemaVersion::V11
                 | IrSchemaVersion::V12
+                | IrSchemaVersion::V13
         )
 }
 
@@ -474,6 +497,9 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
                 SequenceItem::Divider(_) => sequence_divider_supported_in(version),
                 SequenceItem::Delay(_) => sequence_delay_supported_in(version),
                 SequenceItem::Reference(_) => sequence_reference_supported_in(version),
+                SequenceItem::Activate(_) | SequenceItem::Deactivate(_) => {
+                    sequence_activation_supported_in(version)
+                }
             }) && sequence
                 .participants
                 .values()
@@ -657,8 +683,22 @@ impl<'de> Deserialize<'de> for IrDocument {
                     extensions: wire.extensions,
                 })
             }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V13 => {
+                if !diagram_supported_in(IrSchemaVersion::V13, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 13 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, message arrow, sequence note, divider, delay, reference, or activation",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, and 12 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, and 13 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -887,6 +927,8 @@ pub enum SequenceItem {
     Divider(Divider),
     Delay(Delay),
     Reference(Reference),
+    Activate(Activation),
+    Deactivate(Activation),
 }
 
 /// Placement of a sequence [`Note`] relative to its target participant(s).
@@ -974,6 +1016,23 @@ impl Reference {
         Reference {
             text: text.into(),
             targets,
+        }
+    }
+}
+
+/// An activation marker for a participant in a sequence diagram
+/// (`activate <id>` / `deactivate <id>`).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Activation {
+    pub participant: ElementId,
+}
+
+impl Activation {
+    pub fn new(participant: impl Into<ElementId>) -> Self {
+        Activation {
+            participant: participant.into(),
         }
     }
 }
@@ -1665,6 +1724,8 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V11: &str = r#"{"schema_version":11,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V12: &str = r#"{"schema_version":12,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V13: &str = r#"{"schema_version":13,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_SEQUENCE_DOCUMENT_V13: &str = r#"{"schema_version":13,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V11: &str = r#"{"schema_version":11,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
@@ -1746,10 +1807,18 @@ mod tests {
             serde_json::from_value::<IrSchemaVersion>(json!(12)).unwrap(),
             IrSchemaVersion::V12
         );
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(13)).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(IrSchemaVersion::V13).unwrap(),
+            json!(13)
+        );
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(13)).unwrap(),
+            IrSchemaVersion::V13
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(14)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 13"));
+            .contains("unsupported IR schema version 14"));
     }
 
     #[test]
@@ -1772,7 +1841,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V12);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V13);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1780,7 +1849,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v11_documents_are_upgraded_to_v12() {
+    fn v1_through_v12_documents_are_upgraded_to_v13() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
@@ -1793,13 +1862,14 @@ mod tests {
             EMPTY_GRAPH_DOCUMENT_V9,
             EMPTY_GRAPH_DOCUMENT_V10,
             EMPTY_GRAPH_DOCUMENT_V11,
+            EMPTY_GRAPH_DOCUMENT_V12,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V12);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V13);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V12
+                EMPTY_GRAPH_DOCUMENT_V13
             );
         }
 
@@ -2242,7 +2312,7 @@ mod tests {
     fn document_rejects_unknown_versions_and_missing_required_fields() {
         let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V10).unwrap();
 
-        for version in [0, 1, 13] {
+        for version in [0, 1, 14] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -2817,6 +2887,54 @@ mod tests {
                     .into_diagram(),
                 diagram,
                 "V12 rejected sequence reference"
+            );
+        }
+    }
+
+    #[test]
+    fn sequence_activations_require_schema_v13() {
+        let legacy_fixtures = [
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+            EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
+            EMPTY_GRAPH_DOCUMENT_V8,
+            EMPTY_SEQUENCE_DOCUMENT_V9,
+            EMPTY_SEQUENCE_DOCUMENT_V10,
+            EMPTY_SEQUENCE_DOCUMENT_V11,
+            EMPTY_SEQUENCE_DOCUMENT_V12,
+        ];
+
+        for item in [
+            SequenceItem::Activate(Activation::new("a")),
+            SequenceItem::Deactivate(Activation::new("a")),
+        ] {
+            let mut seq = SequenceDiagram::new();
+            seq.participants
+                .insert("a".into(), Participant::new("a", "A"));
+            seq.items.push(item.clone());
+            let diagram = Diagram::Sequence(seq);
+
+            for fixture in legacy_fixtures {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert!(
+                    serde_json::from_value::<IrDocument>(value).is_err(),
+                    "legacy schema accepted sequence activation"
+                );
+            }
+
+            let mut value: serde_json::Value =
+                serde_json::from_str(EMPTY_SEQUENCE_DOCUMENT_V13).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert_eq!(
+                serde_json::from_value::<IrDocument>(value)
+                    .unwrap()
+                    .into_diagram(),
+                diagram,
+                "V13 rejected sequence activation"
             );
         }
     }

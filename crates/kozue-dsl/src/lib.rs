@@ -51,10 +51,10 @@ mod er_dsl;
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
-    ArrowType, Container, Delay, Diagram, Direction, Divider, Edge, ElementId, Endpoint,
-    GraphDiagram, IrDocument, LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note,
-    NotePosition, Participant, ParticipantKind, Port, Reference, SequenceDiagram, SequenceItem,
-    State, StateDiagram, Transition,
+    Activation, ArrowType, Container, Delay, Diagram, Direction, Divider, Edge, ElementId,
+    Endpoint, GraphDiagram, IrDocument, LineStyle, LineWeight, Message, MessageArrow, Node,
+    NodeKind, Note, NotePosition, Participant, ParticipantKind, Port, Reference, SequenceDiagram,
+    SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -110,6 +110,18 @@ enum Stmt {
         targets: Vec<(String, std::ops::Range<usize>)>,
         text: String,
         text_lit_span: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
+    },
+    /// `activate <id>` — a sequence-only activation marker.
+    Activate {
+        id: String,
+        id_span: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
+    },
+    /// `deactivate <id>` — a sequence-only deactivation marker.
+    Deactivate {
+        id: String,
+        id_span: std::ops::Range<usize>,
         span: std::ops::Range<usize>,
     },
     DirectionError(std::ops::Range<usize>),
@@ -616,6 +628,24 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                 span,
             });
 
+        // activate: `activate <id>` (sequence-only). `activate` is not reserved.
+        // Uses the same negative lookahead as `delay` to allow `activate -> b`
+        // to be parsed as a message when `activate` is used as a participant id.
+        let bare_act = filter(|c: &char| *c == '-' || *c == '<').not().rewind();
+        let activate = text::keyword("activate")
+            .padded_by(kzd_ws())
+            .ignore_then(bare_act)
+            .ignore_then(ident_spanned())
+            .map_with_span(|(id, id_span), span| Stmt::Activate { id, id_span, span });
+
+        // deactivate: `deactivate <id>` (sequence-only). `deactivate` is not reserved.
+        let bare_deact = filter(|c: &char| *c == '-' || *c == '<').not().rewind();
+        let deactivate = text::keyword("deactivate")
+            .padded_by(kzd_ws())
+            .ignore_then(bare_deact)
+            .ignore_then(ident_spanned())
+            .map_with_span(|(id, id_span), span| Stmt::Deactivate { id, id_span, span });
+
         // state declaration: `state id` or `state id: "label"`
         let state_decl = text::keyword("state")
             .padded_by(kzd_ws())
@@ -971,6 +1001,8 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             .or(divider)
             .or(delay)
             .or(reference)
+            .or(activate)
+            .or(deactivate)
             .or(state_decl)
             .or(state_trans_pseudo_left)
             .or(state_trans_pseudo_right)
@@ -1323,6 +1355,14 @@ fn collect_containers(
                 errors.push(CompileError {
                     message: "`ref` statements are only valid in sequence diagrams".to_string(),
                     span: span.clone(),
+                    secondary: None,
+                });
+            }
+            Stmt::Activate { id_span, .. } | Stmt::Deactivate { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`activate`/`deactivate` are only valid in sequence diagrams"
+                        .to_string(),
+                    span: id_span.clone(),
                     secondary: None,
                 });
             }
@@ -1770,6 +1810,14 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     secondary: None,
                 });
             }
+            Stmt::Activate { id_span, .. } | Stmt::Deactivate { id_span, .. } => {
+                errors.push(CompileError {
+                    message: "`activate`/`deactivate` are only valid in sequence diagrams"
+                        .to_string(),
+                    span: id_span.clone(),
+                    secondary: None,
+                });
+            }
             Stmt::StateTransition(_) => {}
         }
     }
@@ -2135,6 +2183,48 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                     seq.items
                         .push(SequenceItem::Reference(Reference::new(text.clone(), ids)));
                 }
+                continue;
+            }
+            Stmt::Activate {
+                id,
+                id_span,
+                span: _,
+            } => {
+                if !seq.participants.contains_key(id.as_str()) {
+                    let mut message = format!("unknown participant `{}`", id);
+                    if let Some(suggestion) = closest_name(id, seq.participants.keys()) {
+                        message.push_str(&format!(", did you mean `{}`?", suggestion));
+                    }
+                    errors.push(CompileError {
+                        message,
+                        span: id_span.clone(),
+                        secondary: None,
+                    });
+                    continue;
+                }
+                seq.items
+                    .push(SequenceItem::Activate(Activation::new(id.clone())));
+                continue;
+            }
+            Stmt::Deactivate {
+                id,
+                id_span,
+                span: _,
+            } => {
+                if !seq.participants.contains_key(id.as_str()) {
+                    let mut message = format!("unknown participant `{}`", id);
+                    if let Some(suggestion) = closest_name(id, seq.participants.keys()) {
+                        message.push_str(&format!(", did you mean `{}`?", suggestion));
+                    }
+                    errors.push(CompileError {
+                        message,
+                        span: id_span.clone(),
+                        secondary: None,
+                    });
+                    continue;
+                }
+                seq.items
+                    .push(SequenceItem::Deactivate(Activation::new(id.clone())));
                 continue;
             }
             _ => continue,
@@ -2642,6 +2732,8 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
                     | Stmt::Divider { .. }
                     | Stmt::Delay { .. }
                     | Stmt::Reference { .. }
+                    | Stmt::Activate { .. }
+                    | Stmt::Deactivate { .. }
             ) {
                 Some(i)
             } else {
@@ -2841,6 +2933,7 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
         Stmt::Divider { span, .. } => (span.start, span.end),
         Stmt::Delay { span, .. } => (span.start, span.end),
         Stmt::Reference { span, .. } => (span.start, span.end),
+        Stmt::Activate { span, .. } | Stmt::Deactivate { span, .. } => (span.start, span.end),
     }
 }
 
@@ -3189,6 +3282,8 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
                 format_string_lit(text)
             )
         }
+        Stmt::Activate { id, .. } => format!("activate {}", id),
+        Stmt::Deactivate { id, .. } => format!("deactivate {}", id),
         _ => String::new(),
     }
 }

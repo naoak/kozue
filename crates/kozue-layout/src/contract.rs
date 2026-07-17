@@ -154,6 +154,7 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
                             return mismatch("reference has no targets");
                         }
                     }
+                    SequenceItemLayout::Activation(_) => {}
                 }
             }
         }
@@ -301,6 +302,16 @@ fn validate_contract(
                     (SequenceItem::Reference(r), SequenceItemLayout::Reference(pl)) => {
                         if pl.index != index || r.text != pl.text || r.targets != pl.targets {
                             return mismatch("sequence reference index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Activate(a), SequenceItemLayout::Activation(pl)) => {
+                        if pl.index != index || a.participant != pl.participant || !pl.is_start {
+                            return mismatch("sequence activate index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Deactivate(a), SequenceItemLayout::Activation(pl)) => {
+                        if pl.index != index || a.participant != pl.participant || pl.is_start {
+                            return mismatch("sequence deactivate index/semantics mismatch");
                         }
                     }
                     _ => return mismatch("sequence item/layout variant mismatch"),
@@ -615,7 +626,17 @@ fn validate_semantic_geometry(layout: &SemanticLayout) -> Result<(), ExportContr
                         validate_rect(&reference.rect)?;
                         validate_point(&reference.text_anchor)?;
                     }
+                    SequenceItemLayout::Activation(marker) => {
+                        if !valid(&[marker.x, marker.y]) {
+                            return mismatch(
+                                "sequence activation geometry must be finite and nonnegative",
+                            );
+                        }
+                    }
                 }
+            }
+            for bar in &sequence.bars {
+                validate_rect(&bar.rect)?;
             }
         }
         SemanticLayout::State(state) => {

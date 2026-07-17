@@ -982,6 +982,21 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
         }
     }
 
+    // Activation bars — plain white rect over the lifeline.
+    for (bi, bar) in s.bars.iter().enumerate() {
+        let r = &bar.rect;
+        shapes.push_str(&rect_shape_with_geom(
+            ids.next(),
+            &format!("Activation bar {bi}"),
+            emu_pos(r.x),
+            emu_pos(r.y),
+            emu_len(r.width),
+            emu_len(r.height),
+            "",
+            "rect",
+        ));
+    }
+
     Ok(slide_xml(&shapes))
 }
 

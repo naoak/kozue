@@ -161,6 +161,46 @@ fn native_and_plantuml_dividers_delays_references_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_plantuml_activation_produce_equivalent_ir() {
+    // activate / deactivate must normalize to the same semantic IR
+    // from the native DSL and from PlantUML.
+    let native = r#"sequence s {
+  participant A
+  participant B
+  A -> B : "request"
+  activate B
+  B --> A : "response"
+  deactivate B
+}"#;
+    let plantuml = "@startuml
+participant A
+participant B
+A -> B : request
+activate B
+B --> A : response
+deactivate B
+@enduml
+";
+    let mermaid = "sequenceDiagram
+  participant A
+  participant B
+  A->>B: request
+  activate B
+  B-->>A: response
+  deactivate B
+";
+    let native_ir = kozue_dsl::parse(native).expect("native parse");
+    assert_eq!(
+        native_ir,
+        kozue_plantuml::parse(plantuml).expect("PlantUML parse")
+    );
+    assert_eq!(
+        native_ir,
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
 fn native_and_plantuml_message_arrows_produce_equivalent_ir() {
     // Every PlantUML message arrow form must produce the same semantic IR as
     // its native head/tail modifier spelling.
@@ -628,6 +668,7 @@ const SEQ_GOLDEN_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
 ];
 
 #[test]
@@ -972,6 +1013,7 @@ const MERMAID_GOLDEN_CASES: &[&str] = &[
     "mermaid_seq_actor",
     "mermaid_seq_arrows",
     "mermaid_seq_notes",
+    "mermaid_seq_activation",
 ];
 
 fn compile_mermaid(src: &str) -> String {
@@ -1059,6 +1101,7 @@ const PLANTUML_GOLDEN_CASES: &[&str] = &[
     "plantuml_seq_arrows",
     "plantuml_seq_notes",
     "plantuml_seq_dividers",
+    "plantuml_seq_activation",
     "plantuml_state",
     "plantuml_class",
     "plantuml_er",
@@ -1413,6 +1456,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1525,6 +1569,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1894,6 +1939,7 @@ const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
 ];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2316,6 +2362,7 @@ const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
 ];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2532,6 +2579,7 @@ const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_message_arrows",
     "seq_notes",
     "seq_dividers",
+    "seq_activation",
 ];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];

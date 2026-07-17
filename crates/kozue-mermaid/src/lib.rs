@@ -47,10 +47,10 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
 use kozue_ir::{
-    ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction, Edge,
-    EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note, NotePosition, Participant,
-    ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    Activation, ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction,
+    Edge, EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram,
+    IrDocument, LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note, NotePosition,
+    Participant, ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -559,8 +559,6 @@ fn parse_sequence(
             "opt",
             "par",
             "break",
-            "activate",
-            "deactivate",
             "rect",
             "autonumber",
             "title",
@@ -617,6 +615,19 @@ fn parse_sequence(
                 continue;
             }
             ensure_participant(&mut seq, &id, label.as_deref(), kind);
+            continue;
+        }
+
+        // `activate <id>` / `deactivate <id>` lines.
+        if let Some(id) = try_parse_mermaid_activate(trimmed) {
+            ensure_participant(&mut seq, id, None, ParticipantKind::Default);
+            seq.items.push(SequenceItem::Activate(Activation::new(id)));
+            continue;
+        }
+        if let Some(id) = try_parse_mermaid_deactivate(trimmed) {
+            ensure_participant(&mut seq, id, None, ParticipantKind::Default);
+            seq.items
+                .push(SequenceItem::Deactivate(Activation::new(id)));
             continue;
         }
 
@@ -1566,6 +1577,28 @@ fn extract_pipe_label(s: &str) -> Option<(String, &str)> {
 /// | `<<-->>` | Dashed | head Filled + tail Filled (bidirectional) |
 ///
 /// Format: `from ARROW to: label` or `from ARROW to`
+/// Parses a Mermaid `activate <id>` line. Returns the participant id if matched.
+fn try_parse_mermaid_activate(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("activate")?;
+    let rest = rest.strip_prefix(|c: char| c.is_ascii_whitespace())?;
+    let id = rest.trim();
+    if id.is_empty() || id.contains(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    Some(id)
+}
+
+/// Parses a Mermaid `deactivate <id>` line. Returns the participant id if matched.
+fn try_parse_mermaid_deactivate(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("deactivate")?;
+    let rest = rest.strip_prefix(|c: char| c.is_ascii_whitespace())?;
+    let id = rest.trim();
+    if id.is_empty() || id.contains(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    Some(id)
+}
+
 fn try_parse_seq_message(line: &str, _offset: usize) -> Option<Result<SeqMsgResult, String>> {
     // Try each arrow form, longest first to avoid prefix ambiguity.
     // Order matters: `<<-->>`/`<<->>` before the plain forms, `-->>` before
