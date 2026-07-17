@@ -127,6 +127,61 @@ fn native_and_mermaid_actor_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_plantuml_message_arrows_produce_equivalent_ir() {
+    // Every PlantUML message arrow form must produce the same semantic IR as
+    // its native head/tail modifier spelling.
+    let cases: &[(&str, &str)] = &[
+        ("A -> B : \"m\"", "A -> B : m"),
+        ("A --> B : \"m\"", "A --> B : m"),
+        ("A -> B head open : \"m\"", "A ->> B : m"),
+        ("A --> B head open : \"m\"", "A -->> B : m"),
+        ("A -> B head cross : \"m\"", "A ->x B : m"),
+        ("A --> B head cross : \"m\"", "A -->x B : m"),
+        ("A -> B head circle : \"m\"", "A ->o B : m"),
+        ("A --> B head circle : \"m\"", "A -->o B : m"),
+        ("A -> B tail filled : \"m\"", "A <-> B : m"),
+        ("A --> B tail filled : \"m\"", "A <--> B : m"),
+    ];
+    for (native_msg, plantuml_msg) in cases {
+        let native = format!("sequence s {{\n  participant A\n  participant B\n  {native_msg}\n}}");
+        let plantuml =
+            format!("@startuml\nparticipant A\nparticipant B\n{plantuml_msg}\n@enduml\n");
+        assert_eq!(
+            kozue_dsl::parse(&native).expect("native parse"),
+            kozue_plantuml::parse(&plantuml).expect("PlantUML parse"),
+            "IR mismatch for `{plantuml_msg}`"
+        );
+    }
+}
+
+#[test]
+fn native_and_mermaid_message_arrows_produce_equivalent_ir() {
+    // Every Mermaid message arrow form expressible in the native DSL must
+    // produce the same semantic IR. (Mermaid has no circle/found marker.)
+    let cases: &[(&str, &str)] = &[
+        ("A -> B : \"m\"", "A->>B: m"),
+        ("A --> B : \"m\"", "A-->>B: m"),
+        ("A -> B head open : \"m\"", "A-)B: m"),
+        ("A --> B head open : \"m\"", "A--)B: m"),
+        ("A -> B head cross : \"m\"", "A-xB: m"),
+        ("A --> B head cross : \"m\"", "A--xB: m"),
+        ("A -> B head none : \"m\"", "A->B: m"),
+        ("A --> B head none : \"m\"", "A-->B: m"),
+        ("A -> B tail filled : \"m\"", "A<<->>B: m"),
+        ("A --> B tail filled : \"m\"", "A<<-->>B: m"),
+    ];
+    for (native_msg, mermaid_msg) in cases {
+        let native = format!("sequence s {{\n  participant A\n  participant B\n  {native_msg}\n}}");
+        let mermaid = format!("sequenceDiagram\nparticipant A\nparticipant B\n{mermaid_msg}\n");
+        assert_eq!(
+            kozue_dsl::parse(&native).expect("native parse"),
+            kozue_mermaid::parse(&mermaid).expect("Mermaid parse"),
+            "IR mismatch for `{mermaid_msg}`"
+        );
+    }
+}
+
+#[test]
 fn explicit_node_shapes_map_across_all_backends() {
     let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n c shape circle: \"Circle\"\n dm shape diamond: \"Diamond\"\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
@@ -435,6 +490,7 @@ const SEQ_GOLDEN_CASES: &[&str] = &[
     "seq_self_dashed",
     "seq_minimal",
     "seq_participant_kinds",
+    "seq_message_arrows",
 ];
 
 #[test]
@@ -777,6 +833,7 @@ const MERMAID_GOLDEN_CASES: &[&str] = &[
     "mermaid_er",
     "mermaid_subgraph",
     "mermaid_seq_actor",
+    "mermaid_seq_arrows",
 ];
 
 fn compile_mermaid(src: &str) -> String {
@@ -861,6 +918,7 @@ fn mermaid_rendering_is_deterministic_across_processes() {
 
 const PLANTUML_GOLDEN_CASES: &[&str] = &[
     "plantuml_seq",
+    "plantuml_seq_arrows",
     "plantuml_state",
     "plantuml_class",
     "plantuml_er",
@@ -1212,6 +1270,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "chain",
     "branch",
     "seq_basic",
+    "seq_message_arrows",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1321,6 +1380,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "chain",
     "branch",
     "seq_basic",
+    "seq_message_arrows",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1687,6 +1747,7 @@ const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_basic",
     "seq_self_dashed",
     "seq_participant_kinds",
+    "seq_message_arrows",
 ];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2095,6 +2156,7 @@ const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_basic",
     "seq_self_dashed",
     "seq_participant_kinds",
+    "seq_message_arrows",
 ];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2308,6 +2370,7 @@ const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_basic",
     "seq_self_dashed",
     "seq_participant_kinds",
+    "seq_message_arrows",
 ];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];

@@ -34,8 +34,9 @@
 //!
 //! # Compatibility notes
 //!
-//! - `->>`/`-->>` open/thin arrowheads are mapped to `ArrowType::Triangle`
-//!   (same behaviour as `->` / `-->`). The arrowhead distinction is not rendered.
+//! - `->`/`-->` map to a filled head; `->>`/`-->>` thin arrowheads map to an
+//!   open head (`MessageArrow::Open`); `->x`/`->o` lost/found markers map to
+//!   cross/circle heads; `<->`/`<-->` map to filled head + filled tail.
 //! - Icon-variant keywords (`boundary`, `control`, `entity`, `database`,
 //!   `collections`, `queue`) are parsed and mapped to `Participant`; the icon
 //!   is not rendered.
@@ -52,8 +53,8 @@ use std::ops::Range;
 
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
-    ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
-    ErAttribute, ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, Participant,
+    ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErAttribute,
+    ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, MessageArrow, Participant,
     ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
@@ -555,12 +556,13 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
             continue;
         }
 
-        if let Some(Ok((from, to, label, line_style, arrow))) = try_parse_plantuml_message(trimmed)
+        if let Some(Ok((from, to, label, line_style, head, tail))) =
+            try_parse_plantuml_message(trimmed)
         {
             ensure_participant(&mut seq, &from, None, ParticipantKind::Default);
             ensure_participant(&mut seq, &to, None, ParticipantKind::Default);
-            seq.items.push(SequenceItem::Message(Message::new(
-                from, to, label, line_style, arrow,
+            seq.items.push(SequenceItem::Message(Message::with_arrows(
+                from, to, label, line_style, head, tail,
             )));
         }
     }
@@ -1860,18 +1862,28 @@ fn find_as_boundary(s: &str) -> Option<usize> {
 // Message parser
 // ---------------------------------------------------------------------------
 
-/// (from, to, label, line_style, arrow)
-type SeqMsgResult = (String, String, Option<String>, LineStyle, ArrowType);
+/// (from, to, label, line_style, head, tail)
+type SeqMsgResult = (
+    String,
+    String,
+    Option<String>,
+    LineStyle,
+    MessageArrow,
+    MessageArrow,
+);
 
 /// Try to parse a PlantUML sequence message line.
 ///
 /// Arrow forms and their mapping:
-/// | PlantUML | LineStyle | ArrowType |
-/// |----------|-----------|-----------|
-/// | `->` | Solid | Triangle |
-/// | `-->` | Dashed | Triangle |
-/// | `->>` | Solid | Triangle (partial: thin arrow mapped to Triangle) |
-/// | `-->>` | Dashed | Triangle (partial: thin arrow mapped to Triangle) |
+/// | PlantUML | LineStyle | head / tail |
+/// |----------|-----------|-------------|
+/// | `->` | Solid | Filled |
+/// | `-->` | Dashed | Filled |
+/// | `->>` | Solid | Open (thin/async arrowhead) |
+/// | `-->>` | Dashed | Open |
+/// | `->x` / `-->x` | Solid / Dashed | Cross (lost message) |
+/// | `->o` / `-->o` | Solid / Dashed | Circle (found message) |
+/// | `<->` / `<-->` | Solid / Dashed | head Filled + tail Filled |
 ///
 /// Format: `From ARROW To : label` or `From ARROW To`
 /// Participants may be bare identifiers.
@@ -1887,30 +1899,85 @@ fn try_parse_plantuml_message(line: &str) -> Option<Result<SeqMsgResult, String>
         ));
     }
 
-    // Arrow forms: longest first to avoid prefix ambiguity.
-    // Also check for unsupported ->x and ->o (lost/found messages).
-    let arrow_forms: &[(&str, LineStyle, ArrowType)] = &[
-        ("-->>", LineStyle::Dashed, ArrowType::Triangle),
-        ("-->", LineStyle::Dashed, ArrowType::Triangle),
-        ("->>", LineStyle::Solid, ArrowType::Triangle),
-        ("->", LineStyle::Solid, ArrowType::Triangle),
+    // Arrow forms: longest first to avoid prefix ambiguity (`-->>` before
+    // `-->`, `->>` before `->`, `<-->` before `-->`, `->x`/`->o` before `->`).
+    #[allow(clippy::type_complexity)]
+    let arrow_forms: &[(&str, LineStyle, MessageArrow, MessageArrow)] = &[
+        (
+            "<-->",
+            LineStyle::Dashed,
+            MessageArrow::Filled,
+            MessageArrow::Filled,
+        ),
+        (
+            "-->>",
+            LineStyle::Dashed,
+            MessageArrow::Open,
+            MessageArrow::None,
+        ),
+        (
+            "-->x",
+            LineStyle::Dashed,
+            MessageArrow::Cross,
+            MessageArrow::None,
+        ),
+        (
+            "-->o",
+            LineStyle::Dashed,
+            MessageArrow::Circle,
+            MessageArrow::None,
+        ),
+        (
+            "-->",
+            LineStyle::Dashed,
+            MessageArrow::Filled,
+            MessageArrow::None,
+        ),
+        (
+            "->>",
+            LineStyle::Solid,
+            MessageArrow::Open,
+            MessageArrow::None,
+        ),
+        (
+            "->x",
+            LineStyle::Solid,
+            MessageArrow::Cross,
+            MessageArrow::None,
+        ),
+        (
+            "->o",
+            LineStyle::Solid,
+            MessageArrow::Circle,
+            MessageArrow::None,
+        ),
+        (
+            "<->",
+            LineStyle::Solid,
+            MessageArrow::Filled,
+            MessageArrow::Filled,
+        ),
+        (
+            "->",
+            LineStyle::Solid,
+            MessageArrow::Filled,
+            MessageArrow::None,
+        ),
     ];
 
-    // Check for ->x or ->o (lost/found) before the normal arrow forms.
-    if let Some(idx) = line.find("->x").or_else(|| line.find("->o")) {
-        // Verify there's something before it that could be a participant.
-        let from_part = line[..idx].trim();
-        if !from_part.is_empty() && is_valid_participant_id(from_part) {
-            return Some(Err(
-                "unsupported: lost/found messages (`->x` / `->o`) are not supported".to_string(),
-            ));
-        }
-    }
-
-    for &(arrow_str, line_style, arrow) in arrow_forms {
+    for &(arrow_str, line_style, head, tail) in arrow_forms {
         if let Some(idx) = line.find(arrow_str) {
             let from_part = line[..idx].trim();
             let after = &line[idx + arrow_str.len()..];
+
+            // `->x` / `->o` end in a letter: require a whitespace boundary so
+            // a target id starting with `x`/`o` (e.g. `A ->oscar`) is parsed
+            // as `->` + `oscar`, not as a found-message marker.
+            if arrow_str.ends_with(|c: char| c.is_ascii_alphanumeric())
+                && !after.starts_with(|c: char| c.is_ascii_whitespace())
+            {
+                continue;
+            }
 
             // from_part must be a valid participant id.
             if from_part.is_empty() || !is_valid_participant_id(from_part) {
@@ -1937,7 +2004,7 @@ fn try_parse_plantuml_message(line: &str) -> Option<Result<SeqMsgResult, String>
                 (to_part.to_string(), None)
             };
 
-            return Some(Ok((from, to, label, line_style, arrow)));
+            return Some(Ok((from, to, label, line_style, head, tail)));
         }
     }
 
@@ -1962,7 +2029,7 @@ fn is_valid_participant_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kozue_ir::{ArrowType, EndMarker, LineStyle, SequenceItem};
+    use kozue_ir::{EndMarker, LineStyle, SequenceItem};
 
     #[test]
     fn parse_document_preserves_optional_plantuml_name() {
@@ -2008,7 +2075,8 @@ mod tests {
         assert_eq!(m.to.as_str(), "Bob");
         assert_eq!(m.label.as_deref(), Some("hello"));
         assert_eq!(m.line, LineStyle::Solid);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::Filled);
+        assert_eq!(m.tail, MessageArrow::None);
     }
 
     #[test]
@@ -2059,49 +2127,117 @@ mod tests {
     }
 
     #[test]
-    fn solid_arrow_maps_to_solid_triangle() {
+    fn solid_arrow_maps_to_solid_filled_head() {
         let src = "@startuml\nA -> B : msg\n@enduml\n";
         let s = parse_ok(src);
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Solid);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::Filled);
+        assert_eq!(m.tail, MessageArrow::None);
     }
 
     #[test]
-    fn dashed_arrow_maps_to_dashed_triangle() {
+    fn dashed_arrow_maps_to_dashed_filled_head() {
         let src = "@startuml\nA --> B : msg\n@enduml\n";
         let s = parse_ok(src);
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Dashed);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::Filled);
+        assert_eq!(m.tail, MessageArrow::None);
     }
 
     #[test]
-    fn thin_solid_arrow_maps_to_solid_triangle() {
-        // ->> maps to Solid + Triangle (thin arrowhead not rendered)
+    fn thin_solid_arrow_maps_to_open_head() {
+        // ->> maps to Solid + Open (async/thin arrowhead)
         let src = "@startuml\nA ->> B : msg\n@enduml\n";
         let s = parse_ok(src);
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Solid);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::Open);
+        assert_eq!(m.tail, MessageArrow::None);
     }
 
     #[test]
-    fn thin_dashed_arrow_maps_to_dashed_triangle() {
-        // -->> maps to Dashed + Triangle
+    fn thin_dashed_arrow_maps_to_open_head() {
+        // -->> maps to Dashed + Open
         let src = "@startuml\nA -->> B : msg\n@enduml\n";
         let s = parse_ok(src);
         let SequenceItem::Message(ref m) = s.items[0] else {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Dashed);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::Open);
+        assert_eq!(m.tail, MessageArrow::None);
+    }
+
+    #[test]
+    fn lost_found_and_bidirectional_arrows_map_to_heads() {
+        let cases: &[(&str, LineStyle, MessageArrow, MessageArrow)] = &[
+            (
+                "A ->x B : m",
+                LineStyle::Solid,
+                MessageArrow::Cross,
+                MessageArrow::None,
+            ),
+            (
+                "A -->x B : m",
+                LineStyle::Dashed,
+                MessageArrow::Cross,
+                MessageArrow::None,
+            ),
+            (
+                "A ->o B : m",
+                LineStyle::Solid,
+                MessageArrow::Circle,
+                MessageArrow::None,
+            ),
+            (
+                "A -->o B : m",
+                LineStyle::Dashed,
+                MessageArrow::Circle,
+                MessageArrow::None,
+            ),
+            (
+                "A <-> B : m",
+                LineStyle::Solid,
+                MessageArrow::Filled,
+                MessageArrow::Filled,
+            ),
+            (
+                "A <--> B : m",
+                LineStyle::Dashed,
+                MessageArrow::Filled,
+                MessageArrow::Filled,
+            ),
+        ];
+        for &(line, style, head, tail) in cases {
+            let src = format!("@startuml\n{line}\n@enduml\n");
+            let s = parse_ok(&src);
+            let SequenceItem::Message(ref m) = s.items[0] else {
+                panic!()
+            };
+            assert_eq!(m.line, style, "{line}");
+            assert_eq!(m.head, head, "{line}");
+            assert_eq!(m.tail, tail, "{line}");
+        }
+    }
+
+    #[test]
+    fn found_marker_requires_word_boundary() {
+        // `A ->oscar : m` is `->` + participant `oscar`, not a found message.
+        let src = "@startuml\nA ->oscar : m\n@enduml\n";
+        let s = parse_ok(src);
+        let SequenceItem::Message(ref m) = s.items[0] else {
+            panic!()
+        };
+        assert_eq!(m.to.as_str(), "oscar");
+        assert_eq!(m.head, MessageArrow::Filled);
     }
 
     #[test]

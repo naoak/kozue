@@ -68,7 +68,9 @@
 //! Any future [`SemanticLayout`] variants return [`RenderError::UnsupportedDiagram`]
 //! rather than silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind};
+use kozue_ir::{
+    ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind,
+};
 use kozue_layout::semantic::{
     ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
@@ -1207,12 +1209,8 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
 
         let arrow_id = format!("e{i}");
         let (ax, ay, points, w, h) = route_geometry(&m.route);
-        // Filled triangle head, matching the SVG/PNG backends.
-        let end_arrowhead = if m.arrow == ArrowType::None {
-            None
-        } else {
-            Some("triangle")
-        };
+        let end_arrowhead = message_arrowhead(m.head);
+        let start_arrowhead = message_arrowhead(m.tail);
         let stroke_style = if m.line == LineStyle::Dashed {
             "dashed"
         } else {
@@ -1227,7 +1225,7 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
             points,
             None,
             None,
-            None,
+            start_arrowhead,
             end_arrowhead,
             stroke_style,
             1.0,
@@ -1265,6 +1263,26 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
     }
 
     Ok(elements)
+}
+
+/// Map a [`MessageArrow`] end marker to an Excalidraw arrowhead name.
+///
+/// `Filled` -> `"triangle"` (matching the SVG/PNG filled head), `Open` ->
+/// `"arrow"` (Excalidraw's open V head), `Circle` -> `"dot"`, and `Cross` ->
+/// `"bar"` — a lossy approximation: Excalidraw's arrowhead set has no X
+/// marker, so the perpendicular bar is the closest available shape.
+fn message_arrowhead(arrow: MessageArrow) -> Option<&'static str> {
+    match arrow {
+        MessageArrow::None => None,
+        MessageArrow::Filled => Some("triangle"),
+        MessageArrow::Open => Some("arrow"),
+        MessageArrow::Cross => Some("bar"),
+        MessageArrow::Circle => Some("dot"),
+        // Future variants are rejected by `validate_export_semantics` on the
+        // strict export path; the legacy `render` path draws no arrowhead
+        // rather than panicking.
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

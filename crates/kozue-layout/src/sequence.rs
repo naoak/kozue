@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ElementId, ParticipantKind, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem,
-    StrokeStyle, StrokeWeight, Text, TextAlign,
+    ElementId, MessageArrow, ParticipantKind, Path, Rect, Scene, SceneItem, SequenceDiagram,
+    SequenceItem, StrokeStyle, StrokeWeight, Text, TextAlign,
 };
 
 use crate::bounds;
@@ -46,6 +46,96 @@ fn stereotype_label(kind: &ParticipantKind) -> Option<&'static str> {
     }
 }
 
+/// Shaft retraction (px) at a message end carrying the given marker: the
+/// filled triangle covers the line end, so the shaft stops at its base; every
+/// other marker is stroked on top of (or around) a full-length shaft.
+fn shaft_retraction(arrow: MessageArrow) -> f64 {
+    match arrow {
+        MessageArrow::Filled => ARROW_LEN,
+        _ => 0.0,
+    }
+}
+
+/// Push the Scene items for a message end marker at `tip`. `dx` is the
+/// horizontal unit direction pointing from the shaft toward the tip (message
+/// glyphs are always horizontal: straight messages and the self-loop return
+/// segment both run along x).
+///
+/// `Circle` is approximated with a small filled octagon because the Scene IR
+/// has no circle/ellipse primitive yet — M4 adds a real ellipse primitive and
+/// this approximation will be replaced then.
+fn push_arrow_glyph(items: &mut Vec<SceneItem>, tip: (f64, f64), dx: f64, arrow: MessageArrow) {
+    let (tx, ty) = tip;
+    let bx = tx - dx * ARROW_LEN;
+    match arrow {
+        MessageArrow::None => {}
+        MessageArrow::Filled => {
+            items.push(SceneItem::Path(Path {
+                points: vec![(tx, ty), (bx, ty - ARROW_HALF_W), (bx, ty + ARROW_HALF_W)],
+                filled: true,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
+            }));
+        }
+        MessageArrow::Open => {
+            // Open V-stroke: two legs meeting at the tip, not filled.
+            items.push(SceneItem::Path(Path {
+                points: vec![(bx, ty - ARROW_HALF_W), (tx, ty), (bx, ty + ARROW_HALF_W)],
+                filled: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
+            }));
+        }
+        MessageArrow::Cross => {
+            // X-stroke centered a half arrow-length before the tip.
+            let cx = tx - dx * (ARROW_LEN / 2.0);
+            items.push(SceneItem::Path(Path {
+                points: vec![
+                    (cx - ARROW_HALF_W, ty - ARROW_HALF_W),
+                    (cx + ARROW_HALF_W, ty + ARROW_HALF_W),
+                ],
+                filled: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
+            }));
+            items.push(SceneItem::Path(Path {
+                points: vec![
+                    (cx - ARROW_HALF_W, ty + ARROW_HALF_W),
+                    (cx + ARROW_HALF_W, ty - ARROW_HALF_W),
+                ],
+                filled: false,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
+            }));
+        }
+        MessageArrow::Circle => {
+            // Temporary approximation: filled octagon centered on the tip
+            // (no circle primitive in the Scene IR until M4).
+            let r = ARROW_HALF_W;
+            let c = r * std::f64::consts::FRAC_1_SQRT_2;
+            items.push(SceneItem::Path(Path {
+                points: vec![
+                    (tx + r, ty),
+                    (tx + c, ty + c),
+                    (tx, ty + r),
+                    (tx - c, ty + c),
+                    (tx - r, ty),
+                    (tx - c, ty - c),
+                    (tx, ty - r),
+                    (tx + c, ty - c),
+                ],
+                filled: true,
+                stroke: StrokeStyle::Solid,
+                weight: StrokeWeight::Normal,
+            }));
+        }
+        // `MessageArrow` is `#[non_exhaustive]`: future variants are rejected
+        // by `validate_message_arrow` before drawing, so this arm is
+        // unreachable in practice; draw nothing rather than panic.
+        _ => {}
+    }
+}
+
 pub(crate) fn layout_sequence_full(
     seq: &SequenceDiagram,
 ) -> Result<crate::LayoutOutput, crate::LayoutError> {
@@ -66,7 +156,8 @@ pub(crate) fn layout_sequence_full(
             });
         }
         crate::validate_line(message.line)?;
-        crate::validate_arrow(message.arrow)?;
+        crate::validate_message_arrow(message.head)?;
+        crate::validate_message_arrow(message.tail)?;
     }
     // Collect participant IDs in insertion order.
     let ids: Vec<&ElementId> = seq.participants.keys().collect();
@@ -312,24 +403,24 @@ pub(crate) fn layout_sequence_full(
             let y0 = y;
             let y1 = y + SELF_MSG_HEIGHT;
 
+            // Retract the shaft where a filled head/tail covers the line end.
+            // For the default (head=Filled, tail=None) this reproduces the
+            // pre-V10 geometry byte-for-byte.
+            let head_r = shaft_retraction(msg.head);
+            let tail_r = shaft_retraction(msg.tail);
+
             let stroke = crate::line_style_to_stroke(msg.line);
             items.push(SceneItem::Path(Path {
-                points: vec![(x0, y0), (x1, y0), (x1, y1), (x0 + ARROW_LEN, y1)],
+                points: vec![(x0 + tail_r, y0), (x1, y0), (x1, y1), (x0 + head_r, y1)],
                 filled: false,
                 stroke,
                 weight: StrokeWeight::Normal,
             }));
 
-            // Arrowhead pointing left at (x0, y1).
-            let tip = (x0, y1);
-            let left = (x0 + ARROW_LEN, y1 - ARROW_HALF_W);
-            let right = (x0 + ARROW_LEN, y1 + ARROW_HALF_W);
-            items.push(SceneItem::Path(Path {
-                points: vec![tip, left, right],
-                filled: true,
-                stroke: StrokeStyle::Solid,
-                weight: StrokeWeight::Normal,
-            }));
+            // Head glyph pointing left at (x0, y1); tail glyph pointing left
+            // at the loop start (x0, y0).
+            push_arrow_glyph(&mut items, (x0, y1), -1.0, msg.head);
+            push_arrow_glyph(&mut items, (x0, y0), -1.0, msg.tail);
 
             // Label to the right of the fold.
             let label_anchor = if let Some(label) = &msg.label {
@@ -365,7 +456,8 @@ pub(crate) fn layout_sequence_full(
                 to: msg.to.clone(),
                 route,
                 line: msg.line,
-                arrow: msg.arrow,
+                head: msg.head,
+                tail: msg.tail,
                 label: msg.label.clone(),
                 label_anchor,
             });
@@ -376,26 +468,26 @@ pub(crate) fn layout_sequence_full(
             let going_right = x_to > x_from;
             let ux = if going_right { 1.0 } else { -1.0 };
 
+            // Retract the shaft where a filled head/tail covers the line end.
+            // For the default (head=Filled, tail=None) this reproduces the
+            // pre-V10 geometry byte-for-byte.
+            let head_r = shaft_retraction(msg.head);
+            let tail_r = shaft_retraction(msg.tail);
+
             let stroke = crate::line_style_to_stroke(msg.line);
-            let line_end_x = x_to - ux * ARROW_LEN;
+            let line_start_x = x_from + ux * tail_r;
+            let line_end_x = x_to - ux * head_r;
 
             items.push(SceneItem::Path(Path {
-                points: vec![(x_from, y), (line_end_x, y)],
+                points: vec![(line_start_x, y), (line_end_x, y)],
                 filled: false,
                 stroke,
                 weight: StrokeWeight::Normal,
             }));
 
-            // Arrowhead.
-            let tip = (x_to, y);
-            let base_left = (x_to - ux * ARROW_LEN, y - ARROW_HALF_W);
-            let base_right = (x_to - ux * ARROW_LEN, y + ARROW_HALF_W);
-            items.push(SceneItem::Path(Path {
-                points: vec![tip, base_left, base_right],
-                filled: true,
-                stroke: StrokeStyle::Solid,
-                weight: StrokeWeight::Normal,
-            }));
+            // Head glyph at the target end, tail glyph at the source end.
+            push_arrow_glyph(&mut items, (x_to, y), ux, msg.head);
+            push_arrow_glyph(&mut items, (x_from, y), -ux, msg.tail);
 
             // Label above center of line.
             let label_anchor = if let Some(label) = &msg.label {
@@ -426,7 +518,8 @@ pub(crate) fn layout_sequence_full(
                 to: msg.to.clone(),
                 route,
                 line: msg.line,
-                arrow: msg.arrow,
+                head: msg.head,
+                tail: msg.tail,
                 label: msg.label.clone(),
                 label_anchor,
             });

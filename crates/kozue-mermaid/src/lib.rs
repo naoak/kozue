@@ -30,8 +30,10 @@
 //! - Node shapes: bare nodes use the legacy unspecified shape; `[label]`,
 //!   `(label)`, `((label))`, and `{label}` map to rectangle, rounded rectangle,
 //!   circle, and diamond respectively.
-//! - Sequence open arrows `->` and `-->` map to `ArrowType::Triangle` with the
-//!   same solid/dashed line style as `-->>` / `->>`.
+//! - Sequence arrows: `->>`/`-->>` map to a filled head, `-)`/`--)` to an
+//!   open (async) head, `-x`/`--x` to a cross head, `<<->>`/`<<-->>` to
+//!   filled head + filled tail, and `->`/`-->` to no arrowhead (matching
+//!   real Mermaid, which draws `->` as a plain line).
 //! - Flowchart directions TD/TB, LR, BT, and RL map to Down, Right, Up, and
 //!   Left respectively.
 //! - Unsupported features (Note, loop, alt, subgraph, classDef, style, etc.)
@@ -47,8 +49,8 @@ use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction, Edge,
     EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, Node, NodeKind, Participant, ParticipantKind, SequenceDiagram,
-    SequenceItem, State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Participant, ParticipantKind,
+    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -529,7 +531,8 @@ fn parse_sequence(
         to: String,
         label: Option<String>,
         line_style: LineStyle,
-        arrow: ArrowType,
+        head: MessageArrow,
+        tail: MessageArrow,
         #[allow(dead_code)]
         span: Range<usize>,
     }
@@ -634,7 +637,7 @@ fn parse_sequence(
         // Message arrow lines: from->>to: label  /  from-->>to: label  etc.
         if let Some(msg) = try_parse_seq_message(trimmed, offset) {
             match msg {
-                Ok((from, to, label, line_style, arrow)) => {
+                Ok((from, to, label, line_style, head, tail)) => {
                     // Auto-declare participants.
                     ensure_participant(&mut seq, &from, None, ParticipantKind::Default);
                     ensure_participant(&mut seq, &to, None, ParticipantKind::Default);
@@ -643,7 +646,8 @@ fn parse_sequence(
                         to,
                         label,
                         line_style,
-                        arrow,
+                        head,
+                        tail,
                         span,
                     });
                 }
@@ -665,12 +669,13 @@ fn parse_sequence(
     }
 
     for rm in messages {
-        seq.items.push(SequenceItem::Message(Message::new(
+        seq.items.push(SequenceItem::Message(Message::with_arrows(
             rm.from,
             rm.to,
             rm.label,
             rm.line_style,
-            rm.arrow,
+            rm.head,
+            rm.tail,
         )));
     }
 
@@ -993,8 +998,15 @@ struct FlowchartEdge {
     weight: LineWeight,
 }
 
-/// (from, to, label, line_style, arrow)
-type SeqMsgResult = (String, String, Option<String>, LineStyle, ArrowType);
+/// (from, to, label, line_style, head, tail)
+type SeqMsgResult = (
+    String,
+    String,
+    Option<String>,
+    LineStyle,
+    MessageArrow,
+    MessageArrow,
+);
 
 /// Result of parsing one edge operator+target segment (e.g. the `--> B` part
 /// of `A --> B`).
@@ -1551,25 +1563,90 @@ fn extract_pipe_label(s: &str) -> Option<(String, &str)> {
 /// Try to parse a sequence diagram message line.
 ///
 /// Supported arrow forms and their mapping:
-/// | Mermaid  | LineStyle | ArrowType |
-/// |----------|-----------|-----------|
-/// | `->>` | Solid | Triangle |
-/// | `-->>` | Dashed | Triangle |
-/// | `->` | Solid | Triangle (compat note: open-arrow mapped to Triangle) |
-/// | `-->` | Dashed | Triangle (compat note: open-arrow mapped to Triangle) |
+/// | Mermaid  | LineStyle | head / tail |
+/// |----------|-----------|-------------|
+/// | `->>` | Solid | Filled |
+/// | `-->>` | Dashed | Filled |
+/// | `-)` | Solid | Open (async) |
+/// | `--)` | Dashed | Open (async) |
+/// | `-x` | Solid | Cross |
+/// | `--x` | Dashed | Cross |
+/// | `->` | Solid | None (Mermaid draws no arrowhead for `->`) |
+/// | `-->` | Dashed | None |
+/// | `<<->>` | Solid | head Filled + tail Filled (bidirectional) |
+/// | `<<-->>` | Dashed | head Filled + tail Filled (bidirectional) |
 ///
 /// Format: `from ARROW to: label` or `from ARROW to`
 fn try_parse_seq_message(line: &str, _offset: usize) -> Option<Result<SeqMsgResult, String>> {
     // Try each arrow form, longest first to avoid prefix ambiguity.
-    // Order matters: `-->>` before `-->`, `->>` before `->`.
-    let arrow_forms: &[(&str, LineStyle, ArrowType)] = &[
-        ("-->>", LineStyle::Dashed, ArrowType::Triangle),
-        ("-->", LineStyle::Dashed, ArrowType::Triangle),
-        ("->>", LineStyle::Solid, ArrowType::Triangle),
-        ("->", LineStyle::Solid, ArrowType::Triangle),
+    // Order matters: `<<-->>`/`<<->>` before the plain forms, `-->>` before
+    // `-->`, `->>` before `->`, and the two-char `-)`/`-x` forms after their
+    // dashed three-char variants.
+    #[allow(clippy::type_complexity)]
+    let arrow_forms: &[(&str, LineStyle, MessageArrow, MessageArrow)] = &[
+        (
+            "<<-->>",
+            LineStyle::Dashed,
+            MessageArrow::Filled,
+            MessageArrow::Filled,
+        ),
+        (
+            "<<->>",
+            LineStyle::Solid,
+            MessageArrow::Filled,
+            MessageArrow::Filled,
+        ),
+        (
+            "-->>",
+            LineStyle::Dashed,
+            MessageArrow::Filled,
+            MessageArrow::None,
+        ),
+        (
+            "--)",
+            LineStyle::Dashed,
+            MessageArrow::Open,
+            MessageArrow::None,
+        ),
+        (
+            "--x",
+            LineStyle::Dashed,
+            MessageArrow::Cross,
+            MessageArrow::None,
+        ),
+        (
+            "-->",
+            LineStyle::Dashed,
+            MessageArrow::None,
+            MessageArrow::None,
+        ),
+        (
+            "->>",
+            LineStyle::Solid,
+            MessageArrow::Filled,
+            MessageArrow::None,
+        ),
+        (
+            "-)",
+            LineStyle::Solid,
+            MessageArrow::Open,
+            MessageArrow::None,
+        ),
+        (
+            "-x",
+            LineStyle::Solid,
+            MessageArrow::Cross,
+            MessageArrow::None,
+        ),
+        (
+            "->",
+            LineStyle::Solid,
+            MessageArrow::None,
+            MessageArrow::None,
+        ),
     ];
 
-    for &(arrow_str, line_style, arrow) in arrow_forms {
+    for &(arrow_str, line_style, head, tail) in arrow_forms {
         if let Some(idx) = line.find(arrow_str) {
             // Verify from-part is a valid identifier.
             let from_part = line[..idx].trim();
@@ -1599,7 +1676,7 @@ fn try_parse_seq_message(line: &str, _offset: usize) -> Option<Result<SeqMsgResu
                 (to, None)
             };
 
-            return Some(Ok((from, to, label, line_style, arrow)));
+            return Some(Ok((from, to, label, line_style, head, tail)));
         }
     }
     None
@@ -2825,8 +2902,8 @@ mod tests {
     }
 
     #[test]
-    fn sequence_open_arrow_maps_to_triangle() {
-        // `->` maps to Solid + Triangle (compat: open arrow not rendered as open).
+    fn sequence_plain_arrow_maps_to_no_head() {
+        // Real Mermaid draws `->` as a plain line with no arrowhead.
         let src = "sequenceDiagram\n  A->B: msg\n";
         let d = parse(src).expect("should parse");
         let Diagram::Sequence(s) = d else { panic!() };
@@ -2834,11 +2911,12 @@ mod tests {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Solid);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::None);
+        assert_eq!(m.tail, MessageArrow::None);
     }
 
     #[test]
-    fn sequence_dashed_open_arrow_maps_to_dashed_triangle() {
+    fn sequence_dashed_plain_arrow_maps_to_no_head() {
         let src = "sequenceDiagram\n  A-->B: msg\n";
         let d = parse(src).expect("should parse");
         let Diagram::Sequence(s) = d else { panic!() };
@@ -2846,7 +2924,61 @@ mod tests {
             panic!()
         };
         assert_eq!(m.line, LineStyle::Dashed);
-        assert_eq!(m.arrow, ArrowType::Triangle);
+        assert_eq!(m.head, MessageArrow::None);
+        assert_eq!(m.tail, MessageArrow::None);
+    }
+
+    #[test]
+    fn sequence_async_cross_and_bidirectional_arrows_map_to_heads() {
+        let cases: &[(&str, LineStyle, MessageArrow, MessageArrow)] = &[
+            (
+                "A-)B: m",
+                LineStyle::Solid,
+                MessageArrow::Open,
+                MessageArrow::None,
+            ),
+            (
+                "A--)B: m",
+                LineStyle::Dashed,
+                MessageArrow::Open,
+                MessageArrow::None,
+            ),
+            (
+                "A-xB: m",
+                LineStyle::Solid,
+                MessageArrow::Cross,
+                MessageArrow::None,
+            ),
+            (
+                "A--xB: m",
+                LineStyle::Dashed,
+                MessageArrow::Cross,
+                MessageArrow::None,
+            ),
+            (
+                "A<<->>B: m",
+                LineStyle::Solid,
+                MessageArrow::Filled,
+                MessageArrow::Filled,
+            ),
+            (
+                "A<<-->>B: m",
+                LineStyle::Dashed,
+                MessageArrow::Filled,
+                MessageArrow::Filled,
+            ),
+        ];
+        for &(line, style, head, tail) in cases {
+            let src = format!("sequenceDiagram\n  {line}\n");
+            let d = parse(&src).expect("should parse");
+            let Diagram::Sequence(s) = d else { panic!() };
+            let SequenceItem::Message(ref m) = s.items[0] else {
+                panic!()
+            };
+            assert_eq!(m.line, style, "{line}");
+            assert_eq!(m.head, head, "{line}");
+            assert_eq!(m.tail, tail, "{line}");
+        }
     }
 
     #[test]

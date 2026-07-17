@@ -29,12 +29,13 @@ pub enum IrSchemaVersion {
     V6,
     V7,
     V8,
-    #[default]
     V9,
+    #[default]
+    V10,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V9;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V10;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -59,6 +60,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V7 => serializer.serialize_u8(7),
             IrSchemaVersion::V8 => serializer.serialize_u8(8),
             IrSchemaVersion::V9 => serializer.serialize_u8(9),
+            IrSchemaVersion::V10 => serializer.serialize_u8(10),
         }
     }
 }
@@ -79,6 +81,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             7 => Ok(IrSchemaVersion::V7),
             8 => Ok(IrSchemaVersion::V8),
             9 => Ok(IrSchemaVersion::V9),
+            10 => Ok(IrSchemaVersion::V10),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -268,6 +271,7 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
+                    | IrSchemaVersion::V10
             )
         }
     }
@@ -285,6 +289,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
+                    | IrSchemaVersion::V10
             )
         }
         NodeKind::Circle | NodeKind::Diamond => {
@@ -295,6 +300,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
+                    | IrSchemaVersion::V10
             )
         }
     }
@@ -309,8 +315,20 @@ fn participant_kind_supported_in(version: IrSchemaVersion, kind: &ParticipantKin
         | ParticipantKind::Entity
         | ParticipantKind::Database
         | ParticipantKind::Collections
-        | ParticipantKind::Queue => version == IrSchemaVersion::V9,
+        | ParticipantKind::Queue => {
+            matches!(version, IrSchemaVersion::V9 | IrSchemaVersion::V10)
+        }
     }
+}
+
+/// Whether a message's head/tail arrow combination is expressible in the given
+/// schema version. Pre-V10 schemas only know the legacy `arrow` field, which
+/// expresses `head ∈ {Filled, None}` with no tail marker; every other
+/// combination requires V10.
+fn message_arrows_supported_in(version: IrSchemaVersion, message: &Message) -> bool {
+    (matches!(message.head, MessageArrow::Filled | MessageArrow::None)
+        && message.tail == MessageArrow::None)
+        || version == IrSchemaVersion::V10
 }
 
 fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
@@ -318,7 +336,11 @@ fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
         LineStyle::Solid | LineStyle::Dashed => true,
         LineStyle::Dotted => matches!(
             version,
-            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
+            IrSchemaVersion::V6
+                | IrSchemaVersion::V7
+                | IrSchemaVersion::V8
+                | IrSchemaVersion::V9
+                | IrSchemaVersion::V10
         ),
     }
 }
@@ -330,21 +352,28 @@ fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
     (default_presentation
         || matches!(
             version,
-            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
+            IrSchemaVersion::V6
+                | IrSchemaVersion::V7
+                | IrSchemaVersion::V8
+                | IrSchemaVersion::V9
+                | IrSchemaVersion::V10
         ))
         && line_style_supported_in(version, edge.line)
 }
 
 fn edge_ports_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
     (edge.from_port.is_none() && edge.to_port.is_none())
-        || matches!(version, IrSchemaVersion::V8 | IrSchemaVersion::V9)
+        || matches!(
+            version,
+            IrSchemaVersion::V8 | IrSchemaVersion::V9 | IrSchemaVersion::V10
+        )
 }
 
 fn containers_supported_in(version: IrSchemaVersion, containers: &[Container]) -> bool {
     containers.is_empty()
         || matches!(
             version,
-            IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
+            IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9 | IrSchemaVersion::V10
         )
 }
 
@@ -379,7 +408,10 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
             .all(|relation| line_style_supported_in(version, relation.line)),
         Diagram::Sequence(sequence) => {
             sequence.items.iter().all(|item| match item {
-                SequenceItem::Message(message) => line_style_supported_in(version, message.line),
+                SequenceItem::Message(message) => {
+                    line_style_supported_in(version, message.line)
+                        && message_arrows_supported_in(version, message)
+                }
             }) && sequence
                 .participants
                 .values()
@@ -510,7 +542,21 @@ impl<'de> Deserialize<'de> for IrDocument {
             IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V9 => {
                 if !diagram_supported_in(IrSchemaVersion::V9, &wire.diagram) {
                     return Err(de::Error::custom(
-                        "IR schema version 9 does not support this diagram direction, node kind, edge presentation, container, edge port, or participant kind",
+                        "IR schema version 9 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, or message arrow",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V10 => {
+                if !diagram_supported_in(IrSchemaVersion::V10, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 10 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, or message arrow",
                     ));
                 }
                 Ok(Self {
@@ -522,7 +568,7 @@ impl<'de> Deserialize<'de> for IrDocument {
                 })
             }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, 5, 6, 7, 8, and 9 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, 6, 7, 8, 9, and 10 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -768,17 +814,94 @@ pub enum LineWeight {
     Thick,
 }
 
+/// The marker drawn at one end of a sequence message.
+///
+/// Distinct from the shared [`ArrowType`] (graph edges) on purpose: sequence
+/// notation has a richer end-marker vocabulary (async open arrows, lost `x`,
+/// found `o`) that graph/class/ER edges do not share.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageArrow {
+    /// No marker — plain line end.
+    None,
+    /// Filled triangle (synchronous message). The default head.
+    Filled,
+    /// Open (thin V) arrowhead — asynchronous message.
+    Open,
+    /// Cross (`x`) marker — lost message.
+    Cross,
+    /// Circle (`o`) marker — found message.
+    Circle,
+}
+
 /// A message (arrow) between two participants in a sequence diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "MessageWire")]
 pub struct Message {
     pub from: ElementId,
     pub to: ElementId,
     pub label: Option<String>,
     pub line: LineStyle,
-    pub arrow: ArrowType,
+    /// Marker at the target (`to`) end.
+    pub head: MessageArrow,
+    /// Marker at the source (`from`) end.
+    pub tail: MessageArrow,
+}
+
+/// Wire helper for [`Message`]: accepts both the current `head`/`tail` fields
+/// and the pre-V10 legacy `arrow` field (`Triangle` -> `head: Filled`,
+/// `None` -> `head: None`; the legacy wire has no tail marker).
+#[derive(Deserialize)]
+struct MessageWire {
+    from: ElementId,
+    to: ElementId,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    label: Option<String>,
+    line: LineStyle,
+    #[serde(default)]
+    arrow: Option<ArrowType>,
+    #[serde(default)]
+    head: Option<MessageArrow>,
+    #[serde(default)]
+    tail: Option<MessageArrow>,
+}
+
+impl TryFrom<MessageWire> for Message {
+    type Error = String;
+
+    fn try_from(wire: MessageWire) -> Result<Self, Self::Error> {
+        let (head, tail) = match (wire.head, wire.tail, wire.arrow) {
+            // Current wire form: `head` (+ optional `tail`), no legacy `arrow`.
+            (Some(head), tail, None) => (head, tail.unwrap_or(MessageArrow::None)),
+            // Legacy (pre-V10) wire form: `arrow` only.
+            (None, None, Some(ArrowType::Triangle)) => (MessageArrow::Filled, MessageArrow::None),
+            (None, None, Some(ArrowType::None)) => (MessageArrow::None, MessageArrow::None),
+            (None, None, None) => {
+                return Err(
+                    "message requires a `head` field (or the legacy `arrow` field)".to_string(),
+                )
+            }
+            _ => {
+                return Err(
+                    "message must not mix the legacy `arrow` field with `head`/`tail`".to_string(),
+                )
+            }
+        };
+        Ok(Message {
+            from: wire.from,
+            to: wire.to,
+            label: wire.label,
+            line: wire.line,
+            head,
+            tail,
+        })
+    }
 }
 
 impl Message {
+    /// Legacy constructor kept for pre-V10 call sites: maps the shared
+    /// [`ArrowType`] onto the target-end head marker
+    /// (`Triangle` -> `Filled`, `None` -> `None`) with no tail marker.
     pub fn new(
         from: impl Into<ElementId>,
         to: impl Into<ElementId>,
@@ -786,12 +909,35 @@ impl Message {
         line: LineStyle,
         arrow: ArrowType,
     ) -> Self {
+        let head = match arrow {
+            ArrowType::Triangle => MessageArrow::Filled,
+            ArrowType::None => MessageArrow::None,
+        };
         Message {
             from: from.into(),
             to: to.into(),
             label,
             line,
-            arrow,
+            head,
+            tail: MessageArrow::None,
+        }
+    }
+
+    pub fn with_arrows(
+        from: impl Into<ElementId>,
+        to: impl Into<ElementId>,
+        label: Option<String>,
+        line: LineStyle,
+        head: MessageArrow,
+        tail: MessageArrow,
+    ) -> Self {
+        Message {
+            from: from.into(),
+            to: to.into(),
+            label,
+            line,
+            head,
+            tail,
         }
     }
 }
@@ -1333,7 +1479,9 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V7: &str = r#"{"schema_version":7,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V8: &str = r#"{"schema_version":8,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_SEQUENCE_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -1387,10 +1535,18 @@ mod tests {
             serde_json::from_value::<IrSchemaVersion>(json!(9)).unwrap(),
             IrSchemaVersion::V9
         );
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(10)).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(IrSchemaVersion::V10).unwrap(),
+            json!(10)
+        );
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(10)).unwrap(),
+            IrSchemaVersion::V10
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(11)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 10"));
+            .contains("unsupported IR schema version 11"));
     }
 
     #[test]
@@ -1413,7 +1569,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V9);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V10);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1421,7 +1577,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v8_documents_are_upgraded_to_v9() {
+    fn v1_through_v9_documents_are_upgraded_to_v10() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
@@ -1431,13 +1587,14 @@ mod tests {
             EMPTY_GRAPH_DOCUMENT_V6,
             EMPTY_GRAPH_DOCUMENT_V7,
             EMPTY_GRAPH_DOCUMENT_V8,
+            EMPTY_GRAPH_DOCUMENT_V9,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V9);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V10);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V9
+                EMPTY_GRAPH_DOCUMENT_V10
             );
         }
 
@@ -1736,7 +1893,11 @@ mod tests {
             );
         }
 
-        for fixture in [EMPTY_GRAPH_DOCUMENT_V8, EMPTY_GRAPH_DOCUMENT_V9] {
+        for fixture in [
+            EMPTY_GRAPH_DOCUMENT_V8,
+            EMPTY_GRAPH_DOCUMENT_V9,
+            EMPTY_GRAPH_DOCUMENT_V10,
+        ] {
             let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
             value["diagram"] = serde_json::to_value(&diagram).unwrap();
             assert_eq!(
@@ -1874,9 +2035,9 @@ mod tests {
 
     #[test]
     fn document_rejects_unknown_versions_and_missing_required_fields() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V9).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V10).unwrap();
 
-        for version in [0, 1, 10] {
+        for version in [0, 1, 11] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -2068,7 +2229,7 @@ mod tests {
             ),
             (
                 Diagram::Sequence(sequence),
-                r#"{"Sequence":{"participants":{"a":{"id":"a","label":"Alice","kind":"Default"}},"items":[{"Message":{"from":"a","to":"a","label":"call","line":"Solid","arrow":"Triangle"}}]}}"#,
+                r#"{"Sequence":{"participants":{"a":{"id":"a","label":"Alice","kind":"Default"}},"items":[{"Message":{"from":"a","to":"a","label":"call","line":"Solid","head":"Filled","tail":"None"}}]}}"#,
             ),
             (
                 Diagram::State(state),
@@ -2142,17 +2303,18 @@ mod tests {
                 );
             }
 
-            // V9 must accept it.
-            let mut value: serde_json::Value =
-                serde_json::from_str(EMPTY_SEQUENCE_DOCUMENT_V9).unwrap();
-            value["diagram"] = serde_json::to_value(&diagram).unwrap();
-            assert_eq!(
-                serde_json::from_value::<IrDocument>(value)
-                    .unwrap()
-                    .into_diagram(),
-                diagram,
-                "V9 rejected non-Default participant kind {kind:?}"
-            );
+            // V9 and V10 must accept it.
+            for fixture in [EMPTY_SEQUENCE_DOCUMENT_V9, EMPTY_SEQUENCE_DOCUMENT_V10] {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<IrDocument>(value)
+                        .unwrap()
+                        .into_diagram(),
+                    diagram,
+                    "V9/V10 rejected non-Default participant kind {kind:?}"
+                );
+            }
         }
 
         // Default kind is accepted by all versions (using V2+ base fixtures since
@@ -2179,6 +2341,140 @@ mod tests {
                 "legacy schema rejected Default participant kind"
             );
         }
+    }
+
+    #[test]
+    fn message_arrows_require_schema_v10() {
+        let all = [
+            MessageArrow::None,
+            MessageArrow::Filled,
+            MessageArrow::Open,
+            MessageArrow::Cross,
+            MessageArrow::Circle,
+        ];
+        let legacy_fixtures = [
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+            EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
+            EMPTY_GRAPH_DOCUMENT_V8,
+            EMPTY_SEQUENCE_DOCUMENT_V9,
+        ];
+
+        for head in all {
+            for tail in all {
+                let mut seq = SequenceDiagram::new();
+                seq.participants
+                    .insert("a".into(), Participant::new("a", "A"));
+                seq.items.push(SequenceItem::Message(Message::with_arrows(
+                    "a",
+                    "a",
+                    None,
+                    LineStyle::Solid,
+                    head,
+                    tail,
+                )));
+                let diagram = Diagram::Sequence(seq);
+
+                // Legacy-expressible combinations: head Filled/None with no
+                // tail marker. Everything else requires V10.
+                let legacy_ok = matches!(head, MessageArrow::Filled | MessageArrow::None)
+                    && tail == MessageArrow::None;
+
+                for fixture in legacy_fixtures {
+                    let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                    value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                    assert_eq!(
+                        serde_json::from_value::<IrDocument>(value).is_ok(),
+                        legacy_ok,
+                        "legacy schema gate wrong for head {head:?} tail {tail:?}"
+                    );
+                }
+
+                // V10 accepts every combination.
+                let mut value: serde_json::Value =
+                    serde_json::from_str(EMPTY_SEQUENCE_DOCUMENT_V10).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert_eq!(
+                    serde_json::from_value::<IrDocument>(value)
+                        .unwrap()
+                        .into_diagram(),
+                    diagram,
+                    "V10 rejected head {head:?} tail {tail:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_message_arrow_field_migrates_to_head() {
+        // Pre-V10 wire: `arrow: Triangle` -> filled head, no tail.
+        let triangle = r#"{"from":"a","to":"b","label":null,"line":"Solid","arrow":"Triangle"}"#;
+        let message = serde_json::from_str::<Message>(triangle).unwrap();
+        assert_eq!(message.head, MessageArrow::Filled);
+        assert_eq!(message.tail, MessageArrow::None);
+
+        // Pre-V10 wire: `arrow: None` -> no head, no tail.
+        let none = r#"{"from":"a","to":"b","label":null,"line":"Solid","arrow":"None"}"#;
+        let message = serde_json::from_str::<Message>(none).unwrap();
+        assert_eq!(message.head, MessageArrow::None);
+        assert_eq!(message.tail, MessageArrow::None);
+
+        // Missing both `head` and legacy `arrow` is rejected.
+        let missing = r#"{"from":"a","to":"b","label":null,"line":"Solid"}"#;
+        assert!(serde_json::from_str::<Message>(missing).is_err());
+
+        // Mixing the legacy `arrow` field with `head`/`tail` is rejected.
+        let mixed =
+            r#"{"from":"a","to":"b","label":null,"line":"Solid","arrow":"Triangle","head":"Open"}"#;
+        assert!(serde_json::from_str::<Message>(mixed).is_err());
+
+        // `tail` alone (without `head`) is rejected.
+        let tail_only = r#"{"from":"a","to":"b","label":null,"line":"Solid","tail":"Open"}"#;
+        assert!(serde_json::from_str::<Message>(tail_only).is_err());
+    }
+
+    #[test]
+    fn message_head_tail_wire_round_trips() {
+        let all = [
+            MessageArrow::None,
+            MessageArrow::Filled,
+            MessageArrow::Open,
+            MessageArrow::Cross,
+            MessageArrow::Circle,
+        ];
+        for head in all {
+            for tail in all {
+                let message = Message::with_arrows(
+                    "a",
+                    "b",
+                    Some("m".to_string()),
+                    LineStyle::Dashed,
+                    head,
+                    tail,
+                );
+                let json = serde_json::to_string(&message).unwrap();
+                assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), message);
+            }
+        }
+
+        // `head` without `tail` defaults the tail to None.
+        let head_only = r#"{"from":"a","to":"b","label":null,"line":"Solid","head":"Open"}"#;
+        let message = serde_json::from_str::<Message>(head_only).unwrap();
+        assert_eq!(message.head, MessageArrow::Open);
+        assert_eq!(message.tail, MessageArrow::None);
+    }
+
+    #[test]
+    fn legacy_message_constructor_maps_arrow_type() {
+        let triangle = Message::new("a", "b", None, LineStyle::Solid, ArrowType::Triangle);
+        assert_eq!(triangle.head, MessageArrow::Filled);
+        assert_eq!(triangle.tail, MessageArrow::None);
+        let none = Message::new("a", "b", None, LineStyle::Solid, ArrowType::None);
+        assert_eq!(none.head, MessageArrow::None);
+        assert_eq!(none.tail, MessageArrow::None);
     }
 
     #[test]

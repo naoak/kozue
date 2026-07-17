@@ -128,22 +128,22 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         name: "solid arrow ->",
         support: Support::Supported,
-        note: "LineStyle::Solid + ArrowType::Triangle",
+        note: "LineStyle::Solid + MessageArrow::Filled head",
     },
     Feature {
         name: "dashed arrow -->",
         support: Support::Supported,
-        note: "LineStyle::Dashed + ArrowType::Triangle",
+        note: "LineStyle::Dashed + MessageArrow::Filled head",
     },
     Feature {
-        name: "solid filled arrow ->>",
-        support: Support::Partial,
-        note: "open/thin arrowhead not rendered; maps to Triangle (same as ->)",
+        name: "thin/async arrow ->> / -->>",
+        support: Support::Supported,
+        note: "open V arrowhead (MessageArrow::Open head)",
     },
     Feature {
-        name: "dashed filled arrow -->>",
-        support: Support::Partial,
-        note: "open/thin arrowhead not rendered; maps to Triangle (same as -->)",
+        name: "bidirectional arrow <-> / <-->",
+        support: Support::Supported,
+        note: "filled head + filled tail",
     },
     Feature {
         name: "self-message A -> A : text",
@@ -162,8 +162,8 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "lost/found messages ->x / ->o",
-        support: Support::Unsupported,
-        note: "reports an unsupported error; do not misparse the arrow",
+        support: Support::Supported,
+        note: "cross (lost) / circle (found) head markers; circle drawn as a small filled polygon until an ellipse primitive exists",
     },
     Feature {
         name: "colored arrows -[#red]>",

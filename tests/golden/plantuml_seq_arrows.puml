@@ -1,0 +1,11 @@
+@startuml
+participant A
+participant B
+A -> B : sync
+A ->> B : async
+A ->x B : lost
+A ->o B : found
+A <-> B : both
+B -->> A : reply async
+A --> B : reply
+@enduml

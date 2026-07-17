@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 236.43 480.00" width="236.43" height="480.00">
+  <rect x="-20.00" y="-20.00" width="236.43" height="480.00" fill="#ffffff"/>
+  <rect x="0.00" y="0.00" width="50.95" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="25.47" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">A</text>
+  <polyline points="25.47,39.20 25.47,440.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="145.46" y="0.00" width="50.98" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="170.95" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">B</text>
+  <polyline points="170.95,39.20 170.95,440.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="25.47,80.00 160.95,80.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="170.95,80.00 160.95,75.00 160.95,85.00" fill="#000000" stroke="none"/>
+  <text x="98.21" y="76.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">sync</text>
+  <polyline points="25.47,128.00 170.95,128.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="160.95,123.00 170.95,128.00 160.95,133.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="98.21" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">async</text>
+  <polyline points="25.47,176.00 170.95,176.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="160.95,171.00 170.95,181.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="160.95,181.00 170.95,171.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="98.21" y="172.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">lost</text>
+  <polyline points="25.47,224.00 170.95,224.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="98.21" y="220.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">plain</text>
+  <polyline points="35.47,272.00 160.95,272.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="170.95,272.00 160.95,267.00 160.95,277.00" fill="#000000" stroke="none"/>
+  <polygon points="25.47,272.00 35.47,267.00 35.47,277.00" fill="#000000" stroke="none"/>
+  <text x="98.21" y="268.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">both</text>
+  <polyline points="170.95,320.00 25.47,320.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="35.47,315.00 25.47,320.00 35.47,325.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="98.21" y="316.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">reply async</text>
+  <polyline points="25.47,368.00 170.95,368.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="160.95,363.00 170.95,373.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="160.95,373.00 170.95,363.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="98.21" y="364.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">dashed lost</text>
+</svg>

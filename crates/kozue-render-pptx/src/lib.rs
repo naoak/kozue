@@ -75,7 +75,9 @@
 mod templates;
 mod zip;
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind};
+use kozue_ir::{
+    ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind,
+};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
     StateEndpointId, StateLayout,
@@ -890,14 +892,16 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
                 node_id: m.from.to_string(),
             });
         }
-        shapes.push_str(&connector_shape(
+        // `headEnd` decorates the route's first point (the message source, our
+        // `tail`), `tailEnd` its last point (the message target, our `head`).
+        shapes.push_str(&connector_shape_ends(
             ids.next(),
             &format!("Message {i}"),
             &m.route,
             m.line,
             LineWeight::Normal,
-            ArrowType::None,
-            m.arrow != ArrowType::None,
+            message_line_end(m.tail),
+            message_line_end(m.head),
         ));
         if let (Some(label), Some(anchor)) = (&m.label, &m.label_anchor) {
             shapes.push_str(&label_box_shape(
@@ -910,6 +914,26 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
     }
 
     Ok(slide_xml(&shapes))
+}
+
+/// Map a [`MessageArrow`] end marker to an OOXML `ST_LineEndType` value.
+///
+/// `Filled` -> `triangle`, `Open` -> `arrow` (the open V line end),
+/// `Circle` -> `oval`, and `Cross` -> `diamond` — a lossy approximation:
+/// `ST_LineEndType` has no X/cross shape, so the rotated square is the
+/// closest available marker.
+fn message_line_end(arrow: MessageArrow) -> &'static str {
+    match arrow {
+        MessageArrow::None => "none",
+        MessageArrow::Filled => "triangle",
+        MessageArrow::Open => "arrow",
+        MessageArrow::Cross => "diamond",
+        MessageArrow::Circle => "oval",
+        // Future variants are rejected by `validate_export_semantics` on the
+        // strict export path; the legacy `render` path draws no line end
+        // rather than panicking.
+        _ => "none",
+    }
 }
 
 // ---------------------------------------------------------------------------

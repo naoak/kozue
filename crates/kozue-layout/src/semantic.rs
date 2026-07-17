@@ -172,8 +172,12 @@ pub struct MessageLayout {
     /// Line style of the message (from [`Message::line`](kozue_ir::Message)). Exporters
     /// use this to distinguish a solid call from a dashed reply.
     pub line: kozue_ir::LineStyle,
-    /// Arrowhead style of the message (from [`Message::arrow`](kozue_ir::Message)).
-    pub arrow: kozue_ir::ArrowType,
+    /// Marker at the target end of the message (from
+    /// [`Message::head`](kozue_ir::Message)).
+    pub head: kozue_ir::MessageArrow,
+    /// Marker at the source end of the message (from
+    /// [`Message::tail`](kozue_ir::Message)).
+    pub tail: kozue_ir::MessageArrow,
     /// The message's label text, if any (from [`Message::label`](kozue_ir::Message)).
     pub label: Option<String>,
     /// Center of the message label, if any.

@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant A
+  participant B
+  A->>B: sync
+  A-)B: async
+  A-xB: lost
+  A->B: plain
+  A<<->>B: both
+  B--)A: reply async
+  A--xB: dashed lost

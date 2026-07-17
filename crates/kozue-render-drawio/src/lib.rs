@@ -53,7 +53,9 @@
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind, Port};
+use kozue_ir::{
+    ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind, Port,
+};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
     StateLayout,
@@ -703,17 +705,17 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
         } else {
             ""
         };
-        // Undirected message (no arrowhead); directed messages use draw.io's
-        // default arrowhead, matching the graph/state renderers.
-        let end_arrow = if m.arrow == ArrowType::None {
-            "endArrow=none;"
-        } else {
-            ""
-        };
+        // Head marker at the target end. A filled head keeps draw.io's
+        // default arrowhead (classic), matching the graph/state renderers and
+        // the pre-V10 output bytes; every other marker is written explicitly.
+        let end_arrow = message_end_arrow_style(m.head);
+        // Tail marker at the source end. `None` (the default) emits nothing,
+        // keeping default messages byte-identical to pre-V10 output.
+        let start_arrow = message_start_arrow_style(m.tail);
 
         let style = format!(
             "edgeStyle=none;html=1;{dashed}exitX=0.5;exitY={};exitDx=0;exitDy=0;exitPerimeter=0;\
-             entryX=0.5;entryY={};entryDx=0;entryDy=0;entryPerimeter=0;{end_arrow}",
+             entryX=0.5;entryY={};entryDx=0;entryDy=0;entryPerimeter=0;{end_arrow}{start_arrow}",
             frac(exit_y),
             frac(entry_y),
         );
@@ -768,6 +770,40 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
 
     out.push_str(mxfile_footer());
     Ok(out)
+}
+
+/// draw.io `endArrow` style fragment for a sequence message head marker.
+///
+/// `Filled` intentionally emits nothing: draw.io's default end arrow (classic
+/// filled) matches, and keeping the fragment empty preserves the pre-V10
+/// output bytes for default messages.
+fn message_end_arrow_style(head: MessageArrow) -> &'static str {
+    match head {
+        MessageArrow::Filled => "",
+        MessageArrow::None => "endArrow=none;",
+        MessageArrow::Open => "endArrow=open;endFill=0;",
+        MessageArrow::Cross => "endArrow=cross;endFill=0;",
+        MessageArrow::Circle => "endArrow=oval;endFill=1;",
+        // Future variants are rejected by `validate_export_semantics` on the
+        // strict export path; the legacy `render` path falls back to the
+        // default arrowhead rather than panicking.
+        _ => "",
+    }
+}
+
+/// draw.io `startArrow` style fragment for a sequence message tail marker.
+/// `Filled` uses `classic` (draw.io's filled arrow), consistent with the
+/// graph renderer's `from_arrow` mapping.
+fn message_start_arrow_style(tail: MessageArrow) -> &'static str {
+    match tail {
+        MessageArrow::None => "",
+        MessageArrow::Filled => "startArrow=classic;",
+        MessageArrow::Open => "startArrow=open;startFill=0;",
+        MessageArrow::Cross => "startArrow=cross;startFill=0;",
+        MessageArrow::Circle => "startArrow=oval;startFill=1;",
+        // See `message_end_arrow_style` on future variants.
+        _ => "",
+    }
 }
 
 // ---------------------------------------------------------------------------

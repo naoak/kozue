@@ -201,22 +201,32 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         name: "solid filled arrow ->>",
         support: Support::Supported,
-        note: "LineStyle::Solid + ArrowType::Triangle",
+        note: "LineStyle::Solid + MessageArrow::Filled head",
     },
     Feature {
         name: "dashed filled arrow -->>",
         support: Support::Supported,
-        note: "LineStyle::Dashed + ArrowType::Triangle",
+        note: "LineStyle::Dashed + MessageArrow::Filled head",
     },
     Feature {
-        name: "solid open arrow ->",
-        support: Support::Partial,
-        note: "open arrowhead not rendered; maps to Triangle (same as ->>)",
+        name: "plain line -> / -->",
+        support: Support::Supported,
+        note: "no arrowhead (MessageArrow::None head), matching Mermaid",
     },
     Feature {
-        name: "dashed open arrow -->",
-        support: Support::Partial,
-        note: "open arrowhead not rendered; maps to Triangle (same as -->>)",
+        name: "async arrow -) / --)",
+        support: Support::Supported,
+        note: "open V arrowhead (MessageArrow::Open head)",
+    },
+    Feature {
+        name: "cross arrow -x / --x",
+        support: Support::Supported,
+        note: "cross arrowhead (MessageArrow::Cross head)",
+    },
+    Feature {
+        name: "bidirectional arrow <<->> / <<-->>",
+        support: Support::Supported,
+        note: "filled head + filled tail",
     },
     Feature {
         name: "self-message A->>A",

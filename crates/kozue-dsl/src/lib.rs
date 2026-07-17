@@ -19,6 +19,7 @@
 //!   participant <id>: "label"
 //!   <a> -> <b> : "label"
 //!   <a> --> <b> : "label"
+//!   <a> -> <b> head open tail filled : "label"
 //! }
 //!
 //! state <name> {
@@ -51,8 +52,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, Node, NodeKind, Participant, ParticipantKind, Port,
-    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Participant, ParticipantKind,
+    Port, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -202,11 +203,31 @@ impl ParsedWeightMod {
     }
 }
 
-/// A single edge presentation modifier (`line ...` or `weight ...`).
+/// A parsed `head <arrow>` / `tail <arrow>` message-arrow modifier value.
+/// Only meaningful for sequence diagrams; graph/state diagrams reject these
+/// modifiers outright.
+#[derive(Debug, Clone)]
+enum ParsedMessageArrowMod {
+    Known(MessageArrow, std::ops::Range<usize>),
+    Unknown(String, std::ops::Range<usize>),
+}
+
+impl ParsedMessageArrowMod {
+    fn span(&self) -> &std::ops::Range<usize> {
+        match self {
+            ParsedMessageArrowMod::Known(_, span) | ParsedMessageArrowMod::Unknown(_, span) => span,
+        }
+    }
+}
+
+/// A single edge presentation modifier (`line ...`, `weight ...`, `head ...`,
+/// or `tail ...`).
 #[derive(Debug, Clone)]
 enum EdgeModifier {
     Line(ParsedLineMod),
     Weight(ParsedWeightMod),
+    Head(ParsedMessageArrowMod),
+    Tail(ParsedMessageArrowMod),
 }
 
 impl EdgeModifier {
@@ -214,6 +235,7 @@ impl EdgeModifier {
         match self {
             EdgeModifier::Line(m) => m.span(),
             EdgeModifier::Weight(m) => m.span(),
+            EdgeModifier::Head(m) | EdgeModifier::Tail(m) => m.span(),
         }
     }
 }
@@ -254,6 +276,22 @@ fn resolve_edge_modifiers(modifiers: &[EdgeModifier]) -> (LineStyle, LineWeight)
         }
     }
     (line, weight)
+}
+
+/// Resolve a modifier list to effective (head, tail) message arrows, applying
+/// last-wins semantics and defaulting to head=Filled / tail=None. Assumes all
+/// modifiers are `Known` (same caveat as [`resolve_edge_modifiers`]).
+fn resolve_message_arrows(modifiers: &[EdgeModifier]) -> (MessageArrow, MessageArrow) {
+    let mut head = MessageArrow::Filled;
+    let mut tail = MessageArrow::None;
+    for modifier in modifiers {
+        match modifier {
+            EdgeModifier::Head(ParsedMessageArrowMod::Known(value, _)) => head = *value,
+            EdgeModifier::Tail(ParsedMessageArrowMod::Known(value, _)) => tail = *value,
+            _ => {}
+        }
+    }
+    (head, tail)
 }
 
 /// A state endpoint: either `[*]` or a state ID.
@@ -576,7 +614,29 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                     _ => ParsedWeightMod::Unknown(name, span),
                 })
             });
-        let edge_modifiers = line_mod.or(weight_mod).repeated();
+        // Message arrow modifiers: `head none|filled|open|cross|circle` and
+        // `tail ...`, order-independent, last-wins (resolved later in the
+        // build functions / formatter). Only meaningful for sequence
+        // diagrams; graph/state diagrams reject them outright. `head`/`tail`
+        // are not reserved words: they only act as modifiers in this
+        // position and remain usable as ordinary identifiers.
+        let message_arrow_value = |name: &str, span: std::ops::Range<usize>| match name {
+            "none" => ParsedMessageArrowMod::Known(MessageArrow::None, span),
+            "filled" => ParsedMessageArrowMod::Known(MessageArrow::Filled, span),
+            "open" => ParsedMessageArrowMod::Known(MessageArrow::Open, span),
+            "cross" => ParsedMessageArrowMod::Known(MessageArrow::Cross, span),
+            "circle" => ParsedMessageArrowMod::Known(MessageArrow::Circle, span),
+            _ => ParsedMessageArrowMod::Unknown(name.to_string(), span),
+        };
+        let head_mod = text::keyword("head")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .map(move |(name, span)| EdgeModifier::Head(message_arrow_value(&name, span)));
+        let tail_mod = text::keyword("tail")
+            .padded_by(kzd_ws())
+            .ignore_then(ident_spanned())
+            .map(move |(name, span)| EdgeModifier::Tail(message_arrow_value(&name, span)));
+        let edge_modifiers = line_mod.or(weight_mod).or(head_mod).or(tail_mod).repeated();
 
         let label_suffix = just(':')
             .padded_by(kzd_ws())
@@ -1252,6 +1312,13 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                         secondary: None,
                     });
                 }
+                EdgeModifier::Head(m) | EdgeModifier::Tail(m) => {
+                    errors.push(CompileError {
+                        message: "`head`/`tail` message arrow modifiers are only valid in sequence diagrams".to_string(),
+                        span: m.span().clone(),
+                        secondary: None,
+                    });
+                }
             }
         }
 
@@ -1389,7 +1456,7 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 if !e.modifiers.is_empty() {
                     errors.push(CompileError {
                         message:
-                            "`line`/`weight` edge modifiers are not supported in state diagrams"
+                            "`line`/`weight`/`head`/`tail` edge modifiers are not supported in state diagrams"
                                 .to_string(),
                         span: edge_modifiers_span(e),
                         secondary: None,
@@ -1640,13 +1707,49 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             _ => continue,
         };
 
-        if !e.modifiers.is_empty() {
-            errors.push(CompileError {
-                message: "`line`/`weight` edge modifiers are not supported in sequence diagrams"
-                    .to_string(),
-                span: edge_modifiers_span(e),
-                secondary: None,
-            });
+        // `head`/`tail` message arrow modifiers are resolved below;
+        // `line`/`weight` modifiers remain graph-only.
+        let mut head = MessageArrow::Filled;
+        let mut tail = MessageArrow::None;
+        let mut modifier_error = false;
+        for modifier in &e.modifiers {
+            match modifier {
+                EdgeModifier::Line(m) => {
+                    errors.push(CompileError {
+                        message:
+                            "`line`/`weight` edge modifiers are not supported in sequence diagrams"
+                                .to_string(),
+                        span: m.span().clone(),
+                        secondary: None,
+                    });
+                    modifier_error = true;
+                }
+                EdgeModifier::Weight(m) => {
+                    errors.push(CompileError {
+                        message:
+                            "`line`/`weight` edge modifiers are not supported in sequence diagrams"
+                                .to_string(),
+                        span: m.span().clone(),
+                        secondary: None,
+                    });
+                    modifier_error = true;
+                }
+                EdgeModifier::Head(ParsedMessageArrowMod::Known(value, _)) => head = *value,
+                EdgeModifier::Tail(ParsedMessageArrowMod::Known(value, _)) => tail = *value,
+                EdgeModifier::Head(ParsedMessageArrowMod::Unknown(name, span))
+                | EdgeModifier::Tail(ParsedMessageArrowMod::Unknown(name, span)) => {
+                    errors.push(CompileError {
+                        message: format!(
+                            "unknown message arrow `{name}`; expected `none`, `filled`, `open`, `cross`, or `circle`"
+                        ),
+                        span: span.clone(),
+                        secondary: None,
+                    });
+                    modifier_error = true;
+                }
+            }
+        }
+        if modifier_error {
             continue;
         }
         if e.from_port.is_some() || e.to_port.is_some() {
@@ -1687,12 +1790,13 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             }
         }
 
-        seq.items.push(SequenceItem::Message(Message::new(
+        seq.items.push(SequenceItem::Message(Message::with_arrows(
             e.from.clone(),
             e.to.clone(),
             e.label.clone(),
             line_style,
-            ArrowType::Triangle,
+            head,
+            tail,
         )));
     }
 
@@ -2504,8 +2608,45 @@ fn port_token(port: &Option<ParsedPort>) -> &'static str {
     }
 }
 
+/// Token for a resolved [`MessageArrow`] as used in `head`/`tail` modifiers.
+fn message_arrow_token(arrow: MessageArrow) -> &'static str {
+    match arrow {
+        MessageArrow::None => "none",
+        MessageArrow::Filled => "filled",
+        MessageArrow::Open => "open",
+        MessageArrow::Cross => "cross",
+        MessageArrow::Circle => "circle",
+        // `MessageArrow` is `#[non_exhaustive]`; no such variant exists at V10.
+        // A future variant would round-trip as `filled` here rather than error,
+        // matching the draw-nothing fallback in the layout/backends. When a new
+        // arrow marker is added, extend this arm (and the parser) so the
+        // formatter stays a lossless surface.
+        _ => "filled",
+    }
+}
+
+/// Canonical ` head <tok>` / ` tail <tok>` suffix for a message statement's
+/// modifiers, in canonical head→tail order, omitting defaults (head filled,
+/// tail none) so default messages format exactly as before head/tail existed.
+fn format_message_arrow_mods(modifiers: &[EdgeModifier]) -> String {
+    let (head, tail) = resolve_message_arrows(modifiers);
+    let mut out = String::new();
+    if head != MessageArrow::Filled {
+        out.push_str(" head ");
+        out.push_str(message_arrow_token(head));
+    }
+    if tail != MessageArrow::None {
+        out.push_str(" tail ");
+        out.push_str(message_arrow_token(tail));
+    }
+    out
+}
+
 /// Format the canonical `a[.port] <op> b[.port] [line ...] [weight ...] [: "label"]`
-/// body shared by the three graph edge arrow tokens.
+/// body shared by the three graph edge arrow tokens. `head`/`tail` message
+/// arrow modifiers are also emitted here: they only survive semantic
+/// validation for sequence solid messages (which share `Stmt::Edge`), so for
+/// true graph edges the suffix is always empty.
 fn format_graph_edge(e: &EdgeStmt, op: &str) -> String {
     let (line, weight) = resolve_edge_modifiers(&e.modifiers);
     let mut out = format!(
@@ -2524,6 +2665,7 @@ fn format_graph_edge(e: &EdgeStmt, op: &str) -> String {
         out.push_str(" weight ");
         out.push_str(line_weight_token(weight));
     }
+    out.push_str(&format_message_arrow_mods(&e.modifiers));
     if let Some(label_str) = &e.label {
         out.push_str(" : ");
         out.push_str(&format_string_lit(label_str));
@@ -2538,10 +2680,17 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
         Stmt::UndirectedEdge(e) => format_graph_edge(e, "---"),
         Stmt::BidirectionalEdge(e) => format_graph_edge(e, "<->"),
         Stmt::DashedEdge(e) => {
+            let mods = format_message_arrow_mods(&e.modifiers);
             if let Some(label_str) = &e.label {
-                format!("{} --> {} : {}", e.from, e.to, format_string_lit(label_str))
+                format!(
+                    "{} --> {}{} : {}",
+                    e.from,
+                    e.to,
+                    mods,
+                    format_string_lit(label_str)
+                )
             } else {
-                format!("{} --> {}", e.from, e.to)
+                format!("{} --> {}{}", e.from, e.to, mods)
             }
         }
         Stmt::StateTransition(t) => {
@@ -2944,6 +3093,105 @@ mod tests {
                 "{label}: got {errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn sequence_message_head_tail_modifiers_parse() {
+        let src = "sequence d {\n participant a\n participant b\n a -> b\n a -> b head none\n a -> b head open : \"async\"\n a --> b head cross\n a -> b head circle\n a -> b tail open head open\n a -> a head open\n}";
+        let d = parse(src).expect("should parse");
+        let Diagram::Sequence(s) = d else { panic!() };
+        let msg = |i: usize| -> &Message {
+            let SequenceItem::Message(m) = &s.items[i] else {
+                panic!()
+            };
+            m
+        };
+        assert_eq!(
+            (msg(0).head, msg(0).tail),
+            (MessageArrow::Filled, MessageArrow::None)
+        );
+        assert_eq!(
+            (msg(1).head, msg(1).tail),
+            (MessageArrow::None, MessageArrow::None)
+        );
+        assert_eq!(
+            (msg(2).head, msg(2).tail),
+            (MessageArrow::Open, MessageArrow::None)
+        );
+        assert_eq!(msg(2).label.as_deref(), Some("async"));
+        assert_eq!(msg(3).head, MessageArrow::Cross);
+        assert_eq!(msg(3).line, LineStyle::Dashed);
+        assert_eq!(msg(4).head, MessageArrow::Circle);
+        assert_eq!(
+            (msg(5).head, msg(5).tail),
+            (MessageArrow::Open, MessageArrow::Open)
+        );
+        assert_eq!(msg(6).head, MessageArrow::Open);
+    }
+
+    #[test]
+    fn head_and_tail_remain_usable_as_identifiers() {
+        // `head`/`tail` are not reserved words: they may still name
+        // participants (and graph nodes).
+        let src = "sequence d {\n participant head\n participant tail\n head -> tail : \"m\"\n tail --> head head open\n}";
+        let d = parse(src).expect("should parse");
+        let Diagram::Sequence(s) = d else { panic!() };
+        assert!(s.participants.contains_key("head"));
+        assert!(s.participants.contains_key("tail"));
+        let SequenceItem::Message(m) = &s.items[1] else {
+            panic!()
+        };
+        assert_eq!(m.from.as_str(), "tail");
+        assert_eq!(m.to.as_str(), "head");
+        assert_eq!(m.head, MessageArrow::Open);
+    }
+
+    #[test]
+    fn unknown_message_arrow_value_is_error() {
+        let src = "sequence d {\n participant a\n participant b\n a -> b head blunt\n}";
+        let errors = parse(src).expect_err("unknown arrow value must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("unknown message arrow `blunt`")),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn graph_and_state_reject_head_tail_modifiers() {
+        let graph = "graph d {\n a\n b\n a -> b head open\n}";
+        let errors = parse(graph).expect_err("head modifier must fail in graph");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("only valid in sequence diagrams")),
+            "got {errors:?}"
+        );
+
+        let state = "state d {\n a -> b tail filled\n}";
+        let errors = parse(state).expect_err("tail modifier must fail in state");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("not supported in state diagrams")),
+            "got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn fmt_message_arrows_canonical_and_idempotent() {
+        // Canonical order is head→tail regardless of source order, defaults
+        // (head filled / tail none) are omitted.
+        let source = "sequence d {\n participant a\n participant b\n a -> b tail open head cross : \"x\"\n a --> b head filled tail circle\n a -> b head filled\n a -> b head open\n}";
+        let formatted = format_kzd(source).expect("should format");
+        assert!(formatted.contains("a -> b head cross tail open : \"x\"\n"));
+        assert!(formatted.contains("a --> b tail circle\n"));
+        assert!(formatted.contains("a -> b\n"));
+        assert!(formatted.contains("a -> b head open\n"));
+        assert_eq!(format_kzd(&formatted).unwrap(), formatted);
+        // Semantics preserved through the formatter.
+        assert_eq!(parse(source).unwrap(), parse(&formatted).unwrap());
     }
 
     #[test]

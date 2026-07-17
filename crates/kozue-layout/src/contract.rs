@@ -49,6 +49,14 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
         kozue_ir::ArrowType::Triangle | kozue_ir::ArrowType::None => Ok(()),
         _ => mismatch("unsupported future arrow type"),
     };
+    let message_arrow = |value| match value {
+        kozue_ir::MessageArrow::None
+        | kozue_ir::MessageArrow::Filled
+        | kozue_ir::MessageArrow::Open
+        | kozue_ir::MessageArrow::Cross
+        | kozue_ir::MessageArrow::Circle => Ok(()),
+        _ => mismatch("unsupported future message arrow"),
+    };
     let line = |value| match value {
         kozue_ir::LineStyle::Solid | kozue_ir::LineStyle::Dashed | kozue_ir::LineStyle::Dotted => {
             Ok(())
@@ -120,7 +128,8 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
                 participant_kind(&p.kind)?;
             }
             for message in &sequence.messages {
-                arrow(message.arrow)?;
+                message_arrow(message.head)?;
+                message_arrow(message.tail)?;
                 line(message.line)?;
             }
         }
@@ -241,7 +250,8 @@ fn validate_contract(
                     || message.to != placed.to
                     || message.label != placed.label
                     || message.line != placed.line
-                    || message.arrow != placed.arrow
+                    || message.head != placed.head
+                    || message.tail != placed.tail
                 {
                     return mismatch("sequence message index/semantics mismatch");
                 }
@@ -1004,5 +1014,24 @@ mod tests {
         };
         layout.containers[0].label = None;
         assert!(stray_anchor.export_input(&graph).is_err());
+    }
+
+    #[test]
+    fn export_input_rejects_message_head_tail_mismatches() {
+        let sequence = sequence_with_message(None);
+
+        let mut head = layout_full(&sequence).unwrap();
+        let SemanticLayout::Sequence(layout) = &mut head.semantic else {
+            unreachable!()
+        };
+        layout.messages[0].head = kozue_ir::MessageArrow::Open;
+        assert!(head.export_input(&sequence).is_err());
+
+        let mut tail = layout_full(&sequence).unwrap();
+        let SemanticLayout::Sequence(layout) = &mut tail.semantic else {
+            unreachable!()
+        };
+        layout.messages[0].tail = kozue_ir::MessageArrow::Filled;
+        assert!(tail.export_input(&sequence).is_err());
     }
 }

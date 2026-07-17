@@ -132,6 +132,20 @@ pub(crate) fn validate_arrow(arrow: ArrowType) -> Result<(), LayoutError> {
     }
 }
 
+pub(crate) fn validate_message_arrow(arrow: kozue_ir::MessageArrow) -> Result<(), LayoutError> {
+    use kozue_ir::MessageArrow;
+    match arrow {
+        MessageArrow::None
+        | MessageArrow::Filled
+        | MessageArrow::Open
+        | MessageArrow::Cross
+        | MessageArrow::Circle => Ok(()),
+        _ => Err(LayoutError {
+            message: format!("unsupported message arrow: {arrow:?}"),
+        }),
+    }
+}
+
 pub(crate) fn validate_line(line: LineStyle) -> Result<(), LayoutError> {
     match line {
         LineStyle::Solid | LineStyle::Dashed => Ok(()),

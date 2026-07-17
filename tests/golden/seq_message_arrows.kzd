@@ -1,0 +1,13 @@
+sequence arrows {
+  participant a: "A"
+  participant b: "B"
+  a -> b : "sync"
+  a -> b head open : "async"
+  b --> a head none : "plain"
+  a -> b head cross : "lost"
+  a -> b head circle : "found"
+  b -> a head open tail open : "both open"
+  a --> b tail filled : "bidirectional"
+  a -> a head open : "self async"
+  a --> a head cross tail circle : "self mixed"
+}
