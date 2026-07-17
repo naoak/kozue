@@ -364,21 +364,23 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
             continue;
         }
 
-        // `== divider ==` lines.
+        // `== text ==` dividers (supported).
         if trimmed.starts_with("==") {
+            // A valid divider; the label is extracted in `parse_sequence_clean`.
+            continue;
+        }
+
+        // `...` / `...text...` delay markers (supported). `||` spacers stay
+        // unsupported.
+        if trimmed.starts_with("||") {
             errors.push(Diagnostic::new(
-                "unsupported: == dividers are not supported",
+                "unsupported: delay spacer (`||`) is not supported",
                 span,
             ));
             continue;
         }
-
-        // `...` or `||` delay lines.
-        if trimmed == "..." || trimmed.starts_with("...") || trimmed.starts_with("||") {
-            errors.push(Diagnostic::new(
-                "unsupported: delay markers (`...` / `||`) are not supported",
-                span,
-            ));
+        if trimmed.starts_with("...") {
+            // A valid delay; parsed in `parse_sequence_clean`.
             continue;
         }
 
@@ -418,6 +420,17 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
         // opener `note over A`, with no `:`) falls through to the unsupported
         // keyword table below and raises an explicit error (no silent drop).
         match try_parse_plantuml_note(trimmed) {
+            Some(Ok(_)) => continue,
+            Some(Err(msg)) => {
+                errors.push(Diagnostic::new(msg, span));
+                continue;
+            }
+            None => {}
+        }
+
+        // Single-line reference: `ref over a[, b...] : text`. Accepted; a
+        // multi-line `ref over a` opener (no `:`) raises an explicit error.
+        match try_parse_plantuml_reference(trimmed) {
             Some(Ok(_)) => continue,
             Some(Err(msg)) => {
                 errors.push(Diagnostic::new(msg, span));
@@ -570,6 +583,24 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
             continue;
         }
 
+        // `== text ==` divider (checked before message: `==` is not an arrow).
+        if trimmed.starts_with("==") {
+            if let Some(text) = try_parse_plantuml_divider(trimmed) {
+                seq.items
+                    .push(SequenceItem::Divider(kozue_ir::Divider::new(text)));
+                continue;
+            }
+        }
+
+        // `...` / `...text...` delay (checked before message).
+        if trimmed.starts_with("...") {
+            if let Some(text) = try_parse_plantuml_delay(trimmed) {
+                seq.items
+                    .push(SequenceItem::Delay(kozue_ir::Delay::new(text)));
+                continue;
+            }
+        }
+
         if let Some(Ok((position, targets, text))) = try_parse_plantuml_note(trimmed) {
             let mut ids = Vec::new();
             for t in &targets {
@@ -578,6 +609,17 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
             }
             seq.items
                 .push(SequenceItem::Note(Note::new(text, position, ids)));
+            continue;
+        }
+
+        if let Some(Ok((targets, text))) = try_parse_plantuml_reference(trimmed) {
+            let mut ids = Vec::new();
+            for t in &targets {
+                ensure_participant(&mut seq, t, None, ParticipantKind::Default);
+                ids.push(kozue_ir::ElementId::new(t.clone()));
+            }
+            seq.items
+                .push(SequenceItem::Reference(kozue_ir::Reference::new(text, ids)));
             continue;
         }
 
@@ -2112,6 +2154,77 @@ fn try_parse_plantuml_note(
     Some(Ok((position, targets, text)))
 }
 
+/// Parses a `== text ==` divider line, returning the (trimmed) label. Returns
+/// `None` if `line` is not a divider (does not start with `==`).
+fn try_parse_plantuml_divider(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("==")?;
+    let text = rest.strip_suffix("==").unwrap_or(rest);
+    Some(text.trim().to_string())
+}
+
+/// Parses a `...` / `...text...` / `...text` delay line, returning the optional
+/// label. Returns `None` if `line` is not a `...` delay. `||` spacers are *not*
+/// handled here (they stay unsupported).
+fn try_parse_plantuml_delay(line: &str) -> Option<Option<String>> {
+    let rest = line.strip_prefix("...")?;
+    let rest = rest.strip_suffix("...").unwrap_or(rest);
+    let text = rest.trim();
+    if text.is_empty() {
+        Some(None)
+    } else {
+        Some(Some(text.to_string()))
+    }
+}
+
+/// Parses a single-line `ref over a[, b...] : text` reference frame. Returns
+/// `None` if `line` is not a `ref` line. `Some(Err(..))` for a `ref` line that
+/// is not a valid single-line form (e.g. a multi-line `ref over a` block opener
+/// with no `:`), mirroring [`try_parse_plantuml_note`].
+fn try_parse_plantuml_reference(line: &str) -> Option<Result<(Vec<String>, String), String>> {
+    let rest = line.strip_prefix("ref")?;
+    // `ref` must be a standalone word.
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let Some(after) = rest.strip_prefix("over") else {
+        return Some(Err(
+            "unsupported: reference placement (expected `ref over ...`)".to_string(),
+        ));
+    };
+    if !after.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return Some(Err(
+            "unsupported: reference placement (expected `ref over ...`)".to_string(),
+        ));
+    }
+    let after = after.trim_start();
+    let Some(colon_idx) = after.find(':') else {
+        return Some(Err(
+            "unsupported: multi-line ref blocks (kozue supports only single-line `ref over ... : text`)"
+                .to_string(),
+        ));
+    };
+    let targets_part = after[..colon_idx].trim();
+    let text = after[colon_idx + 1..].trim().to_string();
+
+    let mut targets = Vec::new();
+    for raw in targets_part.split(',') {
+        let name = raw.trim();
+        if !is_valid_participant_id(name) {
+            return Some(Err(format!(
+                "ref references invalid participant id `{name}`"
+            )));
+        }
+        targets.push(name.to_string());
+    }
+    if targets.is_empty() {
+        return Some(Err(
+            "ref requires at least one target participant".to_string()
+        ));
+    }
+    Some(Ok((targets, text)))
+}
+
 /// Accepts alphanumeric, underscore, and Unicode letters (for Japanese names etc.).
 fn is_valid_participant_id(s: &str) -> bool {
     if s.is_empty() {
@@ -2476,6 +2589,58 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn divider_delay_reference_are_supported_and_ordered() {
+        let src = "@startuml\nparticipant A\nparticipant B\n== Phase 2 ==\nA ->> B : hello\n...\n...5 min...\nref over A, B : auth\n@enduml\n";
+        let d = parse_document(src).expect("divider/delay/ref should parse");
+        let Diagram::Sequence(s) = d.into_diagram() else {
+            panic!("expected sequence");
+        };
+        match &s.items[0] {
+            SequenceItem::Divider(dv) => assert_eq!(dv.text, "Phase 2"),
+            other => panic!("expected divider, got {other:?}"),
+        }
+        assert!(matches!(s.items[1], SequenceItem::Message(_)));
+        match &s.items[2] {
+            SequenceItem::Delay(dl) => assert_eq!(dl.text, None),
+            other => panic!("expected delay, got {other:?}"),
+        }
+        match &s.items[3] {
+            SequenceItem::Delay(dl) => assert_eq!(dl.text.as_deref(), Some("5 min")),
+            other => panic!("expected delay, got {other:?}"),
+        }
+        match &s.items[4] {
+            SequenceItem::Reference(r) => {
+                assert_eq!(r.text, "auth");
+                assert_eq!(r.targets.len(), 2);
+            }
+            other => panic!("expected reference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_pipe_delay_spacer_stays_unsupported() {
+        let src = "@startuml\nparticipant A\n|| 30 ||\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported") && e.message.contains("||")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn multi_line_ref_block_is_unsupported() {
+        let src = "@startuml\nparticipant A\nref over A\n  detail\nend ref\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported")
+                    && e.message.to_lowercase().contains("ref")),
+            "got: {errs:?}"
+        );
     }
 
     #[test]

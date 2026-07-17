@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 341.04 432.00" width="341.04" height="432.00">
+  <rect x="-20.00" y="-20.00" width="341.04" height="432.00" fill="#ffffff"/>
+  <rect x="0.00" y="0.00" width="78.48" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="39.24" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Alice</text>
+  <polyline points="39.24,39.20 39.24,392.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="230.12" y="0.00" width="70.92" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="265.58" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Bob</text>
+  <polyline points="265.58,39.20 265.58,392.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="23.24" y="64.40" width="258.34" height="31.20" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="152.41" y="85.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Phase 1</text>
+  <polyline points="39.24,128.00 255.58,128.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="265.58,128.00 255.58,123.00 255.58,133.00" fill="#000000" stroke="none"/>
+  <text x="152.41" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hello</text>
+  <polyline points="23.24,176.00 281.58,176.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="1.50 3.00"/>
+  <polyline points="265.58,224.00 49.24,224.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="39.24,224.00 49.24,219.00 49.24,229.00" fill="#000000" stroke="none"/>
+  <text x="152.41" y="220.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hi</text>
+  <polyline points="23.24,272.00 281.58,272.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="1.50 3.00"/>
+  <text x="152.41" y="277.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">5 min</text>
+  <rect x="31.24" y="294.40" width="242.34" height="51.20" rx="0.00" ry="0.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="31.24,310.40 65.24,310.40 65.24,294.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="48.24" y="306.60" font-family="DejaVu Sans" font-size="12.00" text-anchor="middle" fill="#000000">ref</text>
+  <text x="152.41" y="333.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">auth exchange</text>
+</svg>

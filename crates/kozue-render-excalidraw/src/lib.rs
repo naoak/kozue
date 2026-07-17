@@ -1262,6 +1262,94 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
                 )));
                 continue;
             }
+            // Excalidraw has no native UML frame/divider shape, so all three new
+            // items are approximated with a closed rectangle `line` outline plus
+            // standalone centered text (lossy; the tab/dotted styling is dropped).
+            SequenceItemLayout::Divider(divider) => {
+                let r = &divider.rect;
+                let (w, h) = (r.width, r.height);
+                elements.push(AnyElement::Line(make_line(
+                    &format!("divider{i}"),
+                    r.x + MARGIN,
+                    r.y + MARGIN,
+                    w,
+                    h,
+                    vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h], [0.0, 0.0]],
+                    false,
+                )));
+                let (tw, th) = text_size(&divider.text);
+                elements.push(AnyElement::Text(make_text(
+                    &format!("divider{i}-text"),
+                    None,
+                    &divider.text,
+                    r.x + MARGIN + w / 2.0 - tw / 2.0,
+                    r.y + MARGIN + h / 2.0 - th / 2.0,
+                    tw,
+                    th,
+                )));
+                continue;
+            }
+            SequenceItemLayout::Delay(delay) => {
+                let r = &delay.rect;
+                let (w, h) = (r.width, r.height.max(1.0));
+                elements.push(AnyElement::Line(make_line(
+                    &format!("delay{i}"),
+                    r.x + MARGIN,
+                    r.y + MARGIN,
+                    w,
+                    h,
+                    vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h], [0.0, 0.0]],
+                    false,
+                )));
+                if let Some(text) = &delay.text {
+                    let (tw, th) = text_size(text);
+                    elements.push(AnyElement::Text(make_text(
+                        &format!("delay{i}-text"),
+                        None,
+                        text,
+                        r.x + MARGIN + w / 2.0 - tw / 2.0,
+                        r.y + MARGIN + h / 2.0 - th / 2.0,
+                        tw,
+                        th,
+                    )));
+                }
+                continue;
+            }
+            SequenceItemLayout::Reference(reference) => {
+                let r = &reference.rect;
+                let (w, h) = (r.width, r.height);
+                elements.push(AnyElement::Line(make_line(
+                    &format!("ref{i}"),
+                    r.x + MARGIN,
+                    r.y + MARGIN,
+                    w,
+                    h,
+                    vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h], [0.0, 0.0]],
+                    false,
+                )));
+                // "ref" tab label in the top-left corner.
+                let (rtw, rth) = text_size("ref");
+                elements.push(AnyElement::Text(make_text(
+                    &format!("ref{i}-tab"),
+                    None,
+                    "ref",
+                    r.x + MARGIN + 4.0,
+                    r.y + MARGIN + 2.0,
+                    rtw,
+                    rth,
+                )));
+                let (tw, th) = text_size(&reference.text);
+                elements.push(AnyElement::Text(make_text(
+                    &format!("ref{i}-text"),
+                    None,
+                    &reference.text,
+                    r.x + MARGIN + w / 2.0 - tw / 2.0,
+                    r.y + MARGIN + h / 2.0 - th / 2.0,
+                    tw,
+                    th,
+                )));
+                continue;
+            }
             // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
             // rejected on the strict export path by `validate_export_semantics`.
             _ => continue,

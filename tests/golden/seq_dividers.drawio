@@ -1,0 +1,34 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="Alice" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="20.00" width="78.48" height="392.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="Bob" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="250.12" y="20.00" width="70.92" height="392.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="divider0" value="Phase 1" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="43.24" y="84.40" width="258.34" height="31.20" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" value="hello" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.326531;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.326531;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="delay2" value="" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="43.24" y="196.00" width="258.34" height="1.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" value="hi" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.571429;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.571429;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="delay4" value="5 min" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;" vertex="1" parent="1">
+          <mxGeometry x="43.24" y="282.40" width="258.34" height="19.20" as="geometry"/>
+        </mxCell>
+        <mxCell id="ref5" value="ref&#10;auth exchange" style="shape=umlFrame;whiteSpace=wrap;html=1;width=40;height=20;" vertex="1" parent="1">
+          <mxGeometry x="51.24" y="314.40" width="242.34" height="51.20" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

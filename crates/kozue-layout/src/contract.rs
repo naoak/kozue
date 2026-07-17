@@ -146,6 +146,14 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
                             return mismatch("note has no targets");
                         }
                     }
+                    // Dividers and delays carry only free-form text.
+                    SequenceItemLayout::Divider(_) => {}
+                    SequenceItemLayout::Delay(_) => {}
+                    SequenceItemLayout::Reference(reference) => {
+                        if reference.targets.is_empty() {
+                            return mismatch("reference has no targets");
+                        }
+                    }
                 }
             }
         }
@@ -278,6 +286,21 @@ fn validate_contract(
                             || note.targets != pl.targets
                         {
                             return mismatch("sequence note index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Divider(d), SequenceItemLayout::Divider(pl)) => {
+                        if pl.index != index || d.text != pl.text {
+                            return mismatch("sequence divider index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Delay(d), SequenceItemLayout::Delay(pl)) => {
+                        if pl.index != index || d.text != pl.text {
+                            return mismatch("sequence delay index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Reference(r), SequenceItemLayout::Reference(pl)) => {
+                        if pl.index != index || r.text != pl.text || r.targets != pl.targets {
+                            return mismatch("sequence reference index/semantics mismatch");
                         }
                     }
                     _ => return mismatch("sequence item/layout variant mismatch"),
@@ -577,6 +600,20 @@ fn validate_semantic_geometry(layout: &SemanticLayout) -> Result<(), ExportContr
                     SequenceItemLayout::Note(note) => {
                         validate_rect(&note.rect)?;
                         validate_point(&note.text_anchor)?;
+                    }
+                    SequenceItemLayout::Divider(divider) => {
+                        validate_rect(&divider.rect)?;
+                        validate_point(&divider.text_anchor)?;
+                    }
+                    SequenceItemLayout::Delay(delay) => {
+                        validate_rect(&delay.rect)?;
+                        if let Some(anchor) = &delay.text_anchor {
+                            validate_point(anchor)?;
+                        }
+                    }
+                    SequenceItemLayout::Reference(reference) => {
+                        validate_rect(&reference.rect)?;
+                        validate_point(&reference.text_anchor)?;
                     }
                 }
             }

@@ -32,6 +32,14 @@ const NOTE_PAD_Y: f64 = 6.0; // vertical padding inside a note box
 const NOTE_GAP: f64 = 10.0; // gap between a note and its target lifeline (left/right of)
 const NOTE_EAR: f64 = 8.0; // size of the folded corner on a note box
 const NOTE_SPAN_EXTEND: f64 = 8.0; // extra half-width past the outer lifelines for span notes
+const DIVIDER_PAD_X: f64 = 12.0; // horizontal padding inside a divider band
+const DIVIDER_PAD_Y: f64 = 6.0; // vertical padding inside a divider band
+const DIVIDER_EXTEND: f64 = 16.0; // extend of a divider band past the outer lifelines
+const DELAY_EXTEND: f64 = 16.0; // extend of a delay's dotted line past the outer lifelines
+const REF_EXTEND: f64 = 8.0; // extra half-width past the outer lifelines for a reference frame
+const REF_TAB_W: f64 = 34.0; // width of the "ref" tab in a reference frame
+const REF_TAB_H: f64 = 16.0; // height of the "ref" tab in a reference frame
+const REF_PAD_Y: f64 = 8.0; // vertical padding inside a reference frame
 
 /// Returns the guillemet stereotype string for a non-Default participant kind.
 /// Returns `None` for `Default`.
@@ -244,6 +252,196 @@ fn draw_note(
     }));
 }
 
+/// Full-width diagram span `[x_left, x_right]` from the outer lifelines.
+fn diagram_span(col_x: &[f64]) -> (f64, f64) {
+    if col_x.is_empty() {
+        (0.0, 0.0)
+    } else {
+        (col_x[0], col_x[col_x.len() - 1])
+    }
+}
+
+fn draw_divider(
+    items: &mut Vec<SceneItem>,
+    sem_items: &mut Vec<SequenceItemLayout>,
+    divider: &kozue_ir::Divider,
+    row: usize,
+    col_x: &[f64],
+) {
+    let y_center = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+    let (x_left, x_right) = diagram_span(col_x);
+    let (tw, th) = kozue_text::measure(&divider.text, FONT_SIZE);
+    let center = (x_left + x_right) / 2.0;
+    let band_w = (tw + 2.0 * DIVIDER_PAD_X).max((x_right - x_left) + 2.0 * DIVIDER_EXTEND);
+    let band_h = th + 2.0 * DIVIDER_PAD_Y;
+    let x0 = center - band_w / 2.0;
+    let y0 = y_center - band_h / 2.0;
+
+    items.push(SceneItem::Rect(Rect {
+        x: x0,
+        y: y0,
+        width: band_w,
+        height: band_h,
+        rx: 0.0,
+    }));
+    let cy = y0 + band_h / 2.0;
+    items.push(SceneItem::Text(Text {
+        x: center,
+        y: cy + FONT_SIZE * 0.35,
+        size: FONT_SIZE,
+        align: TextAlign::Middle,
+        content: divider.text.clone(),
+        text_width: tw,
+        text_height: th,
+    }));
+
+    sem_items.push(SequenceItemLayout::Divider(semantic::DividerLayout {
+        index: row,
+        text: divider.text.clone(),
+        rect: Rect {
+            x: x0,
+            y: y0,
+            width: band_w,
+            height: band_h,
+            rx: 0.0,
+        },
+        text_anchor: semantic::Point::new(center, cy),
+    }));
+}
+
+fn draw_delay(
+    items: &mut Vec<SceneItem>,
+    sem_items: &mut Vec<SequenceItemLayout>,
+    delay: &kozue_ir::Delay,
+    row: usize,
+    col_x: &[f64],
+) {
+    let y_center = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+    let (x_left, x_right) = diagram_span(col_x);
+    let x0 = x_left - DELAY_EXTEND;
+    let x1 = x_right + DELAY_EXTEND;
+
+    // Dotted line crossing the full width at y_center.
+    items.push(SceneItem::Path(Path {
+        points: vec![(x0, y_center), (x1, y_center)],
+        filled: false,
+        stroke: StrokeStyle::Dotted,
+        weight: StrokeWeight::Normal,
+    }));
+
+    let (rect_h, text_anchor) = if let Some(text) = &delay.text {
+        let (tw, th) = kozue_text::measure(text, FONT_SIZE);
+        let center = (x_left + x_right) / 2.0;
+        items.push(SceneItem::Text(Text {
+            x: center,
+            y: y_center + FONT_SIZE * 0.35,
+            size: FONT_SIZE,
+            align: TextAlign::Middle,
+            content: text.clone(),
+            text_width: tw,
+            text_height: th,
+        }));
+        (th, Some(semantic::Point::new(center, y_center)))
+    } else {
+        (0.0, None)
+    };
+
+    sem_items.push(SequenceItemLayout::Delay(semantic::DelayLayout {
+        index: row,
+        text: delay.text.clone(),
+        rect: Rect {
+            x: x0,
+            y: y_center - rect_h / 2.0,
+            width: x1 - x0,
+            height: rect_h,
+            rx: 0.0,
+        },
+        text_anchor,
+    }));
+}
+
+fn draw_reference(
+    items: &mut Vec<SceneItem>,
+    sem_items: &mut Vec<SequenceItemLayout>,
+    reference: &kozue_ir::Reference,
+    row: usize,
+    col_x: &[f64],
+    idx_of: &IndexMap<&str, usize>,
+) {
+    let y_center = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+    let cols: Vec<f64> = reference
+        .targets
+        .iter()
+        .filter_map(|t| idx_of.get(t.as_str()).map(|&i| col_x[i]))
+        .collect();
+    // `cols` is non-empty: validated before drawing.
+    let left = cols.iter().cloned().fold(f64::INFINITY, f64::min);
+    let right = cols.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let center = (left + right) / 2.0;
+    let (tw, th) = kozue_text::measure(&reference.text, FONT_SIZE);
+    let span_w = (right - left) + 2.0 * REF_EXTEND;
+    let frame_w = (tw + 2.0 * NOTE_PAD_X).max(span_w).max(REF_TAB_W * 2.0);
+    let frame_h = th + REF_TAB_H + 2.0 * REF_PAD_Y;
+    let x0 = center - frame_w / 2.0;
+    let y0 = y_center - frame_h / 2.0;
+    let y1 = y0 + frame_h;
+
+    // Outer frame.
+    items.push(SceneItem::Rect(Rect {
+        x: x0,
+        y: y0,
+        width: frame_w,
+        height: frame_h,
+        rx: 0.0,
+    }));
+    // "ref" tab in the top-left corner.
+    items.push(SceneItem::Path(Path {
+        points: vec![
+            (x0, y0 + REF_TAB_H),
+            (x0 + REF_TAB_W, y0 + REF_TAB_H),
+            (x0 + REF_TAB_W, y0),
+        ],
+        filled: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
+    }));
+    let (rtw, rth) = kozue_text::measure("ref", STEREOTYPE_FONT_SIZE);
+    items.push(SceneItem::Text(Text {
+        x: x0 + REF_TAB_W / 2.0,
+        y: y0 + REF_TAB_H / 2.0 + STEREOTYPE_FONT_SIZE * 0.35,
+        size: STEREOTYPE_FONT_SIZE,
+        align: TextAlign::Middle,
+        content: "ref".to_string(),
+        text_width: rtw,
+        text_height: rth,
+    }));
+    // Body text centered below the tab.
+    let body_cy = (y0 + REF_TAB_H + y1) / 2.0;
+    items.push(SceneItem::Text(Text {
+        x: center,
+        y: body_cy + FONT_SIZE * 0.35,
+        size: FONT_SIZE,
+        align: TextAlign::Middle,
+        content: reference.text.clone(),
+        text_width: tw,
+        text_height: th,
+    }));
+
+    sem_items.push(SequenceItemLayout::Reference(semantic::ReferenceLayout {
+        index: row,
+        text: reference.text.clone(),
+        targets: reference.targets.clone(),
+        rect: Rect {
+            x: x0,
+            y: y0,
+            width: frame_w,
+            height: frame_h,
+            rx: 0.0,
+        },
+        text_anchor: semantic::Point::new(center, body_cy),
+    }));
+}
+
 pub(crate) fn layout_sequence_full(
     seq: &SequenceDiagram,
 ) -> Result<crate::LayoutOutput, crate::LayoutError> {
@@ -293,6 +491,25 @@ pub(crate) fn layout_sequence_full(
                         return Err(crate::LayoutError {
                             message: format!(
                                 "sequence note references unknown participant ({target})"
+                            ),
+                        });
+                    }
+                }
+            }
+            // Dividers and delays carry only free-form text: nothing to validate.
+            SequenceItem::Divider(_) => {}
+            SequenceItem::Delay(_) => {}
+            SequenceItem::Reference(reference) => {
+                if reference.targets.is_empty() {
+                    return Err(crate::LayoutError {
+                        message: "sequence reference has no target participants".to_string(),
+                    });
+                }
+                for target in &reference.targets {
+                    if !seq.participants.contains_key(target) {
+                        return Err(crate::LayoutError {
+                            message: format!(
+                                "sequence reference references unknown participant ({target})"
                             ),
                         });
                     }
@@ -415,6 +632,37 @@ pub(crate) fn layout_sequence_full(
                 }
             }
             _ => {}
+        }
+    }
+
+    // Reference frames contribute to column widths like an `Over` note spanning
+    // their targeted participants: a multi-column reference joins `span_widths`,
+    // a single-column reference adds a symmetric half-width overhang.
+    for item in &seq.items {
+        let SequenceItem::Reference(reference) = item else {
+            continue;
+        };
+        let nw = note_box_width(&reference.text);
+        let cols: Vec<usize> = reference
+            .targets
+            .iter()
+            .filter_map(|t| idx_of.get(t.as_str()).copied())
+            .collect();
+        if cols.is_empty() {
+            continue;
+        }
+        let lo = *cols.iter().min().unwrap();
+        let hi = *cols.iter().max().unwrap();
+        if lo == hi {
+            let half = nw / 2.0;
+            if half > note_right_overhang[lo] {
+                note_right_overhang[lo] = half;
+            }
+            if half > note_left_overhang[lo] {
+                note_left_overhang[lo] = half;
+            }
+        } else {
+            span_widths.push((lo, hi, nw));
         }
     }
 
@@ -617,6 +865,18 @@ pub(crate) fn layout_sequence_full(
                 );
                 continue;
             }
+            SequenceItem::Divider(divider) => {
+                draw_divider(&mut items, &mut sem_items, divider, row, &col_x);
+                continue;
+            }
+            SequenceItem::Delay(delay) => {
+                draw_delay(&mut items, &mut sem_items, delay, row, &col_x);
+                continue;
+            }
+            SequenceItem::Reference(reference) => {
+                draw_reference(&mut items, &mut sem_items, reference, row, &col_x, &idx_of);
+                continue;
+            }
             _ => continue,
         };
         let y = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
@@ -784,6 +1044,26 @@ pub(crate) fn layout_sequence_full(
                 note.rect.y -= min_y;
                 note.text_anchor.x -= min_x;
                 note.text_anchor.y -= min_y;
+            }
+            SequenceItemLayout::Divider(divider) => {
+                divider.rect.x -= min_x;
+                divider.rect.y -= min_y;
+                divider.text_anchor.x -= min_x;
+                divider.text_anchor.y -= min_y;
+            }
+            SequenceItemLayout::Delay(delay) => {
+                delay.rect.x -= min_x;
+                delay.rect.y -= min_y;
+                if let Some(anchor) = &mut delay.text_anchor {
+                    anchor.x -= min_x;
+                    anchor.y -= min_y;
+                }
+            }
+            SequenceItemLayout::Reference(reference) => {
+                reference.rect.x -= min_x;
+                reference.rect.y -= min_y;
+                reference.text_anchor.x -= min_x;
+                reference.text_anchor.y -= min_y;
             }
         }
     }

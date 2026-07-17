@@ -2650,7 +2650,7 @@ mod tests {
             .iter()
             .map(|item| match item {
                 SequenceItemLayout::Message(m) => m,
-                SequenceItemLayout::Note(_) => panic!("unexpected note"),
+                other => panic!("unexpected non-message item: {other:?}"),
             })
             .collect();
         assert_eq!(messages.len(), 2);

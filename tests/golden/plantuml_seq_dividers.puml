@@ -1,0 +1,10 @@
+@startuml
+participant A
+participant B
+== Phase 1 ==
+A -> B : hello
+...
+B --> A : hi
+...5 min...
+ref over A, B : auth exchange
+@enduml

@@ -203,6 +203,50 @@ pub struct NoteLayout {
     pub text_anchor: Point,
 }
 
+/// Layout for a full-width divider band in a sequence diagram.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DividerLayout {
+    /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
+    pub index: usize,
+    /// The divider's label (from [`Divider::text`](kozue_ir::Divider)).
+    pub text: String,
+    /// Full-width band bounding box.
+    pub rect: Rect,
+    /// Center of the divider's text.
+    pub text_anchor: Point,
+}
+
+/// Layout for a time-gap delay marker in a sequence diagram.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct DelayLayout {
+    /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
+    pub index: usize,
+    /// The delay's optional label (from [`Delay::text`](kozue_ir::Delay)).
+    pub text: Option<String>,
+    /// Bounding box the dotted line crosses.
+    pub rect: Rect,
+    /// Center of the label, if any.
+    pub text_anchor: Option<Point>,
+}
+
+/// Layout for a reference frame in a sequence diagram.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceLayout {
+    /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
+    pub index: usize,
+    /// The reference's body text (from [`Reference::text`](kozue_ir::Reference)).
+    pub text: String,
+    /// Target participant IDs (from [`Reference::targets`](kozue_ir::Reference)).
+    pub targets: Vec<ElementId>,
+    /// Frame bounding box covering the targeted participant span.
+    pub rect: Rect,
+    /// Center of the reference's body text.
+    pub text_anchor: Point,
+}
+
 /// One laid-out sequence body item. Item-parity with
 /// [`SequenceDiagram::items`](kozue_ir::SequenceDiagram): the i-th layout item
 /// corresponds to the i-th diagram item and shares its variant.
@@ -211,6 +255,9 @@ pub struct NoteLayout {
 pub enum SequenceItemLayout {
     Message(MessageLayout),
     Note(NoteLayout),
+    Divider(DividerLayout),
+    Delay(DelayLayout),
+    Reference(ReferenceLayout),
 }
 
 /// Semantic layout for a sequence diagram.

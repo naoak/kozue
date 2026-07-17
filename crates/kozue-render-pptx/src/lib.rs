@@ -897,6 +897,51 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
                 ));
                 continue;
             }
+            // Full-width divider band -> plain rect with centered label.
+            SequenceItemLayout::Divider(divider) => {
+                let r = &divider.rect;
+                shapes.push_str(&rect_shape_with_geom(
+                    ids.next(),
+                    &format!("Divider {i}"),
+                    emu_pos(r.x),
+                    emu_pos(r.y),
+                    emu_len(r.width),
+                    emu_len(r.height),
+                    &divider.text,
+                    "rect",
+                ));
+                continue;
+            }
+            // Delay marker -> plain rect with the optional label.
+            SequenceItemLayout::Delay(delay) => {
+                let r = &delay.rect;
+                shapes.push_str(&rect_shape_with_geom(
+                    ids.next(),
+                    &format!("Delay {i}"),
+                    emu_pos(r.x),
+                    emu_pos(r.y),
+                    emu_len(r.width),
+                    emu_len(r.height.max(1.0)),
+                    delay.text.as_deref().unwrap_or(""),
+                    "rect",
+                ));
+                continue;
+            }
+            // Reference frame -> plain rect whose label carries a "ref" prefix.
+            SequenceItemLayout::Reference(reference) => {
+                let r = &reference.rect;
+                shapes.push_str(&rect_shape_with_geom(
+                    ids.next(),
+                    &format!("Reference {i}"),
+                    emu_pos(r.x),
+                    emu_pos(r.y),
+                    emu_len(r.width),
+                    emu_len(r.height),
+                    &format!("ref\n{}", reference.text),
+                    "rect",
+                ));
+                continue;
+            }
             // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
             // rejected on the strict export path by `validate_export_semantics`.
             _ => continue,

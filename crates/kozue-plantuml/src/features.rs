@@ -275,13 +275,18 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "== dividers",
-        support: Support::Unsupported,
-        note: "reports an unsupported error",
+        support: Support::Supported,
+        note: "`== text ==` parsed into SequenceItem::Divider",
     },
     Feature {
-        name: "... / || delays",
-        support: Support::Unsupported,
-        note: "reports an unsupported error",
+        name: "... / ...text... delays",
+        support: Support::Supported,
+        note: "`...` / `...text...` / `...text` parsed into SequenceItem::Delay; `||` spacers stay unsupported",
+    },
+    Feature {
+        name: "ref over a[, b...] : text (single line)",
+        support: Support::Supported,
+        note: "single-line reference frame parsed into SequenceItem::Reference; multi-line `ref over a` blocks report an unsupported error",
     },
     Feature {
         name: "! preprocessor directives",

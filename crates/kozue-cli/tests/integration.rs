@@ -147,6 +147,20 @@ fn native_mermaid_plantuml_notes_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_plantuml_dividers_delays_references_produce_equivalent_ir() {
+    // Dividers, delays, and references must normalize to the same semantic IR
+    // across the native and PlantUML frontends. (Mermaid has no syntax for any
+    // of these three, so it is not part of the comparison.)
+    let native = "sequence s {\n  participant A\n  participant B\n  divider : \"Phase 2\"\n  delay\n  delay : \"5 min\"\n  ref over A, B : \"auth\"\n}";
+    let plantuml =
+        "@startuml\nparticipant A\nparticipant B\n== Phase 2 ==\n...\n...5 min...\nref over A, B : auth\n@enduml\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_plantuml::parse(plantuml).expect("PlantUML parse")
+    );
+}
+
+#[test]
 fn native_and_plantuml_message_arrows_produce_equivalent_ir() {
     // Every PlantUML message arrow form must produce the same semantic IR as
     // its native head/tail modifier spelling.
@@ -381,6 +395,59 @@ fn notes_map_across_all_backends() {
 }
 
 #[test]
+fn dividers_delays_references_map_across_all_backends() {
+    let source = "sequence dd {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  divider : \"Phase 2\"\n  a -> b : \"hello\"\n  delay\n  delay : \"5 min\"\n  ref over a, b : \"auth\"\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    // SVG (presentation path): divider/delay/reference text appears.
+    let svg = kozue_render_svg::render(&output.scene);
+    assert!(svg.contains(">Phase 2<"));
+    assert!(svg.contains(">5 min<"));
+    assert!(svg.contains(">auth<"));
+    assert!(svg.contains(">ref<"));
+
+    // Terminal path renders the text.
+    let term = kozue_render_term::render(&output.scene);
+    assert!(term.contains("Phase 2"));
+
+    // draw.io: divider rect, dashed delay rect, and a native umlFrame reference.
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("id=\"divider0\""));
+    assert!(drawio.contains("value=\"Phase 2\""));
+    assert!(drawio.contains("id=\"delay2\""));
+    assert!(drawio.contains("id=\"delay3\""));
+    assert!(drawio.contains("shape=umlFrame"));
+    assert!(drawio.contains("id=\"ref4\""));
+
+    // Excalidraw: rectangle `line` outlines + standalone text.
+    let excalidraw: serde_json::Value =
+        serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
+    let elements = excalidraw["elements"].as_array().unwrap();
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "text" && e["text"] == "Phase 2"));
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "text" && e["text"] == "auth"));
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "line" && e["id"] == "ref4"));
+
+    // PPTX: rect shapes carrying divider/delay text and a "ref"-prefixed frame.
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let pptx_text = String::from_utf8_lossy(&pptx);
+    assert!(pptx_text.contains("Phase 2"));
+    assert!(pptx_text.contains("5 min"));
+    assert!(pptx_text.contains("ref"));
+    assert!(pptx_text.contains("Divider "));
+    assert!(pptx_text.contains("Reference "));
+
+    // DOT stays sequence-unsupported.
+    assert!(kozue_render_dot::render(&diagram).is_err());
+}
+
+#[test]
 fn subgraphs_map_across_all_backends() {
     let source = "graph subgraphs {\n  entry: \"Entry\"\n  subgraph left: \"Left Side\" {\n    a: \"A\"\n    b: \"B\"\n  }\n  subgraph right {\n    c: \"C\"\n    subgraph inner: \"Inner\" {\n      d: \"D\"\n    }\n  }\n  entry -> a\n  a -> b\n  b -> c\n  c -> d\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
@@ -560,6 +627,7 @@ const SEQ_GOLDEN_CASES: &[&str] = &[
     "seq_participant_kinds",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
 ];
 
 #[test]
@@ -990,6 +1058,7 @@ const PLANTUML_GOLDEN_CASES: &[&str] = &[
     "plantuml_seq",
     "plantuml_seq_arrows",
     "plantuml_seq_notes",
+    "plantuml_seq_dividers",
     "plantuml_state",
     "plantuml_class",
     "plantuml_er",
@@ -1343,6 +1412,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "seq_basic",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1454,6 +1524,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "seq_basic",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1822,6 +1893,7 @@ const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_participant_kinds",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
 ];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2243,6 +2315,7 @@ const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_participant_kinds",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
 ];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2458,6 +2531,7 @@ const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_participant_kinds",
     "seq_message_arrows",
     "seq_notes",
+    "seq_dividers",
 ];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];

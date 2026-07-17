@@ -1,0 +1,10 @@
+sequence dividers {
+  participant a: "Alice"
+  participant b: "Bob"
+  divider : "Phase 1"
+  a -> b : "hello"
+  delay
+  b --> a : "hi"
+  delay : "5 min"
+  ref over a, b : "auth exchange"
+}

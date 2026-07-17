@@ -51,9 +51,10 @@ mod er_dsl;
 use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
-    ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note, NotePosition, Participant,
-    ParticipantKind, Port, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    ArrowType, Container, Delay, Diagram, Direction, Divider, Edge, ElementId, Endpoint,
+    GraphDiagram, IrDocument, LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note,
+    NotePosition, Participant, ParticipantKind, Port, Reference, SequenceDiagram, SequenceItem,
+    State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -87,6 +88,25 @@ enum Stmt {
     /// only inside a sequence body; any other diagram raises a semantic error.
     Note {
         position: NotePosition,
+        targets: Vec<(String, std::ops::Range<usize>)>,
+        text: String,
+        text_lit_span: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
+    },
+    /// `divider : "text"` — a sequence-only full-width labeled divider.
+    Divider {
+        text: String,
+        text_lit_span: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
+    },
+    /// `delay` / `delay : "text"` — a sequence-only time-gap marker.
+    Delay {
+        text: Option<String>,
+        text_lit_span: Option<std::ops::Range<usize>>,
+        span: std::ops::Range<usize>,
+    },
+    /// `ref over a[, b...] : "text"` — a sequence-only reference frame.
+    Reference {
         targets: Vec<(String, std::ops::Range<usize>)>,
         text: String,
         text_lit_span: std::ops::Range<usize>,
@@ -530,6 +550,72 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
                 },
             );
 
+        // divider: `divider : "text"` (sequence-only). `divider` is not reserved.
+        let divider = text::keyword("divider")
+            .padded_by(kzd_ws())
+            .ignore_then(just(':').padded_by(kzd_ws()))
+            .ignore_then(string_lit_spanned())
+            .map_with_span(|(text, text_lit_span), span| Stmt::Divider {
+                text,
+                text_lit_span,
+                span,
+            });
+
+        // delay: `delay` or `delay : "text"` (sequence-only). `delay` is not
+        // reserved. The bare form (no `:`) must NOT match when an arrow token
+        // follows, otherwise `delay -> b` (using `delay` as a participant id at
+        // the message *start* position) would be greedily consumed as a bare
+        // Delay statement and then fail at `->` without backtracking (`.or_not()`
+        // does not backtrack a success). Message arrows all begin with `-` or
+        // `<`, and no statement that can legitimately follow a bare `delay`
+        // starts with either character, so a negative one-char lookahead on
+        // `-`/`<` distinguishes the two cases precisely. When the guard fires,
+        // the bare branch fails and the top-level `.or()` chain falls through to
+        // the edge parsers, which parse `delay -> b` as a message.
+        let bare_delay = filter(|c: &char| *c == '-' || *c == '<')
+            .not()
+            .rewind()
+            .to(None::<(String, std::ops::Range<usize>)>);
+        let delay = text::keyword("delay")
+            .padded_by(kzd_ws())
+            .ignore_then(
+                just(':')
+                    .padded_by(kzd_ws())
+                    .ignore_then(string_lit_spanned())
+                    .map(Some)
+                    .or(bare_delay),
+            )
+            .map_with_span(|text_opt, span| {
+                let (text, text_lit_span) = match text_opt {
+                    Some((t, s)) => (Some(t), Some(s)),
+                    None => (None, None),
+                };
+                Stmt::Delay {
+                    text,
+                    text_lit_span,
+                    span,
+                }
+            });
+
+        // reference: `ref over a[, b...] : "text"` (sequence-only). `ref`/`over`
+        // are not reserved.
+        let reference = text::keyword("ref")
+            .padded_by(kzd_ws())
+            .ignore_then(text::keyword("over").padded_by(kzd_ws()))
+            .ignore_then(
+                ident_spanned()
+                    .separated_by(just(',').padded_by(kzd_ws()))
+                    .at_least(1),
+            )
+            .then_ignore(just(':').padded_by(kzd_ws()))
+            .then(string_lit_spanned())
+            .map_with_span(|(targets, (text, text_lit_span)), span| Stmt::Reference {
+                targets,
+                text,
+                text_lit_span,
+                span,
+            });
+
         // state declaration: `state id` or `state id: "label"`
         let state_decl = text::keyword("state")
             .padded_by(kzd_ws())
@@ -882,6 +968,9 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
         direction
             .or(participant)
             .or(note)
+            .or(divider)
+            .or(delay)
+            .or(reference)
             .or(state_decl)
             .or(state_trans_pseudo_left)
             .or(state_trans_pseudo_right)
@@ -1089,57 +1178,19 @@ fn collect_containers(
                 label,
                 label_lit_span,
             } => {
-                if graph.nodes.contains_key(id.as_str()) {
-                    errors.push(CompileError {
-                        message: format!("duplicate node declaration `{}`", id),
-                        span: id_span.clone(),
-                        secondary: node_first_decl
-                            .get(id)
-                            .map(|s| (s.clone(), "first declared here".to_string())),
-                    });
-                    continue;
-                }
-                if let Some(span) = container_first_decl.get(id) {
-                    errors.push(CompileError {
-                        message: format!(
-                            "node `{}` collides with a subgraph id of the same name",
-                            id
-                        ),
-                        span: id_span.clone(),
-                        secondary: Some((span.clone(), "first declared here".to_string())),
-                    });
-                    continue;
-                }
-                let kind = match shape {
-                    Some(ParsedNodeShape::Known(kind, _)) => kind.clone(),
-                    Some(ParsedNodeShape::Unknown(name, span)) => {
-                        errors.push(CompileError {
-                            message: format!(
-                                "unknown node shape `{name}`; expected `rectangle`, `rounded`, `circle`, or `diamond`"
-                            ),
-                            span: span.clone(),
-                            secondary: None,
-                        });
-                        continue;
-                    }
-                    None => NodeKind::Default,
-                };
-                let label_str = label.clone().unwrap_or_else(|| id.clone());
-                if let Some(lit_span) = label_lit_span {
-                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
-                        errors.push(CompileError {
-                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
-                            span: err_span,
-                            secondary: None,
-                        });
-                    }
-                }
-                node_first_decl.insert(id.clone(), id_span.clone());
-                graph.nodes.insert(
-                    id.clone().into(),
-                    Node::with_kind(id.clone(), label_str, kind),
+                collect_graph_node(
+                    id,
+                    id_span,
+                    shape.as_ref(),
+                    label.as_ref(),
+                    label_lit_span.as_ref(),
+                    graph,
+                    errors,
+                    node_first_decl,
+                    container_first_decl,
+                    src,
+                    &mut direct_members,
                 );
-                direct_members.push(id.clone().into());
             }
             Stmt::Subgraph {
                 id,
@@ -1224,6 +1275,57 @@ fn collect_containers(
                     secondary: None,
                 });
             }
+            // `divider`/`delay` are sequence-only keywords; outside a sequence
+            // they name an ordinary node (`divider : "x"` / `delay` /
+            // `delay : "x"` are node-declaration shapes), restoring the pre-M3b4
+            // behavior — mirrors how `participant`/`state`/`subgraph` remain
+            // usable as node ids. `ref over ...` is not a node-declaration shape,
+            // so `Stmt::Reference` stays an error below.
+            Stmt::Divider {
+                text,
+                text_lit_span,
+                span,
+            } => {
+                collect_graph_node(
+                    "divider",
+                    span,
+                    None,
+                    Some(text),
+                    Some(text_lit_span),
+                    graph,
+                    errors,
+                    node_first_decl,
+                    container_first_decl,
+                    src,
+                    &mut direct_members,
+                );
+            }
+            Stmt::Delay {
+                text,
+                text_lit_span,
+                span,
+            } => {
+                collect_graph_node(
+                    "delay",
+                    span,
+                    None,
+                    text.as_ref(),
+                    text_lit_span.as_ref(),
+                    graph,
+                    errors,
+                    node_first_decl,
+                    container_first_decl,
+                    src,
+                    &mut direct_members,
+                );
+            }
+            Stmt::Reference { span, .. } => {
+                errors.push(CompileError {
+                    message: "`ref` statements are only valid in sequence diagrams".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
             Stmt::StateDecl { id_span, .. } => {
                 errors.push(CompileError {
                     message: "`state` declarations are not valid in graph diagrams; use plain `<id>` node declarations".to_string(),
@@ -1252,6 +1354,72 @@ fn collect_containers(
     }
 
     (children, direct_members)
+}
+
+/// Collect a single graph node from destructured declaration fields. Shared by
+/// the `Stmt::Node` arm and the `Stmt::Divider`/`Stmt::Delay` re-interpretation
+/// arms (which name an ordinary node when they appear outside a sequence).
+#[allow(clippy::too_many_arguments)]
+fn collect_graph_node(
+    id: &str,
+    id_span: &std::ops::Range<usize>,
+    shape: Option<&ParsedNodeShape>,
+    label: Option<&String>,
+    label_lit_span: Option<&std::ops::Range<usize>>,
+    graph: &mut GraphDiagram,
+    errors: &mut Vec<CompileError>,
+    node_first_decl: &mut std::collections::BTreeMap<String, std::ops::Range<usize>>,
+    container_first_decl: &std::collections::BTreeMap<String, std::ops::Range<usize>>,
+    src: &str,
+    direct_members: &mut Vec<ElementId>,
+) {
+    if graph.nodes.contains_key(id) {
+        errors.push(CompileError {
+            message: format!("duplicate node declaration `{}`", id),
+            span: id_span.clone(),
+            secondary: node_first_decl
+                .get(id)
+                .map(|s| (s.clone(), "first declared here".to_string())),
+        });
+        return;
+    }
+    if let Some(span) = container_first_decl.get(id) {
+        errors.push(CompileError {
+            message: format!("node `{}` collides with a subgraph id of the same name", id),
+            span: id_span.clone(),
+            secondary: Some((span.clone(), "first declared here".to_string())),
+        });
+        return;
+    }
+    let kind = match shape {
+        Some(ParsedNodeShape::Known(kind, _)) => kind.clone(),
+        Some(ParsedNodeShape::Unknown(name, span)) => {
+            errors.push(CompileError {
+                message: format!(
+                    "unknown node shape `{name}`; expected `rectangle`, `rounded`, `circle`, or `diamond`"
+                ),
+                span: span.clone(),
+                secondary: None,
+            });
+            return;
+        }
+        None => NodeKind::Default,
+    };
+    let label_str = label.cloned().unwrap_or_else(|| id.to_string());
+    if let Some(lit_span) = label_lit_span {
+        if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+            errors.push(CompileError {
+                message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                span: err_span,
+                secondary: None,
+            });
+        }
+    }
+    node_first_decl.insert(id.to_string(), id_span.clone());
+    graph
+        .nodes
+        .insert(id.into(), Node::with_kind(id.to_string(), label_str, kind));
+    direct_members.push(id.into());
 }
 
 /// Resolve a parsed edge-endpoint port to an IR [`Port`], pushing a
@@ -1398,6 +1566,46 @@ fn build_graph_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
     }
 }
 
+/// Collect a single state declaration from destructured fields. Shared by the
+/// `Stmt::StateDecl` arm and the `Stmt::Divider`/`Stmt::Delay` re-interpretation
+/// arms (which name an ordinary state when they appear outside a sequence).
+#[allow(clippy::too_many_arguments)]
+fn collect_state_decl(
+    id: &str,
+    id_span: &std::ops::Range<usize>,
+    label: Option<&String>,
+    label_lit_span: Option<&std::ops::Range<usize>>,
+    diagram: &mut StateDiagram,
+    errors: &mut Vec<CompileError>,
+    first_decl_spans: &mut std::collections::BTreeMap<String, std::ops::Range<usize>>,
+    src: &str,
+) {
+    if diagram.states.contains_key(id) {
+        errors.push(CompileError {
+            message: format!("duplicate state declaration `{}`", id),
+            span: id_span.clone(),
+            secondary: first_decl_spans
+                .get(id)
+                .map(|s| (s.clone(), "first declared here".to_string())),
+        });
+        return;
+    }
+    let label_str = label.cloned().unwrap_or_else(|| id.to_string());
+    if let Some(lit_span) = label_lit_span {
+        if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
+            errors.push(CompileError {
+                message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                span: err_span,
+                secondary: None,
+            });
+        }
+    }
+    first_decl_spans.insert(id.to_string(), id_span.clone());
+    diagram
+        .states
+        .insert(id.into(), State::new(id.to_string(), label_str));
+}
+
 /// Build a [`StateDiagram`] from the AST.
 fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>> {
     let mut diagram = StateDiagram::new();
@@ -1457,30 +1665,16 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                 label,
                 label_lit_span,
             } => {
-                if diagram.states.contains_key(id.as_str()) {
-                    errors.push(CompileError {
-                        message: format!("duplicate state declaration `{}`", id),
-                        span: id_span.clone(),
-                        secondary: first_decl_spans
-                            .get(id)
-                            .map(|s| (s.clone(), "first declared here".to_string())),
-                    });
-                    continue;
-                }
-                let label_str = label.clone().unwrap_or_else(|| id.clone());
-                if let Some(lit_span) = label_lit_span {
-                    if let Some(err_span) = find_invalid_escape_in_span(src, lit_span) {
-                        errors.push(CompileError {
-                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
-                            span: err_span,
-                            secondary: None,
-                        });
-                    }
-                }
-                first_decl_spans.insert(id.clone(), id_span.clone());
-                diagram
-                    .states
-                    .insert(id.clone().into(), State::new(id.clone(), label_str));
+                collect_state_decl(
+                    id,
+                    id_span,
+                    label.as_ref(),
+                    label_lit_span.as_ref(),
+                    &mut diagram,
+                    &mut errors,
+                    &mut first_decl_spans,
+                    src,
+                );
             }
             Stmt::Node { id_span, shape, .. } => {
                 errors.push(CompileError {
@@ -1527,6 +1721,51 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
             Stmt::Note { span, .. } => {
                 errors.push(CompileError {
                     message: "`note` statements are only valid in sequence diagrams".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
+            // `divider`/`delay` are sequence-only keywords; outside a sequence
+            // they name an ordinary state (`divider : "x"` / `delay` /
+            // `delay : "x"` are state-declaration shapes), restoring the pre-M3b4
+            // behavior — mirrors how `participant`/`subgraph` remain usable as
+            // ids. `ref over ...` is not a state-declaration shape, so
+            // `Stmt::Reference` stays an error below.
+            Stmt::Divider {
+                text,
+                text_lit_span,
+                span,
+            } => {
+                collect_state_decl(
+                    "divider",
+                    span,
+                    Some(text),
+                    Some(text_lit_span),
+                    &mut diagram,
+                    &mut errors,
+                    &mut first_decl_spans,
+                    src,
+                );
+            }
+            Stmt::Delay {
+                text,
+                text_lit_span,
+                span,
+            } => {
+                collect_state_decl(
+                    "delay",
+                    span,
+                    text.as_ref(),
+                    text_lit_span.as_ref(),
+                    &mut diagram,
+                    &mut errors,
+                    &mut first_decl_spans,
+                    src,
+                );
+            }
+            Stmt::Reference { span, .. } => {
+                errors.push(CompileError {
+                    message: "`ref` statements are only valid in sequence diagrams".to_string(),
                     span: span.clone(),
                     secondary: None,
                 });
@@ -1818,6 +2057,83 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 if valid {
                     seq.items
                         .push(SequenceItem::Note(Note::new(text.clone(), *position, ids)));
+                }
+                continue;
+            }
+            Stmt::Divider {
+                text,
+                text_lit_span,
+                ..
+            } => {
+                if let Some(err_span) = find_invalid_escape_in_span(src, text_lit_span) {
+                    errors.push(CompileError {
+                        message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                        span: err_span,
+                        secondary: None,
+                    });
+                } else {
+                    seq.items
+                        .push(SequenceItem::Divider(Divider::new(text.clone())));
+                }
+                continue;
+            }
+            Stmt::Delay {
+                text,
+                text_lit_span,
+                ..
+            } => {
+                let mut valid = true;
+                if let Some(span) = text_lit_span {
+                    if let Some(err_span) = find_invalid_escape_in_span(src, span) {
+                        errors.push(CompileError {
+                            message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                            span: err_span,
+                            secondary: None,
+                        });
+                        valid = false;
+                    }
+                }
+                if valid {
+                    seq.items
+                        .push(SequenceItem::Delay(Delay::new(text.clone())));
+                }
+                continue;
+            }
+            Stmt::Reference {
+                targets,
+                text,
+                text_lit_span,
+                ..
+            } => {
+                let mut valid = true;
+                let mut ids: Vec<ElementId> = Vec::new();
+                for (name, span) in targets {
+                    if !seq.participants.contains_key(name.as_str()) {
+                        let mut message = format!("unknown participant `{}`", name);
+                        if let Some(suggestion) = closest_name(name, seq.participants.keys()) {
+                            message.push_str(&format!(", did you mean `{}`?", suggestion));
+                        }
+                        errors.push(CompileError {
+                            message,
+                            span: span.clone(),
+                            secondary: None,
+                        });
+                        valid = false;
+                    } else {
+                        ids.push(name.clone().into());
+                    }
+                }
+                if let Some(err_span) = find_invalid_escape_in_span(src, text_lit_span) {
+                    errors.push(CompileError {
+                        message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                        span: err_span,
+                        secondary: None,
+                    });
+                    valid = false;
+                }
+                if valid {
+                    seq.items
+                        .push(SequenceItem::Reference(Reference::new(text.clone(), ids)));
                 }
                 continue;
             }
@@ -2323,6 +2639,9 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
                     | Stmt::BidirectionalEdge(_)
                     | Stmt::StateTransition(_)
                     | Stmt::Note { .. }
+                    | Stmt::Divider { .. }
+                    | Stmt::Delay { .. }
+                    | Stmt::Reference { .. }
             ) {
                 Some(i)
             } else {
@@ -2519,6 +2838,9 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
         }
         Stmt::Subgraph { span, .. } => (span.start, span.end),
         Stmt::Note { span, .. } => (span.start, span.end),
+        Stmt::Divider { span, .. } => (span.start, span.end),
+        Stmt::Delay { span, .. } => (span.start, span.end),
+        Stmt::Reference { span, .. } => (span.start, span.end),
     }
 }
 
@@ -2848,6 +3170,21 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
             format!(
                 "note {} {} : {}",
                 kw,
+                names.join(", "),
+                format_string_lit(text)
+            )
+        }
+        Stmt::Divider { text, .. } => {
+            format!("divider : {}", format_string_lit(text))
+        }
+        Stmt::Delay { text, .. } => match text {
+            Some(t) => format!("delay : {}", format_string_lit(t)),
+            None => "delay".to_string(),
+        },
+        Stmt::Reference { targets, text, .. } => {
+            let names: Vec<&str> = targets.iter().map(|(name, _)| name.as_str()).collect();
+            format!(
+                "ref over {} : {}",
                 names.join(", "),
                 format_string_lit(text)
             )
@@ -4638,6 +4975,202 @@ mod tests {
         assert!(f1.contains("note right of b : \"got it\""));
         assert!(f1.contains("note over a, b : \"both\""));
         assert!(f1.contains("note left of a : \"done\""));
+    }
+
+    #[test]
+    fn sequence_dividers_delays_references_parse_and_format() {
+        let src = "sequence n {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  divider : \"Phase 2\"\n  a -> b : \"hello\"\n  delay\n  delay : \"5 min\"\n  ref over a, b : \"auth\"\n}\n";
+        let diagram = parse(src).expect("should parse");
+        let Diagram::Sequence(seq) = &diagram else {
+            panic!("expected sequence");
+        };
+        match &seq.items[0] {
+            SequenceItem::Divider(d) => assert_eq!(d.text, "Phase 2"),
+            other => panic!("expected divider, got {other:?}"),
+        }
+        assert!(matches!(seq.items[1], SequenceItem::Message(_)));
+        match &seq.items[2] {
+            SequenceItem::Delay(d) => assert_eq!(d.text, None),
+            other => panic!("expected delay, got {other:?}"),
+        }
+        match &seq.items[3] {
+            SequenceItem::Delay(d) => assert_eq!(d.text.as_deref(), Some("5 min")),
+            other => panic!("expected delay, got {other:?}"),
+        }
+        match &seq.items[4] {
+            SequenceItem::Reference(r) => {
+                assert_eq!(r.text, "auth");
+                assert_eq!(r.targets, vec![ElementId::new("a"), ElementId::new("b")]);
+            }
+            other => panic!("expected reference, got {other:?}"),
+        }
+        // Idempotent formatting.
+        let f1 = format_kzd(src).expect("should format");
+        let f2 = format_kzd(&f1).expect("re-format should succeed");
+        assert_eq!(f1, f2);
+        assert!(f1.contains("divider : \"Phase 2\""));
+        assert!(f1.contains("\n  delay\n"));
+        assert!(f1.contains("delay : \"5 min\""));
+        assert!(f1.contains("ref over a, b : \"auth\""));
+    }
+
+    #[test]
+    fn divider_delay_reference_keywords_usable_as_id() {
+        // `divider` / `delay` / `ref` / `over` are non-reserved: they may be used
+        // as participant identifiers and appear at BOTH the start and end of a
+        // message arrow. The regression case is a bare `delay` at the message
+        // *start* position (`delay -> b`): the bare-Delay branch must fall through
+        // to the edge parser instead of greedily consuming `delay`.
+        let cases = ["divider", "delay", "ref", "over"];
+        for id in cases {
+            // id at the message start position (solid + dashed arrows).
+            let src_start = format!(
+                "sequence s {{\n  participant {id}: \"X\"\n  participant b: \"B\"\n  {id} -> b : \"m\"\n  {id} --> b : \"r\"\n}}\n"
+            );
+            let d = parse(&src_start)
+                .unwrap_or_else(|e| panic!("`{id}` as start id should parse: {e:?}"));
+            let kozue_ir::Diagram::Sequence(seq) = d else {
+                panic!("expected Sequence for start id `{id}`");
+            };
+            let msgs: Vec<_> = seq
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    kozue_ir::SequenceItem::Message(m) => Some(m),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(msgs.len(), 2, "`{id}` start: expected 2 messages");
+            assert_eq!(
+                msgs[0].from.as_str(),
+                id,
+                "`{id}` start-position from mismatch"
+            );
+
+            // id at the message end position.
+            let src_end = format!(
+                "sequence s {{\n  participant a: \"A\"\n  participant {id}: \"X\"\n  a -> {id} : \"m\"\n}}\n"
+            );
+            let d =
+                parse(&src_end).unwrap_or_else(|e| panic!("`{id}` as end id should parse: {e:?}"));
+            let kozue_ir::Diagram::Sequence(seq) = d else {
+                panic!("expected Sequence for end id `{id}`");
+            };
+            let kozue_ir::SequenceItem::Message(m) = &seq.items[0] else {
+                panic!("expected Message for end id `{id}`");
+            };
+            assert_eq!(m.to.as_str(), id, "`{id}` end-position to mismatch");
+        }
+
+        // Sanity: bare `delay` (no `:`, no arrow) still parses as a Delay item,
+        // and `delay : "t"` still parses as a labeled Delay.
+        let src = "sequence s {\n  participant a: \"A\"\n  participant b: \"B\"\n  delay\n  a -> b : \"m\"\n  delay : \"1s\"\n}\n";
+        let d = parse(src).unwrap_or_else(|e| panic!("bare/labeled delay should parse: {e:?}"));
+        let kozue_ir::Diagram::Sequence(seq) = d else {
+            panic!("expected Sequence");
+        };
+        assert!(matches!(
+            &seq.items[0],
+            kozue_ir::SequenceItem::Delay(dl) if dl.text.is_none()
+        ));
+        assert!(matches!(
+            &seq.items[2],
+            kozue_ir::SequenceItem::Delay(dl) if dl.text.as_deref() == Some("1s")
+        ));
+    }
+
+    #[test]
+    fn reference_rejected_outside_sequence() {
+        // `ref over ...` is not a node/state-declaration shape, so it stays a
+        // sequence-only error in graph/state. (`divider`/`delay` DO become nodes
+        // /states outside a sequence — see
+        // `divider_delay_reinterpreted_as_node_or_state_outside_sequence`.)
+        for kind in ["graph", "state"] {
+            let src = format!("{kind} g {{\n  a\n  ref over a : \"x\"\n}}\n");
+            let err = parse(&src).expect_err("must error outside sequence");
+            assert!(
+                err.iter()
+                    .any(|e| e.message.contains("only valid in sequence")),
+                "{kind}/ref over did not error as sequence-only"
+            );
+        }
+    }
+
+    #[test]
+    fn divider_delay_reinterpreted_as_node_or_state_outside_sequence() {
+        // Regression guard (pre-M3b4 behavior): `divider`/`delay` are sequence-
+        // only keywords, but outside a sequence they name an ordinary node/state,
+        // exactly like `participant`/`state`/`subgraph` remain usable as ids.
+
+        // graph: `divider : "X"` → node id="divider" label="X"
+        let kozue_ir::Diagram::Graph(g) =
+            parse("graph g {\n  divider : \"X\"\n}\n").expect("divider should be a graph node")
+        else {
+            panic!("expected Graph");
+        };
+        let n = g.nodes.get("divider").expect("node `divider` must exist");
+        assert_eq!(n.label, "X");
+
+        // graph: bare `delay` → node id="delay" label defaults to id
+        let kozue_ir::Diagram::Graph(g) =
+            parse("graph g {\n  delay\n}\n").expect("bare delay should be a graph node")
+        else {
+            panic!("expected Graph");
+        };
+        let n = g.nodes.get("delay").expect("node `delay` must exist");
+        assert_eq!(n.label, "delay");
+
+        // graph: `delay : "D"` → node id="delay" label="D"; and it can be used as
+        // an edge endpoint.
+        let kozue_ir::Diagram::Graph(g) =
+            parse("graph g {\n  delay : \"D\"\n  b\n  delay -> b\n}\n")
+                .expect("delay label + edge should parse")
+        else {
+            panic!("expected Graph");
+        };
+        assert_eq!(g.nodes.get("delay").expect("node `delay`").label, "D");
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].from.as_str(), "delay");
+
+        // state: bare `delay` → state id="delay"
+        let kozue_ir::Diagram::State(s) =
+            parse("state s {\n  delay\n}\n").expect("bare delay should be a state")
+        else {
+            panic!("expected State");
+        };
+        assert!(s.states.contains_key("delay"), "state `delay` must exist");
+
+        // state: `divider : "X"` → state id="divider" label="X"
+        let kozue_ir::Diagram::State(s) =
+            parse("state s {\n  divider : \"X\"\n}\n").expect("divider should be a state")
+        else {
+            panic!("expected State");
+        };
+        assert_eq!(s.states.get("divider").expect("state `divider`").label, "X");
+
+        // Regression guard for the pre-existing precedent: `participant` remains
+        // usable as a graph node id.
+        let kozue_ir::Diagram::Graph(g) =
+            parse("graph g {\n  participant : \"P\"\n}\n").expect("participant should be a node")
+        else {
+            panic!("expected Graph");
+        };
+        assert_eq!(
+            g.nodes
+                .get("participant")
+                .expect("node `participant`")
+                .label,
+            "P"
+        );
+    }
+
+    #[test]
+    fn reference_unknown_participant_errors() {
+        let src = "sequence s {\n  participant a: \"A\"\n  ref over a, zzz : \"x\"\n}\n";
+        let err = parse(src).expect_err("unknown reference target must error");
+        assert!(err
+            .iter()
+            .any(|e| e.message.contains("unknown participant")));
     }
 
     #[test]

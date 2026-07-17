@@ -701,6 +701,56 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
                 ));
                 continue;
             }
+            // Full-width labeled band -> plain rect vertex.
+            SequenceItemLayout::Divider(divider) => {
+                let r = &divider.rect;
+                out.push_str(&format!(
+                    "        <mxCell id=\"divider{i}\" value=\"{}\" \
+                     style=\"rounded=0;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\">\n\
+                     \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+                     \x20       </mxCell>\n",
+                    xml_escape(&divider.text),
+                    f(r.x + MARGIN),
+                    f(r.y + MARGIN),
+                    f(r.width),
+                    f(r.height),
+                ));
+                continue;
+            }
+            // Time-gap marker -> dashed rect vertex spanning the diagram width.
+            SequenceItemLayout::Delay(delay) => {
+                let r = &delay.rect;
+                out.push_str(&format!(
+                    "        <mxCell id=\"delay{i}\" value=\"{}\" \
+                     style=\"rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;\" vertex=\"1\" parent=\"1\">\n\
+                     \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+                     \x20       </mxCell>\n",
+                    xml_escape(delay.text.as_deref().unwrap_or("")),
+                    f(r.x + MARGIN),
+                    f(r.y + MARGIN),
+                    f(r.width),
+                    f(r.height.max(1.0)),
+                ));
+                continue;
+            }
+            // Reference frame -> drawio native `shape=umlFrame`. The frame's
+            // built-in title area shows "ref"; the body text is the value.
+            SequenceItemLayout::Reference(reference) => {
+                let r = &reference.rect;
+                let value = format!("ref&#10;{}", xml_escape(&reference.text));
+                out.push_str(&format!(
+                    "        <mxCell id=\"ref{i}\" value=\"{}\" \
+                     style=\"shape=umlFrame;whiteSpace=wrap;html=1;width=40;height=20;\" vertex=\"1\" parent=\"1\">\n\
+                     \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+                     \x20       </mxCell>\n",
+                    value,
+                    f(r.x + MARGIN),
+                    f(r.y + MARGIN),
+                    f(r.width),
+                    f(r.height),
+                ));
+                continue;
+            }
             // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
             // rejected on the strict export path by `validate_export_semantics`.
             _ => continue,
