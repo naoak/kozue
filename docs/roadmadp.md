@@ -71,7 +71,7 @@ annotation を生成するマイルストーンで追加する。
 
 ### M3: Existing diagram semantics
 
-状態: **M3b3（note ＋ SemanticLayout item 列一般化、schema V11）実装済み**
+状態: **M3b4（divider / delay / reference、schema V12）実装済み**
 
 既存5種を frontend ごとの最小 subset から、意味を保持できる IR へ拡張する。
 
@@ -270,8 +270,50 @@ annotation を生成するマイルストーンで追加する。
      - 既存 golden 差分0、新規 `seq_notes`（`.kzd` / `.svg` / `.txt` / `.png` /
        `.drawio` / `.excalidraw` / `.pptx`）・`mermaid_seq_notes`（`.mmd` / `.svg`）・
        `plantuml_seq_notes`（`.puml` / `.svg`）golden のみ追加
+   - **M3b4 実装済み**: divider / delay / reference
+     - schema V12。旧 document は lossless upgrade、V2-V11 で divider / delay /
+       reference item を明示拒否（`sequence_divider_supported_in` /
+       `sequence_delay_supported_in` / `sequence_reference_supported_in` を V12-only で
+       新設、V1 は wire arm 先行拒否）。既存全 9 gate に V12 を追加、
+       `sequence_note_supported_in` は V11 | V12 へ拡張
+     - `SequenceItem` に `Divider(Divider)` / `Delay(Delay)` / `Reference(Reference)` を
+       追加。`Divider { text }` / `Delay { text: Option<String> }`（PlantUML `...` の
+       text 無し gap を型で表現）/ `Reference { text, targets: Vec<ElementId> }`
+       （targets は Over note と同じ 1 個以上・宣言順保持）。全て `#[non_exhaustive]`・
+       `deny_unknown_fields`・`new()`。`diagram_supported_in` の Sequence arm は
+       wildcard 無しの網羅 match（fail-closed）
+     - native DSL: `divider : "text"` / `delay`（text 無し） / `delay : "text"` /
+       `ref over a[, b...] : "text"`。`divider`/`delay`/`ref`/`over` は非予約語。
+       `divider`（`:` 必須）/ `ref`（`over` 必須）は lookahead 外れで node へ
+       fall-through、bare `delay` は直後の `-`/`<` を否定 lookahead して edge へ
+       fall-through（`delay -> b`）。**sequence の外では `divider`/`delay` は同名の
+       通常 node / state 識別子として再解釈**（`participant`/`state`/`subgraph` が
+       id 利用可なのと同じ規約。build 時に共有ヘルパへ委譲し既存 node/state 収集
+       ロジックを完全再利用）。`ref over` は sequence-only 明示エラー維持。formatter は
+       canonical 出力で idempotent
+     - Mermaid: divider / delay / reference の構文が存在しないため変更なし
+       （silent drop も発生しない）
+     - PlantUML: `== text ==`（divider）/ `...` `...text...`（delay）/ 単一行
+       `ref over a[, b...] : text`（reference）を unsupported から格上げ。`||` スペーサと
+       複数行 `ref over ... end ref` block は今回スコープ外で従来通り明示 unsupported
+       （features 表も更新）
+     - layout: 各 item は 1 行占有。divider は全幅バンド（Rect outline + 中央 Text）、
+       delay は全幅の点線 + 任意中央ラベル、reference は targets スパン枠 + 左上 "ref"
+       タブ + 中央本文。reference の列幅寄与は Over note 機構（span_widths / overhang）を
+       再利用、divider / delay は全幅中央で列 gap を強制しないため既存 `col_x` 式に
+       非接触 → 既存 golden bytes 不変。`DividerLayout` / `DelayLayout`
+       （`text_anchor: Option<Point>`）/ `ReferenceLayout`
+     - 全 backend 伝播: SVG / PNG / terminal は Scene 経由でコード変更なし、
+       draw.io は reference を native `shape=umlFrame`・divider を rect・delay を
+       dashed rect（dotted→dashed 近似は doc-comment 明示）、Excalidraw は rectangle +
+       text 近似（tab / dotted styling 損失を doc-comment 明示）、PPTX は rect + text
+       （reference は "ref\n" prefix）。DOT は sequence 非対応維持
+     - contract に item-parity 突合（index + text + targets）・geometry 検証
+       （delay は Option anchor）・future variant fail-closed を追加
+     - 既存 golden 差分0、新規 `seq_dividers`（`.kzd` / `.svg` / `.txt` / `.png` /
+       `.drawio` / `.excalidraw` / `.pptx`）・`plantuml_seq_dividers`（`.puml` / `.svg`）
+       golden のみ追加
    - activation、create / destroy
-   - divider、delay、reference
    - `loop` / `alt` / `opt` / `par` / `critical` / `break` の再帰 fragment
    - open / filled / cross / circle / async / bidirectional arrow
 3. State
@@ -519,7 +561,9 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
   を、diagram.items 順に対応する統一 item 列へ一度だけ再設計する（geometry
   不変なので既存 golden bytes は不変）。これを先送りすると b4-b7 で毎回
   パッチが増える
-- M3b4 divider / delay / reference（V12）: b3 の新 leaf item 土台を再利用
+- **M3b4 divider / delay / reference（V12）**: 実装済み（上記）。b3 の新 leaf
+  item 土台を再利用。sequence 外では `divider`/`delay` を通常 node/state 識別子へ
+  再解釈して非予約性を維持
 - M3b5 activation bar（V13）: 活性区間モデル（開始 / 終了・ネスト）を新設。
   `ActivationLayout`（lifeline 上の rect stack）追加、message 端点を bar 辺へ
 - M3b6 create / destroy（V14）: 参加者ライフサイクル（生成で header 降下、
@@ -628,13 +672,52 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
   （doc-comment 明示）、PlantUML block note 未対応、note 塗り無しで lifeline 透過
   （M4 の paint primitive 送り）
 
+## M3b4 の検証状況
+
+- schema V12 migration（V1-V11 lossless upgrade）と V2-V11 の divider / delay /
+  reference item 明示拒否（`sequence_{dividers,delays,references}_require_schema_v12`、
+  delay は None / Some、reference は単一 / 複数 target）: 成功。既存 9 gate に V12 追加、
+  新規 3 gate は V12-only、numeric 境界（13 拒否）更新: 成功
+- native DSL の `divider : "t"` / `delay`[` : "t"`] / `ref over a[, b] : "t"` parse、
+  formatter idempotency、unknown participant 拒否: 成功
+- **非予約キーワードの回帰を独立レビューで 2 面検出・修正**:
+  (1) bare `delay` を message 始端に使う `delay -> b` が予約語化（Opus 検出）→
+  直後 `-`/`<` の否定 lookahead で edge parser へ fall-through。
+  (2) graph / state で `divider : "…"` / bare・labeled `delay`（＝pre-M3b4 で有効な
+  node/state 宣言）が予約語化（Fable 総合レビュー検出）→ build 時に共有ヘルパ
+  （`collect_graph_node` / `collect_state_decl`）へ委譲し同名 node/state として再解釈。
+  `graph { participant : "X" }` 等の既存キーワード非予約性と同じ規約に揃えた。
+  `divider_delay_reinterpreted_as_node_or_state_outside_sequence` /
+  sequence 用 `divider_delay_reference_keywords_usable_as_id` /
+  `reference_rejected_outside_sequence` テストで固定
+- PlantUML `== t ==` / `...` / `...t...`（`...t` 寛容受理） / 単一行 `ref over` 格上げ、
+  `||` スペーサ・複数行 ref ブロックは明示 unsupported 維持、Mermaid は構文なしで
+  変更なし: 成功。native↔PlantUML 等価 IR テスト: 成功
+- contract の item-parity 突合（index + text + targets、variant 交差は明示 mismatch）・
+  geometry 検証（delay は Option anchor）・future variant 拒否: 成功
+- 全 backend mapping（drawio native `shape=umlFrame` ×1・divider rect・delay dashed
+  rect / excalidraw rectangle + text / pptx rect + "ref" prefix、SVG / PNG / terminal は
+  Scene 経由、DOT は `is_err()` 拒否）: 成功
+- `cargo fmt --all --check` / `cargo check --workspace` /
+  `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace`（`UPDATE_GOLDEN` なし、754 passed）/ `git diff --check`:
+  すべて成功
+- 既存 golden 差分0（`git diff --stat tests/golden` 空、新規は `seq_dividers`（7 形式）/
+  `plantuml_seq_dividers`（`.puml` / `.svg`）の untracked のみ）
+- 独立レビュー（Opus）＋総合レビュー（Fable）: verdict ship。既知の制限: reference の
+  列幅寄与は text 基準で "ref" タブ最小幅（68px）未反映・ref frame 高さが
+  `MSG_ROW_HEIGHT` を微超過・delay ラベルが点線上に重畳（いずれも視覚品質のみ、
+  golden 破綻なし。M3b5 以降 or M4 paint で調整余地）、PlantUML `||`・複数行
+  ref/note ブロック未対応、divider / reference 塗り無しで lifeline 透過（M4 送り）
+
 ## 再開時の確認事項
 
-1. M3b1 / M3b2 / M3b3 は実装・検証・独立レビュー済み（M3b3 は未コミット、作業ツリー上）
-2. 次は **M3b4（divider / delay / reference、schema V12）**。item 列一般化は
-   M3b3 で完了しているので、新 item variant を `SequenceItem` /
-   `SequenceItemLayout` に足す形で載る
-3. M3b5 activation bar（V13、活性区間モデル新設） / M3b6 create / destroy（V14） /
+1. M3b1 / M3b2 / M3b3 / M3b4 は実装・検証・独立レビュー・総合レビュー済み
+   （M3b4 は独立レビューで 2 面の非予約キーワード回帰を検出・修正済み）
+2. 次は **M3b5 activation bar（V13）**。活性区間モデル（開始 / 終了・ネスト）を新設。
+   `ActivationLayout`（lifeline 上の rect stack）追加、message 端点を bar 辺へ。
+   b4 までは平坦 leaf item だったが b5 は初の区間モデル
+3. M3b6 create / destroy（V14、参加者ライフサイクル・lifeline y 範囲可変） /
    M3b7 fragment loop/alt/opt/par/critical/break（V15、items 平坦 Vec→再帰木、
    最も侵襲的で最後）
 4. 実装後は別担当の独立レビューと root 総合レビューを行い、既存 golden 差分0を確認する
