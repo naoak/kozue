@@ -71,7 +71,7 @@ annotation を生成するマイルストーンで追加する。
 
 ### M3: Existing diagram semantics
 
-状態: **M3b4（divider / delay / reference、schema V12）実装済み**
+状態: **M3b5（activation bar、schema V13）実装済み**
 
 既存5種を frontend ごとの最小 subset から、意味を保持できる IR へ拡張する。
 
@@ -313,7 +313,40 @@ annotation を生成するマイルストーンで追加する。
      - 既存 golden 差分0、新規 `seq_dividers`（`.kzd` / `.svg` / `.txt` / `.png` /
        `.drawio` / `.excalidraw` / `.pptx`）・`plantuml_seq_dividers`（`.puml` / `.svg`）
        golden のみ追加
-   - activation、create / destroy
+   - **M3b5 実装済み**: activation bar（活性区間・初の区間モデル）
+     - schema V13。旧 document は lossless upgrade、V2-V12 で activation item を明示拒否
+       （`sequence_activation_supported_in` を V13-only で新設）。既存全 gate に V13 を
+       追加、deserialize の per-version arm（V1-V13）と numeric 境界（13 受理 / 14 拒否）更新
+     - `SequenceItem` に `Activate(Activation)` / `Deactivate(Activation)` を追加
+       （2 語が source に別々に出るため 2 variant、payload struct `Activation { participant }`
+       を共有）。`#[non_exhaustive]`・`deny_unknown_fields`・`new()`
+     - layout: 平坦 leaf item だった b4 までと異なり初の区間モデル。`SequenceLayout.bars`
+       （lifeline 上の rect stack）を items と別フィールドで新設。participant ごとの
+       stack で `activate`↔`deactivate` をペアリング、ネストは depth で右へ 3px ステップ。
+       未閉 activate / 過剰 deactivate は layout error（silent 禁止）。message / self-message
+       の端点を bar 辺へ寄せる（`raw ± BAR_WIDTH/2 + (depth-1)*BAR_NEST_OFFSET`、nest 項は
+       常に加算で bar 幾何と整合）。activation 無しの図では depth=0 で端点 = `col_x` に一致し
+       既存 golden bytes 不変。1:1 parity 用に各 item は `SequenceItemLayout::Activation`
+       marker を持ち、描画 rect は `bars` に分離（二重描画回避）。bar は depth 昇順・
+       メッセージ背面で描画（ネスト時に内側が前面）
+     - native DSL: `activate <id>` / `deactivate <id>`。`activate`/`deactivate` は非予約語。
+       bare（id 無し）は node へ、`activate -> b` は `-`/`<` 否定 lookahead で edge へ、
+       `activate : "X"` は node へ fall-through。**sequence の外では明示エラー**（`activate <id>`
+       の 2 トークン文は pre-M3b5 でも無効ゆえ再解釈不要）。formatter は idempotent
+     - PlantUML / Mermaid: `activate`/`deactivate` を unsupported から格上げ。未宣言
+       participant は message 端点と同じ auto-declare（PlantUML の silent drop を修正、
+       Mermaid は既に auto-declare）。`++`/`--`/`+`/`-` message shorthand・`activate #color`・
+       `return`/`create`/`destroy` は今回スコープ外で明示 unsupported 維持（features 表も更新）
+     - layout `ActivationBarLayout { rect, participant, depth }` /
+       `ActivationMarkerLayout { index, participant, x, y, is_start, depth }`
+     - 全 backend 伝播: SVG / PNG / terminal は Scene 経由でコード変更なし、draw.io /
+       Excalidraw / PPTX は bar を rect map。DOT は sequence 非対応維持
+     - contract に item-parity 突合（index + participant + is_start）・bars geometry 検証・
+       future variant fail-closed を追加
+     - 既存 golden 差分0、新規 `seq_activation`（`.kzd` / `.svg` / `.txt` / `.png` /
+       `.drawio` / `.excalidraw` / `.pptx`）・`plantuml_seq_activation`（`.puml` / `.svg`）・
+       `mermaid_seq_activation`（`.mmd` / `.svg`。plantuml と byte-identical SVG）golden のみ追加
+   - create / destroy
    - `loop` / `alt` / `opt` / `par` / `critical` / `break` の再帰 fragment
    - open / filled / cross / circle / async / bidirectional arrow
 3. State
@@ -564,8 +597,9 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
 - **M3b4 divider / delay / reference（V12）**: 実装済み（上記）。b3 の新 leaf
   item 土台を再利用。sequence 外では `divider`/`delay` を通常 node/state 識別子へ
   再解釈して非予約性を維持
-- M3b5 activation bar（V13）: 活性区間モデル（開始 / 終了・ネスト）を新設。
-  `ActivationLayout`（lifeline 上の rect stack）追加、message 端点を bar 辺へ
+- **M3b5 activation bar（V13）**: 実装済み（上記）。活性区間モデル（開始 / 終了・ネスト）を
+  新設。`SequenceLayout.bars`（lifeline 上の rect stack）を items と別に追加、message /
+  self-message 端点を bar 辺へ。初の区間モデル（b4 までは平坦 leaf item）
 - M3b6 create / destroy（V14）: 参加者ライフサイクル（生成で header 降下、
   破棄で × 終端）。lifeline y 範囲が可変に
 - M3b7 fragment loop / alt / opt / par / critical / break（V15）: items が
@@ -710,15 +744,49 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
   golden 破綻なし。M3b5 以降 or M4 paint で調整余地）、PlantUML `||`・複数行
   ref/note ブロック未対応、divider / reference 塗り無しで lifeline 透過（M4 送り）
 
+## M3b5 の検証状況
+
+- schema V13 migration（V1-V12 lossless upgrade）と V2-V12 の Activate / Deactivate item
+  明示拒否（`sequence_activations_require_schema_v13`）: 成功。既存全 gate に V13 追加、新規
+  `sequence_activation_supported_in` は V13-only、deserialize の per-version arm（V1-V13）と
+  numeric 境界（13 受理 / 14 拒否）更新: 成功
+- native DSL の `activate <id>` / `deactivate <id>` parse、formatter idempotency、unknown
+  participant 拒否、非予約性（sequence 外は明示エラー・bare/`: "X"`/`activate -> b` は
+  node/edge へ fall-through）: 成功
+- layout: participant ごとの stack で activate↔deactivate をペアリング、ネストは depth で
+  右へステップ。message / self-message 端点を bar 辺へ寄せる式が bar rect 幾何と off-by-one
+  なく整合。未閉 / 過剰 deactivate は layout error。activation 無しの図は端点 = `col_x` で
+  既存 golden bytes 不変。bar は depth 昇順・メッセージ背面で描画（内側が前面）
+- PlantUML / Mermaid の `activate`/`deactivate` 格上げ、未宣言 participant の auto-declare
+  （PlantUML の silent drop 修正）、shorthand / 色 / return は明示 unsupported 維持。
+  native↔PlantUML↔Mermaid 等価 IR テスト: 成功
+- contract の item-parity（index + participant + is_start）・bars geometry・future variant
+  拒否: 成功
+- 全 backend mapping（drawio / excalidraw / pptx は bar rect、SVG / PNG / terminal は Scene
+  経由、DOT は sequence 非対応維持）: 成功
+- `cargo fmt --all --check` / `cargo check --workspace` /
+  `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace`（`UPDATE_GOLDEN` なし、全 workspace 緑）/ `git diff --check`:
+  すべて成功
+- 既存 golden 差分0（`git diff --stat tests/golden` 空、新規は `seq_activation`（7 形式）/
+  `plantuml_seq_activation`（`.puml` / `.svg`）/ `mermaid_seq_activation`（`.mmd` / `.svg`）の
+  untracked のみ）
+- 独立レビュー（Opus）: MAJOR 3件を検出・修正 — (1) 左向きネスト（depth≥2）メッセージ端点の
+  符号バグ（nest 項を常に加算へ、回帰テスト追加）、(2) ネスト bar の z-order 逆転（deactivate
+  即時 push → 走査後 depth 昇順で lifeline 直後へ splice・メッセージ背面）、(3) PlantUML 未宣言
+  participant への activate/deactivate silent drop（不変条件抵触 → auto-declare、回帰テスト追加）
+- 総合レビュー（Fable）: verdict fix-then-ship。ブロッカー相当 1件（Mermaid features 表の
+  activate/deactivate が Unsupported のまま stale → Supported へ修正）に対応。既知の制限:
+  Mermaid `->>+`/`->>-`・PlantUML `activate #color`/`return` 未対応（明示エラー、silent なし）、
+  bar z-order は SVG=背面 / 交換系=前面（3+ participant のみ視覚差）、excalidraw bar は hachure
+
 ## 再開時の確認事項
 
-1. M3b1 / M3b2 / M3b3 / M3b4 は実装・検証・独立レビュー・総合レビュー済み
-   （M3b4 は独立レビューで 2 面の非予約キーワード回帰を検出・修正済み）
-2. 次は **M3b5 activation bar（V13）**。活性区間モデル（開始 / 終了・ネスト）を新設。
-   `ActivationLayout`（lifeline 上の rect stack）追加、message 端点を bar 辺へ。
-   b4 までは平坦 leaf item だったが b5 は初の区間モデル
-3. M3b6 create / destroy（V14、参加者ライフサイクル・lifeline y 範囲可変） /
-   M3b7 fragment loop/alt/opt/par/critical/break（V15、items 平坦 Vec→再帰木、
-   最も侵襲的で最後）
+1. M3b1 / M3b2 / M3b3 / M3b4 / M3b5 は実装・検証・独立レビュー・総合レビュー済み
+   （M3b4 は 2 面の非予約キーワード回帰、M3b5 は MAJOR 3件＋総合の stale 1件を検出・修正済み）
+2. 次は **M3b6 create / destroy（V14）**。参加者ライフサイクル（生成で header 降下、破棄で ×
+   終端）。lifeline y 範囲が可変に。b5 の activation 区間モデルに続く 2 番目の構造侵襲
+3. その後 M3b7 fragment loop/alt/opt/par/critical/break（V15、items 平坦 Vec→再帰木、
+   contract の zip を木 walk へ。最も侵襲的で最後）
 4. 実装後は別担当の独立レビューと root 総合レビューを行い、既存 golden 差分0を確認する
 5. Sequence（M3b1-b7）-> State -> Class -> ER の順で M3 を完了する
