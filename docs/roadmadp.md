@@ -71,7 +71,7 @@ annotation を生成するマイルストーンで追加する。
 
 ### M3: Existing diagram semantics
 
-状態: **M3b1（sequence participant kind）実装済み**
+状態: **M3b2（sequence message arrow / async）実装済み**
 
 既存5種を frontend ごとの最小 subset から、意味を保持できる IR へ拡張する。
 
@@ -191,6 +191,47 @@ annotation を生成するマイルストーンで追加する。
      - 既存 golden 差分0、新規 `seq_participant_kinds`（`.kzd` / `.svg` /
        `.drawio` / `.excalidraw` / `.pptx`）と `mermaid_seq_actor`
        （`.mmd` / `.svg`）golden のみ追加
+   - **M3b2 実装済み**: message arrow / async（open / filled / cross / circle /
+     async / bidirectional）
+     - schema V10。旧 document は arrow 表現可能な範囲へ lossless upgrade、
+       V2-V9 で Open / Cross / Circle head または非 None tail を明示拒否
+       （V1 は wire arm が先に拒否）
+     - **共有 `ArrowType`（graph / class / ER 共用、Triangle / None）は変更せず**、
+       sequence 専用に `MessageArrow`（None / Filled / Open / Cross / Circle、
+       `#[non_exhaustive]`）を新設。`Message.arrow: ArrowType` を
+       `head: MessageArrow` へ置換し `tail: MessageArrow`（始端）を追加。
+       意味: Filled=同期、Open=非同期(async)、Cross=lost/destroy、
+       Circle=found/circle-end、bidirectional = tail ≠ None。
+       `Message::new(..., ArrowType)` は Triangle→Filled / None→None の互換
+       コンストラクタとして維持、`Message::with_arrows` を追加
+     - native DSL: 既存 graph edge の `line` / `weight` modifier と同流儀で
+       message に `head` / `tail` modifier（`open|filled|cross|circle|none`）を
+       追加。`head`/`tail` は予約語ではなく id にも使え、formatter は
+       canonical 順（head→tail）で default（head filled / tail none）を省略出力
+       （idempotent）。graph / state での誤用と未知値は明示エラー
+     - Mermaid: `-)`→Open / `-x`→Cross / `<<->>`→bidirectional を追加。
+       `->` / `-->` を実 Mermaid 準拠で None head に是正（従来 Partial の
+       Triangle 化を解消。既存 golden は `->>` 系のみ使用のため差分0）
+     - PlantUML: `->>`→Open 格上げ（従来 Partial）、`->x`→Cross / `->o`→Circle
+       / `<->`→bidirectional を有効化（従来 unsupported error）。`->oscar` 等の
+       誤認防止に arrow token の word-boundary ガードを追加
+     - layout: `MessageLayout.head` / `tail`。対象端・始端に head 種別の glyph
+       （Filled=塗り三角 / Open=V 字 / Cross=× / Circle=八角形近似）を描画し、
+       glyph 分だけ両端で route を retract。default（Filled / None）では座標・
+       Scene 生成が式レベルで既存一致し、直線 / self-loop の既存 golden bytes
+       は不変。Circle は M4 の ellipse primitive までの暫定八角形近似（bounds
+       に取り込み clip されない）
+     - 全 backend 伝播: SVG / PNG / terminal は Scene 経由、draw.io は
+       `startArrow` / `endArrow`（Filled→block/classic, Open→open, Circle→oval,
+       Cross→cross）、Excalidraw は `startArrowhead` / `endArrowhead`
+       （Filled→triangle, Open→arrow, Circle→dot, Cross→bar 近似）、PPTX は
+       `headEnd` / `tailEnd`（Filled→triangle, Open→stealth, Circle→oval,
+       Cross→diamond 近似）。exchange 系の Cross は損失近似だが doc-comment で
+       明示（silent ではない）。DOT は sequence 非対応維持
+     - M3x0 contract に head / tail parity と `MessageArrow` future variant 拒否を追加
+     - 既存 golden 差分0、新規 `seq_message_arrows`（`.kzd` / `.svg` / `.txt` /
+       `.png` / `.drawio` / `.excalidraw` / `.pptx`）・`mermaid_seq_arrows`
+       （`.mmd` / `.svg`）・`plantuml_seq_arrows`（`.puml` / `.svg`）golden のみ追加
    - note、activation、create / destroy
    - divider、delay、reference
    - `loop` / `alt` / `opt` / `par` / `critical` / `break` の再帰 fragment
@@ -433,8 +474,8 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
 ものを後に配置した 7 サブマイルストーンに分割する。
 
 - **M3b1 participant kind（V9）**: 実装済み（上記）
-- M3b2 message arrow / async（V10）: open / filled / cross / circle / async /
-  bidirectional。edge presentation（M3a2b）と同型
+- **M3b2 message arrow / async（V10）**: 実装済み（上記）。open / filled /
+  cross / circle / async / bidirectional を `MessageArrow` head / tail で表現
 - M3b3 note ＋ SemanticLayout item 列一般化（V11）: 初の非 Message item。
   ここで contract の `items.len()==messages.len()` 1:1 前提と `SequenceLayout`
   を、diagram.items 順に対応する統一 item 列へ一度だけ再設計する（geometry
@@ -479,12 +520,50 @@ backend + contract 伝播 / 既存 golden 差分0 / 新規 golden のみ / silen
   participant kind を追記。N2（`ParticipantKind` の stereotype ヘルパ共有化）は
   NodeKind と同一作法のため今回見送り
 
+## M3b2 の検証状況
+
+- schema V10 migration（V1-V9 の lossless upgrade）と V2-V9 document の新 arrow
+  （Open / Cross / Circle head または非 None tail）明示拒否 test
+  （`message_arrows_require_schema_v10`、全 25 head/tail 組合せ × 各 legacy
+  fixture で `is_ok()==legacy_ok` を検証）: 成功。V1 は wire arm 先行拒否で除外
+- **共有 `ArrowType` 不変**（Triangle / None のまま、Cross 等の混入なし）を確認。
+  新 marker は `MessageArrow` に隔離
+- default（head=Filled / tail=None）で layout 座標・全 backend 出力が既存と
+  byte 一致（直線 / self-loop の retraction・triangle 頂点が式レベルで一致、
+  drawio/excalidraw/pptx の default fragment も従来一致）→ 既存 seq golden 不変
+- native DSL の `head` / `tail` modifier parse、非予約語（id 利用）、formatter
+  idempotency・canonical 順・default 省略、graph/state 誤用と未知値の明示エラー
+  tests: 成功
+- Mermaid `-)` / `-x` / `<<->>` と `->`/`-->`→None 是正、PlantUML `->>`→Open /
+  `->x` / `->o` / `<->` tests: 成功。既存 `*.mmd` golden が `->`/`-->` 未使用を
+  grep 確認済で golden 差分なし
+- 等価性: native↔PlantUML / native↔Mermaid の各 arrow 形が同一 IR になる CLI
+  test: 成功
+- 全 backend mapping と `MessageArrow` future variant の全 match arm 明示処理
+  （layout / contract / drawio / excalidraw / pptx）: 成功。svg/png/term は
+  lowered Scene を消費
+- M3x0 contract の head / tail parity と未知 variant 拒否: 成功
+- `cargo fmt --check` / `cargo check --workspace` / `cargo test --workspace`
+  （全 workspace 緑、731 passed）/ `cargo clippy --workspace --all-targets --
+  -D warnings` / `git diff --check`: 成功
+- 既存 golden 差分0（`git diff --stat tests/golden` 空、新規は
+  `seq_message_arrows` / `mermaid_seq_arrows` / `plantuml_seq_arrows` の
+  untracked のみ）
+- 独立レビュー（Opus）: blocking / major finding なし（verdict: ship）。
+  実装者自己申告 6 点はすべて問題なし〜minor（drawio classic 一貫性・pptx
+  diamond / excalidraw bar の Cross 損失近似は doc-comment 明示で silent でない・
+  Circle overshoot は bounds 取込みで clip なし）。nit 2件のうち formatter の
+  future-variant fallback に意図コメントを追加、PlantUML `->x` word-boundary は
+  テスト済みトレードオフとして据え置き
+
 ## 再開時の確認事項
 
-1. M3b1 participant kind は実装・検証・独立レビュー・コミット済み
-2. 次は **M3b2（message arrow / async、schema V10）** の詳細設計から開始する
-   （open / filled / cross / circle / async / bidirectional。edge presentation
-   M3a2b と同型）
-3. 実装後は別担当の独立レビューと root 総合レビューを行い、既存 golden 差分0を確認する
-4. M3b3 で contract 1:1 前提と SequenceLayout を統一 item 列へ再設計する点に注意
+1. M3b1 / M3b2 は実装・検証・独立レビュー・コミット済み
+2. 次は **M3b3（note ＋ SemanticLayout item 列一般化、schema V11）** の詳細設計から
+   開始する
+3. **M3b3 が転換点**: contract の `items.len()==messages.len()` 1:1 前提と
+   `SequenceLayout{participants, messages}` を、diagram.items 順に対応する統一
+   item 列へ一度だけ再設計する（geometry 不変なので既存 golden bytes は不変）。
+   note は既存 `NotePlacement`（M2）の再利用を検討
+4. 実装後は別担当の独立レビューと root 総合レビューを行い、既存 golden 差分0を確認する
 5. Sequence（M3b1-b7）-> State -> Class -> ER の順で M3 を完了する
