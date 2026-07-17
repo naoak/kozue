@@ -54,7 +54,7 @@ use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint,
     ErAttribute, ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, Participant,
-    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -381,7 +381,7 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
         }
 
         // Participant / actor / icon-variant keyword declarations.
-        if let Some((id, _)) = try_parse_participant_decl(trimmed) {
+        if let Some((id, _, _)) = try_parse_participant_decl(trimmed) {
             if declared_ids.iter().any(|d| d == &id) {
                 errors.push(Diagnostic::new(
                     format!("duplicate participant id `{id}`"),
@@ -535,13 +535,14 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
 fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
     let mut seq = SequenceDiagram::new();
 
-    let ensure_participant = |seq: &mut SequenceDiagram, id: &str, label: Option<&str>| {
-        if !seq.participants.contains_key(id) {
-            let lbl = label.unwrap_or(id).to_string();
-            seq.participants
-                .insert(id.into(), Participant::new(id, lbl));
-        }
-    };
+    let ensure_participant =
+        |seq: &mut SequenceDiagram, id: &str, label: Option<&str>, kind: ParticipantKind| {
+            if !seq.participants.contains_key(id) {
+                let lbl = label.unwrap_or(id).to_string();
+                seq.participants
+                    .insert(id.into(), Participant::with_kind(id, lbl, kind));
+            }
+        };
 
     for (_offset, line) in lines {
         let trimmed = line.trim();
@@ -549,15 +550,15 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
             continue;
         }
 
-        if let Some((id, label)) = try_parse_participant_decl(trimmed) {
-            ensure_participant(&mut seq, &id, label.as_deref());
+        if let Some((id, label, kind)) = try_parse_participant_decl(trimmed) {
+            ensure_participant(&mut seq, &id, label.as_deref(), kind);
             continue;
         }
 
         if let Some(Ok((from, to, label, line_style, arrow))) = try_parse_plantuml_message(trimmed)
         {
-            ensure_participant(&mut seq, &from, None);
-            ensure_participant(&mut seq, &to, None);
+            ensure_participant(&mut seq, &from, None, ParticipantKind::Default);
+            ensure_participant(&mut seq, &to, None, ParticipantKind::Default);
             seq.items.push(SequenceItem::Message(Message::new(
                 from, to, label, line_style, arrow,
             )));
@@ -1729,13 +1730,27 @@ const PARTICIPANT_KEYWORDS: &[&str] = &[
     "queue",
 ];
 
+/// Map a PlantUML participant keyword to a [`ParticipantKind`].
+fn keyword_to_participant_kind(kw: &str) -> ParticipantKind {
+    match kw.to_ascii_lowercase().as_str() {
+        "actor" => ParticipantKind::Actor,
+        "boundary" => ParticipantKind::Boundary,
+        "control" => ParticipantKind::Control,
+        "entity" => ParticipantKind::Entity,
+        "database" => ParticipantKind::Database,
+        "collections" => ParticipantKind::Collections,
+        "queue" => ParticipantKind::Queue,
+        _ => ParticipantKind::Default,
+    }
+}
+
 /// Try to parse a participant/actor/icon-variant declaration.
 ///
-/// Returns `Some((id, Option<label>))` on success, `None` if not a participant line.
+/// Returns `Some((id, Option<label>, ParticipantKind))` on success, `None` if not a participant line.
 /// - `participant Name` → id="Name", label=None (label defaults to id)
 /// - `participant Name as Alias` → id="Alias", label=Some("Name")
 /// - `participant "Quoted Name" as Alias` → id="Alias", label=Some("Quoted Name")
-fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
+fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>, ParticipantKind)> {
     let (kw, rest) = split_keyword(line)?;
     if !PARTICIPANT_KEYWORDS
         .iter()
@@ -1743,6 +1758,7 @@ fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
     {
         return None;
     }
+    let kind = keyword_to_participant_kind(kw);
     let rest = rest.trim();
 
     // Check for quoted display name: `"Quoted Name" as Alias`.
@@ -1753,7 +1769,7 @@ fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
         let after_quote = after_open_quote[end_quote + 1..].trim(); // skip closing "
         if after_quote.is_empty() {
             // No `as` — use the quoted name as both id and label.
-            return Some((display_name.clone(), Some(display_name)));
+            return Some((display_name.clone(), Some(display_name), kind));
         }
         if let Some(alias) = strip_keyword_boundary_ci(after_quote, "as") {
             let alias = alias.trim().to_string();
@@ -1761,7 +1777,7 @@ fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
             if !is_single_token(&alias) {
                 return None;
             }
-            return Some((alias, Some(display_name)));
+            return Some((alias, Some(display_name), kind));
         }
         // Trailing tokens that are not an `as` clause — reject rather than
         // silently discard them.
@@ -1779,7 +1795,7 @@ fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
         if !is_single_token(&name) || !is_single_token(&alias) {
             return None;
         }
-        Some((alias, Some(name)))
+        Some((alias, Some(name), kind))
     } else {
         // `Name` — id and label are both the name. A trailing bare `as` or an
         // interior space (e.g. `participant Foo as`, `participant Foo Bar`)
@@ -1788,7 +1804,7 @@ fn try_parse_participant_decl(line: &str) -> Option<(String, Option<String>)> {
         if !is_single_token(&name) {
             return None;
         }
-        Some((name, None))
+        Some((name, None, kind))
     }
 }
 
@@ -2094,6 +2110,8 @@ mod tests {
         let s = parse_ok(src);
         assert!(s.participants.contains_key("User"));
         assert_eq!(s.participants["User"].label, "User");
+        assert_eq!(s.participants["User"].kind, ParticipantKind::Actor);
+        assert_eq!(s.participants["System"].kind, ParticipantKind::Default);
     }
 
     #[test]
@@ -2105,12 +2123,15 @@ mod tests {
     }
 
     #[test]
-    fn icon_variant_keywords_map_to_participant() {
-        let src = "@startuml\nboundary FE\ncontrol BE\nentity DB\nFE -> BE : req\nBE -> DB : query\n@enduml\n";
+    fn icon_variant_keywords_map_to_participant_kinds() {
+        let src = "@startuml\nboundary FE\ncontrol BE\nentity DB\ndatabase Store\ncollections Q\nqueue MQ\nFE -> BE : req\nBE -> DB : query\n@enduml\n";
         let s = parse_ok(src);
-        assert!(s.participants.contains_key("FE"));
-        assert!(s.participants.contains_key("BE"));
-        assert!(s.participants.contains_key("DB"));
+        assert_eq!(s.participants["FE"].kind, ParticipantKind::Boundary);
+        assert_eq!(s.participants["BE"].kind, ParticipantKind::Control);
+        assert_eq!(s.participants["DB"].kind, ParticipantKind::Entity);
+        assert_eq!(s.participants["Store"].kind, ParticipantKind::Database);
+        assert_eq!(s.participants["Q"].kind, ParticipantKind::Collections);
+        assert_eq!(s.participants["MQ"].kind, ParticipantKind::Queue);
     }
 
     #[test]

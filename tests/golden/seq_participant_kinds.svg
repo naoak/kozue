@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 496.61 240.00" width="496.61" height="240.00">
+  <rect x="-20.00" y="-20.00" width="496.61" height="240.00" fill="#ffffff"/>
+  <rect x="0.00" y="0.00" width="99.13" height="55.60" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="49.57" y="33.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Service</text>
+  <polyline points="49.57,55.60 49.57,200.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="179.13" y="0.00" width="85.62" height="55.60" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="221.94" y="20.20" font-family="DejaVu Sans" font-size="12.00" text-anchor="middle" fill="#000000">«actor»</text>
+  <text x="221.94" y="32.00" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">User</text>
+  <polyline points="221.94,55.60 221.94,200.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="344.75" y="0.00" width="111.86" height="55.60" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="400.68" y="20.20" font-family="DejaVu Sans" font-size="12.00" text-anchor="middle" fill="#000000">«boundary»</text>
+  <text x="400.68" y="32.00" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">API</text>
+  <polyline points="400.68,55.60 400.68,200.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="49.57,80.00 211.94,80.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="221.94,80.00 211.94,75.00 211.94,85.00" fill="#000000" stroke="none"/>
+  <text x="135.75" y="76.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">response</text>
+  <polyline points="221.94,128.00 390.68,128.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="400.68,128.00 390.68,123.00 390.68,133.00" fill="#000000" stroke="none"/>
+  <text x="311.31" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">request</text>
+</svg>

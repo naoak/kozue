@@ -107,12 +107,12 @@ pub const FEATURES: &[Feature] = &[
     Feature {
         name: "actor Name / actor \"...\" as X",
         support: Support::Supported,
-        note: "same handling as participant; actor icon not rendered",
+        note: "ParticipantKind::Actor preserved in IR; stereotype rendered as «actor»",
     },
     Feature {
         name: "boundary / control / entity / database / collections / queue",
-        support: Support::Partial,
-        note: "icon-variant keywords parsed and mapped to Participant; icon not rendered",
+        support: Support::Supported,
+        note: "icon-variant keywords map to the corresponding ParticipantKind; stereotype rendered as «kind»",
     },
     Feature {
         name: "auto-declare undeclared participants",

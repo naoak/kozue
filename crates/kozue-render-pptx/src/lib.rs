@@ -75,7 +75,7 @@
 mod templates;
 mod zip;
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
     StateEndpointId, StateLayout,
@@ -264,6 +264,34 @@ impl IdAlloc {
 /// boxes, and sequence participant headers).
 fn rect_shape(id: u32, name: &str, x: i64, y: i64, w: i64, h: i64, label: &str) -> String {
     rect_shape_with_geom(id, name, x, y, w, h, label, "roundRect")
+}
+
+/// Like `rect_shape` but with a stereotype line above the label.
+#[allow(clippy::too_many_arguments)]
+fn rect_shape_with_stereotype(
+    id: u32,
+    name: &str,
+    x: i64,
+    y: i64,
+    w: i64,
+    h: i64,
+    stereotype: &str,
+    label: &str,
+) -> String {
+    let name = xml_escape(name);
+    let st_run = format!("<a:r><a:t>{}</a:t></a:r>", xml_escape(stereotype));
+    let label_run = format!("<a:r><a:t>{}</a:t></a:r>", xml_escape(label));
+    format!(
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name}\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>\
+         <p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm>\
+         <a:prstGeom prst=\"roundRect\"><a:avLst/></a:prstGeom>\
+         <a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill>\
+         <a:ln><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill></a:ln></p:spPr>\
+         <p:txBody><a:bodyPr anchor=\"ctr\"/><a:lstStyle/>\
+         <a:p><a:pPr algn=\"ctr\"/>{st_run}</a:p>\
+         <a:p><a:pPr algn=\"ctr\"/>{label_run}</a:p>\
+         </p:txBody></p:sp>",
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -794,15 +822,39 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
 
     for p in &s.participants {
         let r = &p.header_rect;
-        shapes.push_str(&rect_shape(
-            ids.next(),
-            &format!("Participant {}", p.id),
-            emu_pos(r.x),
-            emu_pos(r.y),
-            emu_len(r.width),
-            emu_len(r.height),
-            &p.label,
-        ));
+        let st_label = match &p.kind {
+            ParticipantKind::Default => None,
+            ParticipantKind::Actor => Some("«actor»"),
+            ParticipantKind::Boundary => Some("«boundary»"),
+            ParticipantKind::Control => Some("«control»"),
+            ParticipantKind::Entity => Some("«entity»"),
+            ParticipantKind::Database => Some("«database»"),
+            ParticipantKind::Collections => Some("«collections»"),
+            ParticipantKind::Queue => Some("«queue»"),
+            _ => None,
+        };
+        if let Some(st) = st_label {
+            shapes.push_str(&rect_shape_with_stereotype(
+                ids.next(),
+                &format!("Participant {}", p.id),
+                emu_pos(r.x),
+                emu_pos(r.y),
+                emu_len(r.width),
+                emu_len(r.height),
+                st,
+                &p.label,
+            ));
+        } else {
+            shapes.push_str(&rect_shape(
+                ids.next(),
+                &format!("Participant {}", p.id),
+                emu_pos(r.x),
+                emu_pos(r.y),
+                emu_len(r.width),
+                emu_len(r.height),
+                &p.label,
+            ));
+        }
         // Lifeline: dashed vertical connector spanning the column.
         let lifeline = [
             Point::new(p.lifeline_x, p.lifeline_y0),

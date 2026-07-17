@@ -1,0 +1,7 @@
+sequence kinds {
+  participant svc: "Service"
+  actor usr: "User"
+  boundary api: "API"
+  svc -> usr : "response"
+  usr -> api : "request"
+}

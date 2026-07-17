@@ -68,7 +68,7 @@
 //! Any future [`SemanticLayout`] variants return [`RenderError::UnsupportedDiagram`]
 //! rather than silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind};
 use kozue_layout::semantic::{
     ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
 };
@@ -1141,6 +1141,28 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
             kind: "text",
         }]);
         elements.push(AnyElement::Shape(rect));
+
+        let st_label = match &p.kind {
+            ParticipantKind::Default => None,
+            ParticipantKind::Actor => Some("«actor»"),
+            ParticipantKind::Boundary => Some("«boundary»"),
+            ParticipantKind::Control => Some("«control»"),
+            ParticipantKind::Entity => Some("«entity»"),
+            ParticipantKind::Database => Some("«database»"),
+            ParticipantKind::Collections => Some("«collections»"),
+            ParticipantKind::Queue => Some("«queue»"),
+            _ => None,
+        };
+
+        if let Some(st) = st_label {
+            let (stw, sth) = text_size(st);
+            let stx = r.x + MARGIN + r.width / 2.0 - stw / 2.0;
+            let sty = r.y + MARGIN + r.height * 0.25 - sth / 2.0;
+            let st_id = format!("{rect_id}-stereotype");
+            elements.push(AnyElement::Text(make_text(
+                &st_id, None, st, stx, sty, stw, sth,
+            )));
+        }
 
         let (tw, th) = text_size(&p.label);
         let tx = r.x + MARGIN + r.width / 2.0 - tw / 2.0;

@@ -80,6 +80,17 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
         | kozue_ir::NodeKind::Diamond => Ok(()),
         _ => mismatch("unsupported future graph node kind"),
     };
+    let participant_kind = |value: &kozue_ir::ParticipantKind| match value {
+        kozue_ir::ParticipantKind::Default
+        | kozue_ir::ParticipantKind::Actor
+        | kozue_ir::ParticipantKind::Boundary
+        | kozue_ir::ParticipantKind::Control
+        | kozue_ir::ParticipantKind::Entity
+        | kozue_ir::ParticipantKind::Database
+        | kozue_ir::ParticipantKind::Collections
+        | kozue_ir::ParticipantKind::Queue => Ok(()),
+        _ => mismatch("unsupported future participant kind"),
+    };
     let port = |value: Option<kozue_ir::Port>| match value {
         None
         | Some(
@@ -105,6 +116,9 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
             }
         }
         SemanticLayout::Sequence(sequence) => {
+            for p in &sequence.participants {
+                participant_kind(&p.kind)?;
+            }
             for message in &sequence.messages {
                 arrow(message.arrow)?;
                 line(message.line)?;
@@ -210,6 +224,7 @@ fn validate_contract(
                 if id != &placed.id
                     || participant.id != placed.id
                     || participant.label != placed.label
+                    || participant.kind != placed.kind
                 {
                     return mismatch("sequence participant identity/order mismatch");
                 }

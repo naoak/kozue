@@ -189,6 +189,11 @@ pub const FEATURES: &[Feature] = &[
         note: "id used as label",
     },
     Feature {
+        name: "actor X / actor X as Label",
+        support: Support::Supported,
+        note: "ParticipantKind::Actor preserved in IR; stereotype rendered as «actor»",
+    },
+    Feature {
         name: "auto-declare undeclared participants",
         support: Support::Supported,
         note: "first-message auto-declaration follows Mermaid convention",

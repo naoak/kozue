@@ -47,8 +47,8 @@ use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction, Edge,
     EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, Node, NodeKind, Participant, SequenceDiagram, SequenceItem,
-    State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, Node, NodeKind, Participant, ParticipantKind, SequenceDiagram,
+    SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -535,13 +535,14 @@ fn parse_sequence(
     }
     let mut messages: Vec<RawMsg> = Vec::new();
 
-    let ensure_participant = |seq: &mut SequenceDiagram, id: &str, label: Option<&str>| {
-        if !seq.participants.contains_key(id) {
-            let lbl = label.unwrap_or(id).to_string();
-            seq.participants
-                .insert(id.into(), Participant::new(id, lbl));
-        }
-    };
+    let ensure_participant =
+        |seq: &mut SequenceDiagram, id: &str, label: Option<&str>, kind: ParticipantKind| {
+            if !seq.participants.contains_key(id) {
+                let lbl = label.unwrap_or(id).to_string();
+                seq.participants
+                    .insert(id.into(), Participant::with_kind(id, lbl, kind));
+            }
+        };
 
     for &(offset, line) in lines {
         let trimmed = line.trim();
@@ -604,10 +605,13 @@ fn parse_sequence(
 
         // participant declaration.
         if trimmed.starts_with("participant ") || trimmed.starts_with("actor ") {
-            let rest = if let Some(r) = trimmed.strip_prefix("participant ") {
-                r.trim()
+            let (kind, rest) = if let Some(r) = trimmed.strip_prefix("participant ") {
+                (ParticipantKind::Default, r.trim())
             } else {
-                trimmed.strip_prefix("actor ").unwrap_or("").trim()
+                (
+                    ParticipantKind::Actor,
+                    trimmed.strip_prefix("actor ").unwrap_or("").trim(),
+                )
             };
             // `participant X as Label` or `participant X`. The needle `" as "`
             // carries its own surrounding spaces, which is what enforces the
@@ -623,7 +627,7 @@ fn parse_sequence(
                 errors.push(Diagnostic::new("expected participant identifier", span));
                 continue;
             }
-            ensure_participant(&mut seq, &id, label.as_deref());
+            ensure_participant(&mut seq, &id, label.as_deref(), kind);
             continue;
         }
 
@@ -632,8 +636,8 @@ fn parse_sequence(
             match msg {
                 Ok((from, to, label, line_style, arrow)) => {
                     // Auto-declare participants.
-                    ensure_participant(&mut seq, &from, None);
-                    ensure_participant(&mut seq, &to, None);
+                    ensure_participant(&mut seq, &from, None, ParticipantKind::Default);
+                    ensure_participant(&mut seq, &to, None, ParticipantKind::Default);
                     messages.push(RawMsg {
                         from,
                         to,

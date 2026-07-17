@@ -51,8 +51,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, Node, NodeKind, Participant, Port, SequenceDiagram,
-    SequenceItem, State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, Node, NodeKind, Participant, ParticipantKind, Port,
+    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -79,6 +79,7 @@ enum Stmt {
         label: Option<String>,
         /// Span of the string literal (including quotes), if present.
         label_lit_span: Option<std::ops::Range<usize>>,
+        kind: ParticipantKind,
     },
     DirectionError(std::ops::Range<usize>),
     StateDecl {
@@ -397,27 +398,54 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             .map_with_span(|s, _span| s);
 
         // participant: `participant id` or `participant id: "label"`
-        let participant = text::keyword("participant")
-            .padded_by(kzd_ws())
-            .ignore_then(ident_spanned())
-            .then(
-                just(':')
-                    .padded_by(kzd_ws())
-                    .ignore_then(string_lit_spanned())
-                    .or_not(),
-            )
-            .map(|((id, id_span), label_opt)| {
-                let (label, label_lit_span) = match label_opt {
-                    Some((l, s)) => (Some(l), Some(s)),
-                    None => (None, None),
-                };
-                Stmt::Participant {
-                    id,
-                    id_span,
-                    label,
-                    label_lit_span,
-                }
-            });
+        // also: `actor id`, `boundary id`, `control id`, `entity id`,
+        //       `database id`, `collections id`, `queue id`
+        let make_participant_parser =
+            |kw: &'static str,
+             kind: ParticipantKind|
+             -> Box<dyn Parser<char, Stmt, Error = Simple<char>> + 'static> {
+                Box::new(
+                    text::keyword(kw)
+                        .padded_by(kzd_ws())
+                        .ignore_then(ident_spanned())
+                        .then(
+                            just(':')
+                                .padded_by(kzd_ws())
+                                .ignore_then(string_lit_spanned())
+                                .or_not(),
+                        )
+                        .map(move |((id, id_span), label_opt)| {
+                            let (label, label_lit_span) = match label_opt {
+                                Some((l, s)) => (Some(l), Some(s)),
+                                None => (None, None),
+                            };
+                            Stmt::Participant {
+                                id,
+                                id_span,
+                                label,
+                                label_lit_span,
+                                kind: kind.clone(),
+                            }
+                        }),
+                )
+            };
+        let participant = make_participant_parser("participant", ParticipantKind::Default)
+            .or(make_participant_parser("actor", ParticipantKind::Actor))
+            .or(make_participant_parser(
+                "boundary",
+                ParticipantKind::Boundary,
+            ))
+            .or(make_participant_parser("control", ParticipantKind::Control))
+            .or(make_participant_parser("entity", ParticipantKind::Entity))
+            .or(make_participant_parser(
+                "database",
+                ParticipantKind::Database,
+            ))
+            .or(make_participant_parser(
+                "collections",
+                ParticipantKind::Collections,
+            ))
+            .or(make_participant_parser("queue", ParticipantKind::Queue));
 
         // state declaration: `state id` or `state id: "label"`
         let state_decl = text::keyword("state")
@@ -1574,6 +1602,7 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
             id_span,
             label,
             label_lit_span,
+            kind,
         } = stmt
         {
             if seq.participants.contains_key(id.as_str()) {
@@ -1597,8 +1626,10 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
                 }
             }
             first_decl_spans.insert(id.clone(), id_span.clone());
-            seq.participants
-                .insert(id.clone().into(), Participant::new(id.clone(), label_str));
+            seq.participants.insert(
+                id.clone().into(),
+                Participant::with_kind(id.clone(), label_str, kind.clone()),
+            );
         }
     }
 
@@ -2404,11 +2435,24 @@ fn format_decl_stmt(stmt: &Stmt) -> String {
             }
             declaration
         }
-        Stmt::Participant { id, label, .. } => {
+        Stmt::Participant {
+            id, label, kind, ..
+        } => {
+            let kw = match kind {
+                ParticipantKind::Default => "participant",
+                ParticipantKind::Actor => "actor",
+                ParticipantKind::Boundary => "boundary",
+                ParticipantKind::Control => "control",
+                ParticipantKind::Entity => "entity",
+                ParticipantKind::Database => "database",
+                ParticipantKind::Collections => "collections",
+                ParticipantKind::Queue => "queue",
+                _ => "participant",
+            };
             if let Some(label_str) = label {
-                format!("participant {}: {}", id, format_string_lit(label_str))
+                format!("{kw} {}: {}", id, format_string_lit(label_str))
             } else {
-                format!("participant {}", id)
+                format!("{kw} {}", id)
             }
         }
         Stmt::StateDecl { id, label, .. } => {
@@ -3344,6 +3388,63 @@ mod tests {
         assert_eq!(d1, d2, "fmt must preserve sequence diagram semantics");
         let formatted2 = format_kzd(&formatted).expect("second format");
         assert_eq!(formatted, formatted2, "fmt must be idempotent");
+    }
+
+    #[test]
+    fn kind_keyword_usable_as_id() {
+        // Kind keywords (actor, boundary, queue, …) are not reserved in the id
+        // position — they may appear as identifiers after another kind keyword.
+        let cases = [
+            // `actor queue: "Q"` → id="queue", kind=Actor
+            (
+                "sequence s {\n  actor queue: \"Q\"\n  queue -> queue\n}",
+                "queue",
+                kozue_ir::ParticipantKind::Actor,
+            ),
+            // `boundary actor: "A"` → id="actor", kind=Boundary
+            (
+                "sequence s {\n  boundary actor: \"A\"\n  actor -> actor\n}",
+                "actor",
+                kozue_ir::ParticipantKind::Boundary,
+            ),
+        ];
+        for (src, expected_id, expected_kind) in cases {
+            let d = parse(src).unwrap_or_else(|e| panic!("should parse: {e:?}"));
+            let kozue_ir::Diagram::Sequence(seq) = d else {
+                panic!("expected Sequence");
+            };
+            let p = &seq.participants[0];
+            assert_eq!(p.id.as_str(), expected_id, "id mismatch in: {src}");
+            assert_eq!(p.kind, expected_kind, "kind mismatch in: {src}");
+        }
+    }
+
+    #[test]
+    fn fmt_participant_kinds_idempotent() {
+        // A sequence with non-Default participant kinds must round-trip through
+        // format → parse → format with the kind keyword preserved.
+        let src = "sequence s {\n  actor a: \"Alice\"\n  boundary b: \"Boundary\"\n  queue q: \"Queue\"\n  a -> b : \"msg\"\n  b --> a : \"reply\"\n}\n";
+        let formatted = format_kzd(src).expect("should format");
+        // Kind keywords must survive the formatter.
+        assert!(
+            formatted.contains("actor a:"),
+            "actor kind must be preserved: {formatted}"
+        );
+        assert!(
+            formatted.contains("boundary b:"),
+            "boundary kind must be preserved: {formatted}"
+        );
+        assert!(
+            formatted.contains("queue q:"),
+            "queue kind must be preserved: {formatted}"
+        );
+        // Second pass must be identical (idempotent).
+        let formatted2 = format_kzd(&formatted).expect("second format");
+        assert_eq!(formatted, formatted2, "fmt must be idempotent");
+        // Semantic equality across the round trip.
+        let d1 = parse(&formatted).expect("formatted should parse");
+        let d2 = parse(&formatted2).expect("re-formatted should parse");
+        assert_eq!(d1, d2, "fmt must preserve sequence diagram semantics");
     }
 
     #[test]

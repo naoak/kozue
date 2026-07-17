@@ -5,7 +5,7 @@
 //! and let downstream consumers (exchange exporters, hit-testing, etc.) know
 //! *which rectangle / polyline corresponds to which node / edge*.
 
-use kozue_ir::{ElementId, NodeKind, Rect};
+use kozue_ir::{ElementId, NodeKind, ParticipantKind, Rect};
 
 /// A 2-D point in scene coordinates (pixels, same coordinate space as
 /// [`Scene`](kozue_ir::Scene)).
@@ -145,6 +145,8 @@ pub struct ParticipantLayout {
     /// the Scene Text item). This is the label, not the ID: for `participant a: "Alice"`
     /// it is `"Alice"`.
     pub label: String,
+    /// The visual kind of this participant (from [`Participant::kind`](kozue_ir::Participant)).
+    pub kind: ParticipantKind,
     /// The bounding box of the participant's header box.
     pub header_rect: Rect,
     /// The x-coordinate of the participant's lifeline (center of the column).

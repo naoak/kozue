@@ -28,12 +28,13 @@ pub enum IrSchemaVersion {
     V5,
     V6,
     V7,
-    #[default]
     V8,
+    #[default]
+    V9,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V8;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V9;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -57,6 +58,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V6 => serializer.serialize_u8(6),
             IrSchemaVersion::V7 => serializer.serialize_u8(7),
             IrSchemaVersion::V8 => serializer.serialize_u8(8),
+            IrSchemaVersion::V9 => serializer.serialize_u8(9),
         }
     }
 }
@@ -76,6 +78,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             6 => Ok(IrSchemaVersion::V6),
             7 => Ok(IrSchemaVersion::V7),
             8 => Ok(IrSchemaVersion::V8),
+            9 => Ok(IrSchemaVersion::V9),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -264,6 +267,7 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
                     | IrSchemaVersion::V6
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
+                    | IrSchemaVersion::V9
             )
         }
     }
@@ -280,6 +284,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V6
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
+                    | IrSchemaVersion::V9
             )
         }
         NodeKind::Circle | NodeKind::Diamond => {
@@ -289,8 +294,22 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V6
                     | IrSchemaVersion::V7
                     | IrSchemaVersion::V8
+                    | IrSchemaVersion::V9
             )
         }
+    }
+}
+
+fn participant_kind_supported_in(version: IrSchemaVersion, kind: &ParticipantKind) -> bool {
+    match kind {
+        ParticipantKind::Default => true,
+        ParticipantKind::Actor
+        | ParticipantKind::Boundary
+        | ParticipantKind::Control
+        | ParticipantKind::Entity
+        | ParticipantKind::Database
+        | ParticipantKind::Collections
+        | ParticipantKind::Queue => version == IrSchemaVersion::V9,
     }
 }
 
@@ -299,7 +318,7 @@ fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
         LineStyle::Solid | LineStyle::Dashed => true,
         LineStyle::Dotted => matches!(
             version,
-            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8
+            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
         ),
     }
 }
@@ -311,17 +330,22 @@ fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
     (default_presentation
         || matches!(
             version,
-            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8
+            IrSchemaVersion::V6 | IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
         ))
         && line_style_supported_in(version, edge.line)
 }
 
 fn edge_ports_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
-    (edge.from_port.is_none() && edge.to_port.is_none()) || version == IrSchemaVersion::V8
+    (edge.from_port.is_none() && edge.to_port.is_none())
+        || matches!(version, IrSchemaVersion::V8 | IrSchemaVersion::V9)
 }
 
 fn containers_supported_in(version: IrSchemaVersion, containers: &[Container]) -> bool {
-    containers.is_empty() || matches!(version, IrSchemaVersion::V7 | IrSchemaVersion::V8)
+    containers.is_empty()
+        || matches!(
+            version,
+            IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9
+        )
 }
 
 fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
@@ -353,9 +377,14 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
             .relations
             .iter()
             .all(|relation| line_style_supported_in(version, relation.line)),
-        Diagram::Sequence(sequence) => sequence.items.iter().all(|item| match item {
-            SequenceItem::Message(message) => line_style_supported_in(version, message.line),
-        }),
+        Diagram::Sequence(sequence) => {
+            sequence.items.iter().all(|item| match item {
+                SequenceItem::Message(message) => line_style_supported_in(version, message.line),
+            }) && sequence
+                .participants
+                .values()
+                .all(|p| participant_kind_supported_in(version, &p.kind))
+        }
         _ => true,
     }
 }
@@ -467,7 +496,21 @@ impl<'de> Deserialize<'de> for IrDocument {
             IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V8 => {
                 if !diagram_supported_in(IrSchemaVersion::V8, &wire.diagram) {
                     return Err(de::Error::custom(
-                        "IR schema version 8 does not support this diagram direction, node kind, edge presentation, container, or edge port",
+                        "IR schema version 8 does not support this diagram direction, node kind, edge presentation, container, edge port, or participant kind",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V9 => {
+                if !diagram_supported_in(IrSchemaVersion::V9, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 9 does not support this diagram direction, node kind, edge presentation, container, edge port, or participant kind",
                     ));
                 }
                 Ok(Self {
@@ -479,7 +522,7 @@ impl<'de> Deserialize<'de> for IrDocument {
                 })
             }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, 5, 6, 7, and 8 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, 6, 7, 8, and 9 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -653,11 +696,28 @@ impl Default for SequenceDiagram {
     }
 }
 
+/// The visual kind of a sequence participant.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ParticipantKind {
+    #[default]
+    Default,
+    Actor,
+    Boundary,
+    Control,
+    Entity,
+    Database,
+    Collections,
+    Queue,
+}
+
 /// A participant in a sequence diagram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Participant {
     pub id: ElementId,
     pub label: String,
+    #[serde(default)]
+    pub kind: ParticipantKind,
 }
 
 impl Participant {
@@ -665,6 +725,19 @@ impl Participant {
         Participant {
             id: id.into(),
             label: label.into(),
+            kind: ParticipantKind::Default,
+        }
+    }
+
+    pub fn with_kind(
+        id: impl Into<ElementId>,
+        label: impl Into<String>,
+        kind: ParticipantKind,
+    ) -> Self {
+        Participant {
+            id: id.into(),
+            label: label.into(),
+            kind,
         }
     }
 }
@@ -1259,6 +1332,8 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V6: &str = r#"{"schema_version":6,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V7: &str = r#"{"schema_version":7,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V8: &str = r#"{"schema_version":8,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_SEQUENCE_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -1307,10 +1382,15 @@ mod tests {
             serde_json::from_value::<IrSchemaVersion>(json!(8)).unwrap(),
             IrSchemaVersion::V8
         );
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(9)).unwrap_err();
+        assert_eq!(serde_json::to_value(IrSchemaVersion::V9).unwrap(), json!(9));
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(9)).unwrap(),
+            IrSchemaVersion::V9
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(10)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 9"));
+            .contains("unsupported IR schema version 10"));
     }
 
     #[test]
@@ -1333,7 +1413,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V8);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V9);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1341,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v7_documents_are_upgraded_to_v8() {
+    fn v1_through_v8_documents_are_upgraded_to_v9() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
@@ -1350,13 +1430,14 @@ mod tests {
             EMPTY_GRAPH_DOCUMENT_V5,
             EMPTY_GRAPH_DOCUMENT_V6,
             EMPTY_GRAPH_DOCUMENT_V7,
+            EMPTY_GRAPH_DOCUMENT_V8,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V8);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V9);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V8
+                EMPTY_GRAPH_DOCUMENT_V9
             );
         }
 
@@ -1655,14 +1736,16 @@ mod tests {
             );
         }
 
-        let mut value: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V8).unwrap();
-        value["diagram"] = serde_json::to_value(&diagram).unwrap();
-        assert_eq!(
-            serde_json::from_value::<IrDocument>(value)
-                .unwrap()
-                .into_diagram(),
-            diagram
-        );
+        for fixture in [EMPTY_GRAPH_DOCUMENT_V8, EMPTY_GRAPH_DOCUMENT_V9] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert_eq!(
+                serde_json::from_value::<IrDocument>(value)
+                    .unwrap()
+                    .into_diagram(),
+                diagram
+            );
+        }
     }
 
     #[test]
@@ -1791,9 +1874,9 @@ mod tests {
 
     #[test]
     fn document_rejects_unknown_versions_and_missing_required_fields() {
-        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V8).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V9).unwrap();
 
-        for version in [0, 1, 9] {
+        for version in [0, 1, 10] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -1985,7 +2068,7 @@ mod tests {
             ),
             (
                 Diagram::Sequence(sequence),
-                r#"{"Sequence":{"participants":{"a":{"id":"a","label":"Alice"}},"items":[{"Message":{"from":"a","to":"a","label":"call","line":"Solid","arrow":"Triangle"}}]}}"#,
+                r#"{"Sequence":{"participants":{"a":{"id":"a","label":"Alice","kind":"Default"}},"items":[{"Message":{"from":"a","to":"a","label":"call","line":"Solid","arrow":"Triangle"}}]}}"#,
             ),
             (
                 Diagram::State(state),
@@ -2020,5 +2103,90 @@ mod tests {
             serde_json::to_string(&class).unwrap(),
             r#"{"Class":{"direction":"Right","classes":{},"relations":[]}}"#
         );
+    }
+
+    #[test]
+    fn non_default_participant_kinds_require_schema_v9() {
+        let non_default_kinds = [
+            ParticipantKind::Actor,
+            ParticipantKind::Boundary,
+            ParticipantKind::Control,
+            ParticipantKind::Entity,
+            ParticipantKind::Database,
+            ParticipantKind::Collections,
+            ParticipantKind::Queue,
+        ];
+
+        for kind in &non_default_kinds {
+            let mut seq = SequenceDiagram::new();
+            seq.participants
+                .insert("a".into(), Participant::with_kind("a", "A", kind.clone()));
+            let diagram = Diagram::Sequence(seq);
+
+            // V1 through V8 must reject a non-Default participant kind.
+            // Use V2-V8 annotated fixtures (V1 fixture lacks `annotations`).
+            for fixture in [
+                EMPTY_GRAPH_DOCUMENT_V2,
+                EMPTY_GRAPH_DOCUMENT_V3,
+                EMPTY_GRAPH_DOCUMENT_V4,
+                EMPTY_GRAPH_DOCUMENT_V5,
+                EMPTY_GRAPH_DOCUMENT_V6,
+                EMPTY_GRAPH_DOCUMENT_V7,
+                EMPTY_GRAPH_DOCUMENT_V8,
+            ] {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert!(
+                    serde_json::from_value::<IrDocument>(value).is_err(),
+                    "legacy schema accepted non-Default participant kind {kind:?}"
+                );
+            }
+
+            // V9 must accept it.
+            let mut value: serde_json::Value =
+                serde_json::from_str(EMPTY_SEQUENCE_DOCUMENT_V9).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert_eq!(
+                serde_json::from_value::<IrDocument>(value)
+                    .unwrap()
+                    .into_diagram(),
+                diagram,
+                "V9 rejected non-Default participant kind {kind:?}"
+            );
+        }
+
+        // Default kind is accepted by all versions (using V2+ base fixtures since
+        // V1 lacks `annotations`).
+        let mut seq = SequenceDiagram::new();
+        seq.participants.insert(
+            "a".into(),
+            Participant::with_kind("a", "A", ParticipantKind::Default),
+        );
+        let diagram = Diagram::Sequence(seq);
+        for fixture in [
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+            EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
+            EMPTY_GRAPH_DOCUMENT_V8,
+        ] {
+            let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert!(
+                serde_json::from_value::<IrDocument>(value).is_ok(),
+                "legacy schema rejected Default participant kind"
+            );
+        }
+    }
+
+    #[test]
+    fn participant_kind_default_round_trips_without_field() {
+        // Default kind should round-trip even when the `kind` field is absent in JSON
+        // (backward compat: V8 documents have no `kind` in participant).
+        let json_without_kind = r#"{"id":"a","label":"Alice"}"#;
+        let p = serde_json::from_str::<Participant>(json_without_kind).unwrap();
+        assert_eq!(p.kind, ParticipantKind::Default);
     }
 }

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 276.54 240.00" width="276.54" height="240.00">
+  <rect x="-20.00" y="-20.00" width="276.54" height="240.00" fill="#ffffff"/>
+  <rect x="0.00" y="0.00" width="85.62" height="55.60" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="42.81" y="20.20" font-family="DejaVu Sans" font-size="12.00" text-anchor="middle" fill="#000000">«actor»</text>
+  <text x="42.81" y="32.00" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Alice</text>
+  <polyline points="42.81,55.60 42.81,200.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="165.62" y="0.00" width="70.92" height="55.60" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="201.08" y="33.40" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Bob</text>
+  <polyline points="201.08,55.60 201.08,200.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="42.81,80.00 191.08,80.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="201.08,80.00 191.08,75.00 191.08,85.00" fill="#000000" stroke="none"/>
+  <text x="121.94" y="76.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hello</text>
+  <polyline points="201.08,128.00 52.81,128.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="42.81,128.00 52.81,123.00 52.81,133.00" fill="#000000" stroke="none"/>
+  <text x="121.94" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hi</text>
+</svg>

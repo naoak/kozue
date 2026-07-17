@@ -103,6 +103,30 @@ fn native_and_mermaid_edge_presentation_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_and_plantuml_participant_kinds_produce_equivalent_ir() {
+    // Every non-Default participant kind must round-trip to the same semantic
+    // IR from the native DSL and from PlantUML's icon-variant keywords.
+    let native = "sequence s {\n  participant p: \"P\"\n  actor a: \"A\"\n  boundary b: \"B\"\n  control c: \"C\"\n  entity e: \"E\"\n  database d: \"D\"\n  collections co: \"Co\"\n  queue q: \"Q\"\n  a -> b : \"m\"\n}";
+    let plantuml = "@startuml\nparticipant \"P\" as p\nactor \"A\" as a\nboundary \"B\" as b\ncontrol \"C\" as c\nentity \"E\" as e\ndatabase \"D\" as d\ncollections \"Co\" as co\nqueue \"Q\" as q\na -> b : m\n@enduml\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_plantuml::parse(plantuml).expect("PlantUML parse")
+    );
+}
+
+#[test]
+fn native_and_mermaid_actor_produce_equivalent_ir() {
+    // Mermaid only expresses the Actor kind (via `actor`); other kinds have no
+    // Mermaid syntax and are covered by the PlantUML equivalence test instead.
+    let native = "sequence s {\n  actor a: \"a\"\n  participant b: \"b\"\n  a -> b : \"hello\"\n}";
+    let mermaid = "sequenceDiagram\nactor a\nparticipant b\na->>b: hello\n";
+    assert_eq!(
+        kozue_dsl::parse(native).expect("native parse"),
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+}
+
+#[test]
 fn explicit_node_shapes_map_across_all_backends() {
     let source = "graph shapes {\n d: \"Default\"\n r shape rectangle: \"Rectangle\"\n rr shape rounded: \"Rounded\"\n c shape circle: \"Circle\"\n dm shape diamond: \"Diamond\"\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
@@ -406,7 +430,12 @@ const GOLDEN_CASES: &[&str] = &[
     "ports",
 ];
 
-const SEQ_GOLDEN_CASES: &[&str] = &["seq_basic", "seq_self_dashed", "seq_minimal"];
+const SEQ_GOLDEN_CASES: &[&str] = &[
+    "seq_basic",
+    "seq_self_dashed",
+    "seq_minimal",
+    "seq_participant_kinds",
+];
 
 #[test]
 fn golden_svgs_match() {
@@ -747,6 +776,7 @@ const MERMAID_GOLDEN_CASES: &[&str] = &[
     "mermaid_class",
     "mermaid_er",
     "mermaid_subgraph",
+    "mermaid_seq_actor",
 ];
 
 fn compile_mermaid(src: &str) -> String {
@@ -1652,7 +1682,12 @@ const DRAWIO_GRAPH_GOLDEN_CASES: &[&str] = &[
     "ports",
 ];
 const DRAWIO_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
-const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &[
+    "seq_minimal",
+    "seq_basic",
+    "seq_self_dashed",
+    "seq_participant_kinds",
+];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
@@ -2055,7 +2090,12 @@ const EXCALIDRAW_GRAPH_GOLDEN_CASES: &[&str] = &[
     "ports",
 ];
 const EXCALIDRAW_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
-const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &[
+    "seq_minimal",
+    "seq_basic",
+    "seq_self_dashed",
+    "seq_participant_kinds",
+];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 
@@ -2263,7 +2303,12 @@ const PPTX_GRAPH_GOLDEN_CASES: &[&str] = &[
     "ports",
 ];
 const PPTX_STATE_GOLDEN_CASES: &[&str] = &["state_basic", "state_bidirectional"];
-const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &["seq_minimal", "seq_basic", "seq_self_dashed"];
+const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &[
+    "seq_minimal",
+    "seq_basic",
+    "seq_self_dashed",
+    "seq_participant_kinds",
+];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
 

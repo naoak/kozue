@@ -53,7 +53,7 @@
 //! Any future variants return [`RenderError::UnsupportedDiagram`] rather than
 //! silently dropping data.
 
-use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, Port};
+use kozue_ir::{ArrowType, EndMarker, LineStyle, LineWeight, NodeKind, ParticipantKind, Port};
 use kozue_layout::semantic::{
     ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
     StateLayout,
@@ -611,6 +611,37 @@ fn render_state(s: &StateLayout) -> Result<String, RenderError> {
 }
 
 // ---------------------------------------------------------------------------
+/// Build the draw.io `value` for a participant cell.
+///
+/// For non-Default kinds the stereotype is prepended as an italic line.
+fn participant_cell_value(label: &str, kind: &ParticipantKind) -> String {
+    match kind {
+        ParticipantKind::Default => xml_escape(label),
+        ParticipantKind::Actor => {
+            format!("<i>«actor»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Boundary => {
+            format!("<i>«boundary»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Control => {
+            format!("<i>«control»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Entity => {
+            format!("<i>«entity»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Database => {
+            format!("<i>«database»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Collections => {
+            format!("<i>«collections»</i><br>{}", xml_escape(label))
+        }
+        ParticipantKind::Queue => {
+            format!("<i>«queue»</i><br>{}", xml_escape(label))
+        }
+        _ => xml_escape(label),
+    }
+}
+
 // Sequence diagram renderer
 // ---------------------------------------------------------------------------
 
@@ -624,13 +655,14 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
     for (i, p) in s.participants.iter().enumerate() {
         let r = &p.header_rect;
         let height = p.lifeline_y1 - r.y;
+        let value = participant_cell_value(&p.label, &p.kind);
         out.push_str(&format!(
             "        <mxCell id=\"n{i}\" value=\"{}\" \
              style=\"shape=umlLifeline;perimeter=lifelinePerimeter;size={};container=0;\
              collapsible=0;whiteSpace=wrap;html=1;\" vertex=\"1\" parent=\"1\">\n\
              \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
              \x20       </mxCell>\n",
-            xml_escape(&p.label),
+            value,
             f(r.height),
             f(r.x + MARGIN),
             f(r.y + MARGIN),

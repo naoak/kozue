@@ -2,16 +2,18 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ElementId, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem, StrokeStyle,
-    StrokeWeight, Text, TextAlign,
+    ElementId, ParticipantKind, Path, Rect, Scene, SceneItem, SequenceDiagram, SequenceItem,
+    StrokeStyle, StrokeWeight, Text, TextAlign,
 };
 
 use crate::bounds;
 use crate::semantic;
 
 const FONT_SIZE: f64 = 16.0;
+const STEREOTYPE_FONT_SIZE: f64 = 12.0; // font size for «kind» stereotype text
 const PAD_X: f64 = 20.0;
 const PAD_Y: f64 = 10.0;
+const STEREOTYPE_GAP: f64 = 2.0; // extra gap between stereotype line and label
 const HEADER_RX: f64 = 4.0;
 const MIN_COL_GAP: f64 = 80.0; // minimum gap between adjacent column centers
 const MSG_LABEL_PAD: f64 = 16.0; // horizontal padding around message label
@@ -23,6 +25,26 @@ const MSG_START_Y: f64 = 80.0; // y of first message line (below headers)
 const LIFELINE_EXTRA: f64 = 24.0; // extra space below last message
 const ARROW_LEN: f64 = 10.0;
 const ARROW_HALF_W: f64 = 5.0;
+
+/// Returns the guillemet stereotype string for a non-Default participant kind.
+/// Returns `None` for `Default`.
+fn stereotype_label(kind: &ParticipantKind) -> Option<&'static str> {
+    match kind {
+        ParticipantKind::Default => None,
+        ParticipantKind::Actor => Some("«actor»"),
+        ParticipantKind::Boundary => Some("«boundary»"),
+        ParticipantKind::Control => Some("«control»"),
+        ParticipantKind::Entity => Some("«entity»"),
+        ParticipantKind::Database => Some("«database»"),
+        ParticipantKind::Collections => Some("«collections»"),
+        ParticipantKind::Queue => Some("«queue»"),
+        // Safe fallback for presentation-path renderers (svg/png/term).
+        // Strict rejection of unrecognised `ParticipantKind` variants is the
+        // responsibility of `validate_export_semantics` in the exchange-contract
+        // layer; presentation paths are not the enforcement boundary.
+        _ => Some("«participant»"),
+    }
+}
 
 pub(crate) fn layout_sequence_full(
     seq: &SequenceDiagram,
@@ -54,9 +76,17 @@ pub(crate) fn layout_sequence_full(
     let header_sizes: Vec<(f64, f64)> = ids
         .iter()
         .map(|id| {
-            let label = &seq.participants[*id].label;
+            let p = &seq.participants[*id];
+            let label = &p.label;
             let (tw, th) = kozue_text::measure(label, FONT_SIZE);
-            (tw + 2.0 * PAD_X, th + 2.0 * PAD_Y)
+            if let Some(st) = stereotype_label(&p.kind) {
+                let (stw, sth) = kozue_text::measure(st, STEREOTYPE_FONT_SIZE);
+                let w = tw.max(stw) + 2.0 * PAD_X;
+                let h = sth + STEREOTYPE_GAP + th + 2.0 * PAD_Y;
+                (w, h)
+            } else {
+                (tw + 2.0 * PAD_X, th + 2.0 * PAD_Y)
+            }
         })
         .collect();
 
@@ -182,7 +212,8 @@ pub(crate) fn layout_sequence_full(
 
     // Draw participant headers and lifelines.
     for (i, id) in ids.iter().enumerate() {
-        let label = &seq.participants[*id].label;
+        let p = &seq.participants[*id];
+        let label = &p.label;
         let (hw, _hh) = header_sizes[i];
         let cx = col_x[i];
         let lifeline_top = HEADER_TOP + header_height;
@@ -196,17 +227,47 @@ pub(crate) fn layout_sequence_full(
             rx: HEADER_RX,
         }));
 
-        // Header label.
         let (tw, th) = kozue_text::measure(label, FONT_SIZE);
-        items.push(SceneItem::Text(Text {
-            x: cx,
-            y: HEADER_TOP + header_height / 2.0 + FONT_SIZE * 0.35,
-            size: FONT_SIZE,
-            align: TextAlign::Middle,
-            content: label.clone(),
-            text_width: tw,
-            text_height: th,
-        }));
+
+        // For non-Default participants: emit stereotype line above label.
+        if let Some(st) = stereotype_label(&p.kind) {
+            let (stw, sth) = kozue_text::measure(st, STEREOTYPE_FONT_SIZE);
+            // Compute vertical positions: center the {stereotype + gap + label} block in the header.
+            let block_height = sth + STEREOTYPE_GAP + th;
+            let block_top = HEADER_TOP + (header_height - block_height) / 2.0;
+            let st_y = block_top + STEREOTYPE_FONT_SIZE * 0.85; // baseline of stereotype text
+            items.push(SceneItem::Text(Text {
+                x: cx,
+                y: st_y,
+                size: STEREOTYPE_FONT_SIZE,
+                align: TextAlign::Middle,
+                content: st.to_string(),
+                text_width: stw,
+                text_height: sth,
+            }));
+            // Label sits below the stereotype line.
+            let label_y = block_top + sth + STEREOTYPE_GAP + FONT_SIZE * 0.35;
+            items.push(SceneItem::Text(Text {
+                x: cx,
+                y: label_y,
+                size: FONT_SIZE,
+                align: TextAlign::Middle,
+                content: label.clone(),
+                text_width: tw,
+                text_height: th,
+            }));
+        } else {
+            // Default: original positioning (byte-identical to pre-V9 output).
+            items.push(SceneItem::Text(Text {
+                x: cx,
+                y: HEADER_TOP + header_height / 2.0 + FONT_SIZE * 0.35,
+                size: FONT_SIZE,
+                align: TextAlign::Middle,
+                content: label.clone(),
+                text_width: tw,
+                text_height: th,
+            }));
+        }
 
         // Lifeline: dashed vertical line from bottom of header to diagram_bottom.
         items.push(SceneItem::Path(Path {
@@ -219,6 +280,7 @@ pub(crate) fn layout_sequence_full(
         sem_participants.push(semantic::ParticipantLayout {
             id: (*id).clone(),
             label: label.clone(),
+            kind: p.kind.clone(),
             header_rect: Rect {
                 x: cx - hw / 2.0,
                 y: HEADER_TOP,
