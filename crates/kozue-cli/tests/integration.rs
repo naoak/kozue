@@ -127,6 +127,26 @@ fn native_and_mermaid_actor_produce_equivalent_ir() {
 }
 
 #[test]
+fn native_mermaid_plantuml_notes_produce_equivalent_ir() {
+    // Sequence notes must normalize to the same semantic IR across all three
+    // frontends. Messages are omitted so the comparison isolates note
+    // position/target/text/order (arrow-token mapping is covered separately).
+    let native = "sequence s {\n  participant A\n  participant B\n  note over A : \"n1\"\n  note left of B : \"n2\"\n  note over A, B : \"n3\"\n}";
+    let mermaid = "sequenceDiagram\n  participant A\n  participant B\n  Note over A: n1\n  Note left of B: n2\n  Note over A,B: n3\n";
+    let plantuml =
+        "@startuml\nparticipant A\nparticipant B\nnote over A: n1\nnote left of B: n2\nnote over A, B: n3\n@enduml\n";
+    let native_ir = kozue_dsl::parse(native).expect("native parse");
+    assert_eq!(
+        native_ir,
+        kozue_mermaid::parse(mermaid).expect("Mermaid parse")
+    );
+    assert_eq!(
+        native_ir,
+        kozue_plantuml::parse(plantuml).expect("PlantUML parse")
+    );
+}
+
+#[test]
 fn native_and_plantuml_message_arrows_produce_equivalent_ir() {
     // Every PlantUML message arrow form must produce the same semantic IR as
     // its native head/tail modifier spelling.
@@ -313,6 +333,54 @@ fn edge_presentation_maps_across_all_backends() {
 }
 
 #[test]
+fn notes_map_across_all_backends() {
+    let source = "sequence notes {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  note over a : \"thinking\"\n  a -> b : \"hello\"\n  note right of b : \"got it\"\n  note over a, b : \"both\"\n}";
+    let diagram = kozue_dsl::parse(source).unwrap();
+    let output = kozue_layout::layout_full(&diagram).unwrap();
+
+    // SVG (presentation path): note text appears; there are >= 3 notes drawn.
+    let svg = kozue_render_svg::render(&output.scene);
+    assert!(svg.contains(">thinking<"));
+    assert!(svg.contains(">got it<"));
+    assert!(svg.contains(">both<"));
+
+    // Terminal path renders the note text.
+    let term = kozue_render_term::render(&output.scene);
+    assert!(term.contains("thinking"));
+
+    // draw.io: a `shape=note` vertex per note carrying the text.
+    let drawio = kozue_render_drawio::render(&output.semantic).unwrap();
+    assert!(drawio.contains("shape=note;"));
+    assert!(drawio.contains("value=\"thinking\""));
+    assert_eq!(drawio.matches("shape=note;").count(), 3);
+
+    // Excalidraw: dog-eared `line` polygon (+ fold crease) + standalone text.
+    let excalidraw: serde_json::Value =
+        serde_json::from_str(&kozue_render_excalidraw::render(&output.semantic).unwrap()).unwrap();
+    let elements = excalidraw["elements"].as_array().unwrap();
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "text" && e["text"] == "thinking"));
+    // A note outline and its fold crease are both `line` elements.
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "line" && e["id"] == "note0"));
+    assert!(elements
+        .iter()
+        .any(|e| e["type"] == "line" && e["id"] == "note0-fold"));
+
+    // PPTX: `foldedCorner` (dog-eared) shape carrying the note text.
+    let pptx = kozue_render_pptx::render(&output.semantic).unwrap();
+    let pptx_text = String::from_utf8_lossy(&pptx);
+    assert!(pptx_text.contains("thinking"));
+    assert!(pptx_text.contains("Note "));
+    assert!(pptx_text.contains("prst=\"foldedCorner\""));
+
+    // DOT stays sequence-unsupported.
+    assert!(kozue_render_dot::render(&diagram).is_err());
+}
+
+#[test]
 fn subgraphs_map_across_all_backends() {
     let source = "graph subgraphs {\n  entry: \"Entry\"\n  subgraph left: \"Left Side\" {\n    a: \"A\"\n    b: \"B\"\n  }\n  subgraph right {\n    c: \"C\"\n    subgraph inner: \"Inner\" {\n      d: \"D\"\n    }\n  }\n  entry -> a\n  a -> b\n  b -> c\n  c -> d\n}";
     let diagram = kozue_dsl::parse(source).unwrap();
@@ -491,6 +559,7 @@ const SEQ_GOLDEN_CASES: &[&str] = &[
     "seq_minimal",
     "seq_participant_kinds",
     "seq_message_arrows",
+    "seq_notes",
 ];
 
 #[test]
@@ -834,6 +903,7 @@ const MERMAID_GOLDEN_CASES: &[&str] = &[
     "mermaid_subgraph",
     "mermaid_seq_actor",
     "mermaid_seq_arrows",
+    "mermaid_seq_notes",
 ];
 
 fn compile_mermaid(src: &str) -> String {
@@ -919,6 +989,7 @@ fn mermaid_rendering_is_deterministic_across_processes() {
 const PLANTUML_GOLDEN_CASES: &[&str] = &[
     "plantuml_seq",
     "plantuml_seq_arrows",
+    "plantuml_seq_notes",
     "plantuml_state",
     "plantuml_class",
     "plantuml_er",
@@ -1271,6 +1342,7 @@ const TERM_GOLDEN_KZD_CASES: &[&str] = &[
     "branch",
     "seq_basic",
     "seq_message_arrows",
+    "seq_notes",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1381,6 +1453,7 @@ const PNG_GOLDEN_CASES: &[&str] = &[
     "branch",
     "seq_basic",
     "seq_message_arrows",
+    "seq_notes",
     "node_shapes",
     "edge_presentation",
     "subgraph",
@@ -1748,6 +1821,7 @@ const DRAWIO_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_self_dashed",
     "seq_participant_kinds",
     "seq_message_arrows",
+    "seq_notes",
 ];
 const DRAWIO_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const DRAWIO_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -1920,7 +1994,7 @@ fn drawio_style_frac(xml: &str, cell_id: &str, key: &str) -> f64 {
 /// lifeline span instead of the full vertex height) in the renderer itself.
 #[test]
 fn drawio_sequence_pins_preserve_message_y() {
-    use kozue_layout::semantic::SemanticLayout;
+    use kozue_layout::semantic::{SemanticLayout, SequenceItemLayout};
     for name in DRAWIO_SEQUENCE_GOLDEN_CASES {
         let src = std::fs::read_to_string(golden_dir().join(format!("{name}.kzd"))).unwrap();
         let diagram = kozue_dsl::parse(&src).unwrap();
@@ -1929,7 +2003,10 @@ fn drawio_sequence_pins_preserve_message_y() {
             panic!("{name} must be a sequence layout");
         };
         let xml = kozue_render_drawio::render(&out.semantic).unwrap();
-        for (i, m) in s.messages.iter().enumerate() {
+        for (i, item) in s.items.iter().enumerate() {
+            let SequenceItemLayout::Message(m) = item else {
+                continue;
+            };
             let src_p = s.participants.iter().find(|p| p.id == m.from).unwrap();
             let tgt_p = s.participants.iter().find(|p| p.id == m.to).unwrap();
             let cell_id = format!("e{i}");
@@ -1962,7 +2039,15 @@ fn drawio_sequence_self_message_is_self_loop_with_waypoints() {
     let SemanticLayout::Sequence(s) = &out.semantic else {
         panic!("expected sequence");
     };
-    let self_msgs = s.messages.iter().filter(|m| m.from == m.to).count();
+    let self_msgs = s
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            kozue_layout::semantic::SequenceItemLayout::Message(m) => Some(m),
+            _ => None,
+        })
+        .filter(|m| m.from == m.to)
+        .count();
     assert_eq!(self_msgs, 2, "two self-messages expected");
     let xml = kozue_render_drawio::render(&out.semantic).unwrap();
     // A self-loop connects a lifeline to itself and carries a waypoint Array.
@@ -2157,6 +2242,7 @@ const EXCALIDRAW_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_self_dashed",
     "seq_participant_kinds",
     "seq_message_arrows",
+    "seq_notes",
 ];
 const EXCALIDRAW_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const EXCALIDRAW_ER_GOLDEN_CASES: &[&str] = &["er_basic"];
@@ -2371,6 +2457,7 @@ const PPTX_SEQUENCE_GOLDEN_CASES: &[&str] = &[
     "seq_self_dashed",
     "seq_participant_kinds",
     "seq_message_arrows",
+    "seq_notes",
 ];
 const PPTX_CLASS_GOLDEN_CASES: &[&str] = &["class_basic"];
 const PPTX_ER_GOLDEN_CASES: &[&str] = &["er_basic"];

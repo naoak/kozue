@@ -54,8 +54,9 @@ use std::ops::Range;
 use ariadne::{Label, Report, ReportKind, Source};
 use kozue_ir::{
     ClassDiagram, ClassNode, ClassRelation, Diagram, Direction, EndMarker, Endpoint, ErAttribute,
-    ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, MessageArrow, Participant,
-    ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    ErDiagram, ErEntity, ErRelation, IrDocument, LineStyle, Message, MessageArrow, Note,
+    NotePosition, Participant, ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram,
+    Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -412,11 +413,24 @@ fn parse_sequence_body(lines: &[(usize, String)], _source: &str, errors: &mut Ve
             continue;
         }
 
+        // Single-line note: `note over A : text` etc. Accepted; a note line
+        // that isn't a valid single-line form (e.g. a multi-line note-block
+        // opener `note over A`, with no `:`) falls through to the unsupported
+        // keyword table below and raises an explicit error (no silent drop).
+        match try_parse_plantuml_note(trimmed) {
+            Some(Ok(_)) => continue,
+            Some(Err(msg)) => {
+                errors.push(Diagnostic::new(msg, span));
+                continue;
+            }
+            None => {}
+        }
+
         // Unsupported keywords — word-boundary matched so `participant` isn't caught by `par`.
         let unsupported_kw: &[(&str, &str)] = &[
             (
                 "note",
-                "unsupported: note (kozue does not support this yet)",
+                "unsupported: multi-line note blocks (kozue supports only single-line `note over/left of/right of ... : text`)",
             ),
             (
                 "hnote",
@@ -553,6 +567,17 @@ fn parse_sequence_clean(lines: &[(usize, String)]) -> Diagram {
 
         if let Some((id, label, kind)) = try_parse_participant_decl(trimmed) {
             ensure_participant(&mut seq, &id, label.as_deref(), kind);
+            continue;
+        }
+
+        if let Some(Ok((position, targets, text))) = try_parse_plantuml_note(trimmed) {
+            let mut ids = Vec::new();
+            for t in &targets {
+                ensure_participant(&mut seq, t, None, ParticipantKind::Default);
+                ids.push(kozue_ir::ElementId::new(t.clone()));
+            }
+            seq.items
+                .push(SequenceItem::Note(Note::new(text, position, ids)));
             continue;
         }
 
@@ -2012,6 +2037,81 @@ fn try_parse_plantuml_message(line: &str) -> Option<Result<SeqMsgResult, String>
 }
 
 /// Check if `s` is a valid PlantUML participant identifier (bare, unquoted).
+/// Parse a single-line PlantUML sequence note.
+///
+/// Forms: `note over A : text`, `note over A, B : text`, `note left of A : text`,
+/// `note right of A : text`. Returns `None` when the line is not a note (so the
+/// caller falls through), or `Err` for a note-shaped line that is not a valid
+/// single-line note (e.g. a multi-line note-block opener with no `:`), which the
+/// caller surfaces as an explicit unsupported error.
+#[allow(clippy::type_complexity)]
+fn try_parse_plantuml_note(
+    line: &str,
+) -> Option<Result<(NotePosition, Vec<String>, String), String>> {
+    let rest = line.strip_prefix("note")?;
+    // `note` must be a standalone word (`notepad ...` is not a note).
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    let rest = rest.trim_start();
+
+    let (position, after) = if let Some(r) = rest.strip_prefix("over") {
+        (NotePosition::Over, r)
+    } else if let Some(r) = rest.strip_prefix("left of") {
+        (NotePosition::LeftOf, r)
+    } else if let Some(r) = rest.strip_prefix("right of") {
+        (NotePosition::RightOf, r)
+    } else {
+        // A note with an unsupported placement (`note left : ...` positional,
+        // `note as N1`, coloured notes, etc.). Report explicitly.
+        return Some(Err(
+            "unsupported: note placement (expected `over`, `left of`, or `right of`)".to_string(),
+        ));
+    };
+    if !after.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return Some(Err(
+            "unsupported: note placement (expected `over`, `left of`, or `right of`)".to_string(),
+        ));
+    }
+    let after = after.trim_start();
+
+    // Must have `: text` — a note opener without a colon is a multi-line block.
+    let Some(colon_idx) = after.find(':') else {
+        return Some(Err(
+            "unsupported: multi-line note blocks (kozue supports only single-line `note over/left of/right of ... : text`)"
+                .to_string(),
+        ));
+    };
+    let targets_part = after[..colon_idx].trim();
+    let text = after[colon_idx + 1..].trim().to_string();
+
+    let mut targets = Vec::new();
+    for raw in targets_part.split(',') {
+        let name = raw.trim();
+        if !is_valid_participant_id(name) {
+            return Some(Err(format!(
+                "note references invalid participant id `{name}`"
+            )));
+        }
+        targets.push(name.to_string());
+    }
+    if targets.is_empty() {
+        return Some(Err(
+            "note requires at least one target participant".to_string()
+        ));
+    }
+    match position {
+        NotePosition::LeftOf | NotePosition::RightOf if targets.len() != 1 => {
+            return Some(Err(
+                "`left of`/`right of` notes accept exactly one participant; use `over` to span several"
+                    .to_string(),
+            ));
+        }
+        _ => {}
+    }
+    Some(Ok((position, targets, text)))
+}
+
 /// Accepts alphanumeric, underscore, and Unicode letters (for Japanese names etc.).
 fn is_valid_participant_id(s: &str) -> bool {
     if s.is_empty() {
@@ -2360,13 +2460,45 @@ mod tests {
     }
 
     #[test]
-    fn note_is_unsupported() {
-        let src = "@startuml\nparticipant A\nnote over A: some text\nA -> A : ok\n@enduml\n";
+    fn single_line_note_is_supported_and_ordered() {
+        let src = "@startuml\nparticipant A\nparticipant B\nnote over A: thinking\nA ->> B : hello\nnote right of B: got it\nnote over A, B: both\n@enduml\n";
+        let d = parse_document(src).expect("single-line notes should parse");
+        let Diagram::Sequence(s) = d.into_diagram() else {
+            panic!("expected sequence");
+        };
+        assert!(matches!(s.items[0], SequenceItem::Note(_)));
+        assert!(matches!(s.items[1], SequenceItem::Message(_)));
+        assert!(matches!(s.items[2], SequenceItem::Note(_)));
+        match &s.items[3] {
+            SequenceItem::Note(n) => {
+                assert_eq!(n.position, NotePosition::Over);
+                assert_eq!(n.targets.len(), 2);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn multi_line_note_block_is_unsupported() {
+        // A note opener with no `: text` is a multi-line block — unsupported.
+        let src = "@startuml\nparticipant A\nnote over A\n  detail\nend note\n@enduml\n";
         let errs = parse_err(src);
         assert!(
             errs.iter()
                 .any(|e| e.message.contains("unsupported")
                     && e.message.to_lowercase().contains("note")),
+            "got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn hnote_is_unsupported() {
+        let src = "@startuml\nparticipant A\nhnote over A: x\n@enduml\n";
+        let errs = parse_err(src);
+        assert!(
+            errs.iter()
+                .any(|e| e.message.contains("unsupported")
+                    && e.message.to_lowercase().contains("hnote")),
             "got: {errs:?}"
         );
     }
@@ -2540,17 +2672,17 @@ mod tests {
 
     #[test]
     fn error_span_is_correct_after_block_comment() {
-        let src = "@startuml\n/' a block comment here '/\nnote over A : unsupported\n@enduml\n";
+        let src = "@startuml\n/' a block comment here '/\nhnote over A : unsupported\n@enduml\n";
         let errs = parse_err(src);
         let note_err = errs
             .iter()
-            .find(|e| e.message.contains("note"))
-            .expect("expected a note error");
-        // The span must underline the actual `note` occurrence in the ORIGINAL source.
+            .find(|e| e.message.contains("hnote"))
+            .expect("expected an hnote error");
+        // The span must underline the actual `hnote` occurrence in the ORIGINAL source.
         assert_eq!(
             &src[note_err.span.clone()],
-            "note over A : unsupported",
-            "span must map to the note line, not shift due to the block comment"
+            "hnote over A : unsupported",
+            "span must map to the hnote line, not shift due to the block comment"
         );
     }
 
@@ -2581,8 +2713,8 @@ mod tests {
 
     #[test]
     fn multiple_errors_are_all_collected() {
-        // Both note and alt should produce errors — all collected before returning.
-        let src = "@startuml\nnote over A: text\nalt success\nA -> B : hi\nend\n@enduml\n";
+        // Both hnote and alt should produce errors — all collected before returning.
+        let src = "@startuml\nhnote over A: text\nalt success\nA -> B : hi\nend\n@enduml\n";
         let errs = parse_err(src);
         assert!(errs.len() >= 2, "expected multiple errors, got: {errs:?}");
     }

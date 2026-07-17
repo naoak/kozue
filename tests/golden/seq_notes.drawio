@@ -1,0 +1,34 @@
+<mxfile>
+  <diagram id="kozue" name="Page-1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n0" value="Alice" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="46.69" y="20.00" width="78.48" height="392.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="n1" value="Bob" style="shape=umlLifeline;perimeter=lifelinePerimeter;size=39.20;container=0;collapsible=0;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+          <mxGeometry x="332.28" y="20.00" width="70.92" height="392.00" as="geometry"/>
+        </mxCell>
+        <mxCell id="note0" value="thinking" style="shape=note;whiteSpace=wrap;html=1;size=8;" vertex="1" parent="1">
+          <mxGeometry x="45.43" y="84.40" width="81.01" height="31.20" as="geometry"/>
+        </mxCell>
+        <mxCell id="e1" value="hello" style="edgeStyle=none;html=1;exitX=0.5;exitY=0.326531;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.326531;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n0" target="n1" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="note2" value="got it" style="shape=note;whiteSpace=wrap;html=1;size=8;" vertex="1" parent="1">
+          <mxGeometry x="377.74" y="180.40" width="58.02" height="31.20" as="geometry"/>
+        </mxCell>
+        <mxCell id="e3" value="hi" style="edgeStyle=none;html=1;dashed=1;exitX=0.5;exitY=0.571429;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0.571429;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" source="n1" target="n0" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="note4" value="both know each other" style="shape=note;whiteSpace=wrap;html=1;size=8;" vertex="1" parent="1">
+          <mxGeometry x="77.93" y="276.40" width="297.81" height="31.20" as="geometry"/>
+        </mxCell>
+        <mxCell id="note5" value="done" style="shape=note;whiteSpace=wrap;html=1;size=8;" vertex="1" parent="1">
+          <mxGeometry x="20.00" y="324.40" width="55.93" height="31.20" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

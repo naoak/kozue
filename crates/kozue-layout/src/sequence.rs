@@ -2,9 +2,11 @@
 
 use indexmap::IndexMap;
 use kozue_ir::{
-    ElementId, MessageArrow, ParticipantKind, Path, Rect, Scene, SceneItem, SequenceDiagram,
-    SequenceItem, StrokeStyle, StrokeWeight, Text, TextAlign,
+    ElementId, MessageArrow, NotePosition, ParticipantKind, Path, Rect, Scene, SceneItem,
+    SequenceDiagram, SequenceItem, StrokeStyle, StrokeWeight, Text, TextAlign,
 };
+
+use crate::semantic::SequenceItemLayout;
 
 use crate::bounds;
 use crate::semantic;
@@ -25,6 +27,11 @@ const MSG_START_Y: f64 = 80.0; // y of first message line (below headers)
 const LIFELINE_EXTRA: f64 = 24.0; // extra space below last message
 const ARROW_LEN: f64 = 10.0;
 const ARROW_HALF_W: f64 = 5.0;
+const NOTE_PAD_X: f64 = 8.0; // horizontal padding inside a note box
+const NOTE_PAD_Y: f64 = 6.0; // vertical padding inside a note box
+const NOTE_GAP: f64 = 10.0; // gap between a note and its target lifeline (left/right of)
+const NOTE_EAR: f64 = 8.0; // size of the folded corner on a note box
+const NOTE_SPAN_EXTEND: f64 = 8.0; // extra half-width past the outer lifelines for span notes
 
 /// Returns the guillemet stereotype string for a non-Default participant kind.
 /// Returns `None` for `Default`.
@@ -136,28 +143,168 @@ fn push_arrow_glyph(items: &mut Vec<SceneItem>, tip: (f64, f64), dx: f64, arrow:
     }
 }
 
+/// Draw a note box (UML dog-eared rectangle outline + centered text) and push
+/// its `NoteLayout`. `note_box_width` mirrors the width used during column
+/// placement. Validation (target existence, target count) has already run.
+#[allow(clippy::too_many_arguments)]
+fn draw_note(
+    items: &mut Vec<SceneItem>,
+    sem_items: &mut Vec<SequenceItemLayout>,
+    note: &kozue_ir::Note,
+    row: usize,
+    col_x: &[f64],
+    idx_of: &IndexMap<&str, usize>,
+    note_box_width: &impl Fn(&str) -> f64,
+) {
+    let y_center = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
+    let (tw, th) = kozue_text::measure(&note.text, FONT_SIZE);
+    let text_w = tw + 2.0 * NOTE_PAD_X;
+    let nh = th + 2.0 * NOTE_PAD_Y;
+
+    let cols: Vec<f64> = note
+        .targets
+        .iter()
+        .filter_map(|t| idx_of.get(t.as_str()).map(|&i| col_x[i]))
+        .collect();
+    // `cols` is non-empty: validated before drawing.
+    let (x0, nw) = match note.position {
+        NotePosition::Over => {
+            let left = cols.iter().cloned().fold(f64::INFINITY, f64::min);
+            let right = cols.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let center = (left + right) / 2.0;
+            let span_w = (right - left) + 2.0 * NOTE_SPAN_EXTEND;
+            let nw = text_w.max(span_w);
+            (center - nw / 2.0, nw)
+        }
+        NotePosition::LeftOf => {
+            let nw = note_box_width(&note.text);
+            (cols[0] - NOTE_GAP - nw, nw)
+        }
+        NotePosition::RightOf => {
+            let nw = note_box_width(&note.text);
+            (cols[0] + NOTE_GAP, nw)
+        }
+        _ => (cols[0] - text_w / 2.0, text_w),
+    };
+    let y0 = y_center - nh / 2.0;
+    let x1 = x0 + nw;
+    let y1 = y0 + nh;
+
+    // Outline with a folded top-right corner (dog-ear).
+    items.push(SceneItem::Path(Path {
+        points: vec![
+            (x0, y0),
+            (x1 - NOTE_EAR, y0),
+            (x1, y0 + NOTE_EAR),
+            (x1, y1),
+            (x0, y1),
+            (x0, y0),
+        ],
+        filled: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
+    }));
+    // The fold triangle.
+    items.push(SceneItem::Path(Path {
+        points: vec![
+            (x1 - NOTE_EAR, y0),
+            (x1 - NOTE_EAR, y0 + NOTE_EAR),
+            (x1, y0 + NOTE_EAR),
+        ],
+        filled: false,
+        stroke: StrokeStyle::Solid,
+        weight: StrokeWeight::Normal,
+    }));
+
+    let cx = x0 + nw / 2.0;
+    let cy = y0 + nh / 2.0;
+    items.push(SceneItem::Text(Text {
+        x: cx,
+        y: cy + FONT_SIZE * 0.35,
+        size: FONT_SIZE,
+        align: TextAlign::Middle,
+        content: note.text.clone(),
+        text_width: tw,
+        text_height: th,
+    }));
+
+    sem_items.push(SequenceItemLayout::Note(semantic::NoteLayout {
+        index: row,
+        text: note.text.clone(),
+        position: note.position,
+        targets: note.targets.clone(),
+        rect: Rect {
+            x: x0,
+            y: y0,
+            width: nw,
+            height: nh,
+            rx: 0.0,
+        },
+        text_anchor: semantic::Point::new(cx, cy),
+    }));
+}
+
 pub(crate) fn layout_sequence_full(
     seq: &SequenceDiagram,
 ) -> Result<crate::LayoutOutput, crate::LayoutError> {
     for item in &seq.items {
-        let SequenceItem::Message(message) = item else {
-            return Err(crate::LayoutError {
-                message: "unsupported future sequence item".to_string(),
-            });
-        };
-        if !seq.participants.contains_key(&message.from)
-            || !seq.participants.contains_key(&message.to)
-        {
-            return Err(crate::LayoutError {
-                message: format!(
-                    "sequence message references unknown participant ({} -> {})",
-                    message.from, message.to
-                ),
-            });
+        match item {
+            SequenceItem::Message(message) => {
+                if !seq.participants.contains_key(&message.from)
+                    || !seq.participants.contains_key(&message.to)
+                {
+                    return Err(crate::LayoutError {
+                        message: format!(
+                            "sequence message references unknown participant ({} -> {})",
+                            message.from, message.to
+                        ),
+                    });
+                }
+                crate::validate_line(message.line)?;
+                crate::validate_message_arrow(message.head)?;
+                crate::validate_message_arrow(message.tail)?;
+            }
+            SequenceItem::Note(note) => {
+                if note.targets.is_empty() {
+                    return Err(crate::LayoutError {
+                        message: "sequence note has no target participants".to_string(),
+                    });
+                }
+                match note.position {
+                    NotePosition::LeftOf | NotePosition::RightOf => {
+                        if note.targets.len() != 1 {
+                            return Err(crate::LayoutError {
+                                message:
+                                    "sequence note `left of`/`right of` requires exactly one target"
+                                        .to_string(),
+                            });
+                        }
+                    }
+                    NotePosition::Over => {}
+                    // `NotePosition` is `#[non_exhaustive]`: reject unknown variants.
+                    _ => {
+                        return Err(crate::LayoutError {
+                            message: "unsupported future sequence note position".to_string(),
+                        })
+                    }
+                }
+                for target in &note.targets {
+                    if !seq.participants.contains_key(target) {
+                        return Err(crate::LayoutError {
+                            message: format!(
+                                "sequence note references unknown participant ({target})"
+                            ),
+                        });
+                    }
+                }
+            }
+            // `SequenceItem` is `#[non_exhaustive]`: reject unknown variants.
+            _ => {
+                return Err(crate::LayoutError {
+                    message: "unsupported future sequence item".to_string(),
+                })
+            }
         }
-        crate::validate_line(message.line)?;
-        crate::validate_message_arrow(message.head)?;
-        crate::validate_message_arrow(message.tail)?;
     }
     // Collect participant IDs in insertion order.
     let ids: Vec<&ElementId> = seq.participants.keys().collect();
@@ -210,6 +357,67 @@ pub(crate) fn layout_sequence_full(
         })
         .collect();
 
+    // Note box width for a given text.
+    let note_box_width = |text: &str| kozue_text::measure(text, FONT_SIZE).0 + 2.0 * NOTE_PAD_X;
+
+    // Span widths contributed by `Over` notes covering more than one column.
+    // These join `msg_label_widths` so the shared gap-expansion + multi-gap
+    // fixup keeps a span note from overflowing its columns.
+    let mut span_widths: Vec<(usize, usize, f64)> = msg_label_widths.clone();
+    // Extra right-overhang past a column contributed by notes anchored to it
+    // (`Over` single target and `RightOf`). Combined with `self_msg_overhang`.
+    let mut note_right_overhang: Vec<f64> = vec![0.0; n];
+    // Extra left-overhang past a column contributed by `LeftOf` notes: the box
+    // sits to the left of the lifeline and must clear the previous column.
+    let mut note_left_overhang: Vec<f64> = vec![0.0; n];
+    for item in &seq.items {
+        let SequenceItem::Note(note) = item else {
+            continue;
+        };
+        let nw = note_box_width(&note.text);
+        let cols: Vec<usize> = note
+            .targets
+            .iter()
+            .filter_map(|t| idx_of.get(t.as_str()).copied())
+            .collect();
+        if cols.is_empty() {
+            continue;
+        }
+        match note.position {
+            NotePosition::Over => {
+                let lo = *cols.iter().min().unwrap();
+                let hi = *cols.iter().max().unwrap();
+                if lo == hi {
+                    // Single-column over note: symmetric half-width overhang.
+                    let half = nw / 2.0;
+                    if half > note_right_overhang[lo] {
+                        note_right_overhang[lo] = half;
+                    }
+                    if half > note_left_overhang[lo] {
+                        note_left_overhang[lo] = half;
+                    }
+                } else {
+                    span_widths.push((lo, hi, nw));
+                }
+            }
+            NotePosition::RightOf => {
+                let c = cols[0];
+                let overhang = NOTE_GAP + nw;
+                if overhang > note_right_overhang[c] {
+                    note_right_overhang[c] = overhang;
+                }
+            }
+            NotePosition::LeftOf => {
+                let c = cols[0];
+                let overhang = NOTE_GAP + nw;
+                if overhang > note_left_overhang[c] {
+                    note_left_overhang[c] = overhang;
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Precompute self-message label widths per column.
     // For column i with a self-message, the label is placed at x1+4 = col_x[i]+SELF_MSG_WIDTH+4
     // with TextAlign::Start. The right edge is: col_x[i] + SELF_MSG_WIDTH + 4 + label_width.
@@ -252,31 +460,39 @@ pub(crate) fn layout_sequence_full(
             let half_cur = header_sizes[i].0 / 2.0;
             let base_gap = half_prev + MIN_COL_GAP + half_cur;
 
-            // Check messages spanning exactly the adjacent pair [i-1, i].
-            let label_gap = msg_label_widths
+            // Check messages/notes spanning exactly the adjacent pair [i-1, i].
+            let label_gap = span_widths
                 .iter()
                 .filter(|&&(a, b, _)| a == i - 1 && b == i)
                 .map(|&(_, _, lw)| lw + MSG_LABEL_PAD + half_prev + half_cur)
                 .fold(0.0f64, f64::max);
 
-            // Self-message overhang from column i-1: the label extends to
-            // col_x[i-1] + self_msg_overhang[i-1], which must not overlap the
-            // left edge of column i's header (col_x[i] - half_cur).
-            // So: col_x[i] - col_x[i-1] >= self_msg_overhang[i-1] + half_cur + MSG_LABEL_PAD
-            let self_gap = if self_msg_overhang[i - 1] > 0.0 {
-                self_msg_overhang[i - 1] + half_cur + MSG_LABEL_PAD
+            // Right-side overhang from column i-1 (self-message labels and
+            // right/over notes) must clear the left edge of column i's header.
+            // So: col_x[i] - col_x[i-1] >= overhang + half_cur + MSG_LABEL_PAD
+            let right_overhang = self_msg_overhang[i - 1].max(note_right_overhang[i - 1]);
+            let self_gap = if right_overhang > 0.0 {
+                right_overhang + half_cur + MSG_LABEL_PAD
             } else {
                 0.0
             };
 
-            col_x[i] = col_x[i - 1] + base_gap.max(label_gap).max(self_gap);
+            // Left-side overhang of column i (left/over notes) must clear the
+            // right edge of column i-1's header.
+            let note_gap = if note_left_overhang[i] > 0.0 {
+                half_prev + MSG_LABEL_PAD + note_left_overhang[i]
+            } else {
+                0.0
+            };
+
+            col_x[i] = col_x[i - 1] + base_gap.max(label_gap).max(self_gap).max(note_gap);
         }
 
         // Fixup pass: ensure messages spanning more than one gap have enough total span.
         let mut changed = true;
         while changed {
             changed = false;
-            for &(a, b, lw) in &msg_label_widths {
+            for &(a, b, lw) in &span_widths {
                 if b > a + 1 {
                     let needed = col_x[a] + lw + MSG_LABEL_PAD;
                     if needed > col_x[b] {
@@ -299,7 +515,7 @@ pub(crate) fn layout_sequence_full(
 
     let mut items: Vec<SceneItem> = Vec::new();
     let mut sem_participants: Vec<semantic::ParticipantLayout> = Vec::new();
-    let mut sem_messages: Vec<semantic::MessageLayout> = Vec::new();
+    let mut sem_items: Vec<SequenceItemLayout> = Vec::new();
 
     // Draw participant headers and lifelines.
     for (i, id) in ids.iter().enumerate() {
@@ -385,10 +601,23 @@ pub(crate) fn layout_sequence_full(
         });
     }
 
-    // Draw messages.
+    // Draw body items (messages and notes) in declaration order.
     for (row, item) in seq.items.iter().enumerate() {
-        let SequenceItem::Message(msg) = item else {
-            continue;
+        let msg = match item {
+            SequenceItem::Message(msg) => msg,
+            SequenceItem::Note(note) => {
+                draw_note(
+                    &mut items,
+                    &mut sem_items,
+                    note,
+                    row,
+                    &col_x,
+                    &idx_of,
+                    &note_box_width,
+                );
+                continue;
+            }
+            _ => continue,
         };
         let y = MSG_START_Y + row as f64 * MSG_ROW_HEIGHT;
 
@@ -450,7 +679,7 @@ pub(crate) fn layout_sequence_full(
                 semantic::Point::new(x1, y1),
                 semantic::Point::new(x0, y1),
             ];
-            sem_messages.push(semantic::MessageLayout {
+            sem_items.push(SequenceItemLayout::Message(semantic::MessageLayout {
                 index: row,
                 from: msg.from.clone(),
                 to: msg.to.clone(),
@@ -460,7 +689,7 @@ pub(crate) fn layout_sequence_full(
                 tail: msg.tail,
                 label: msg.label.clone(),
                 label_anchor,
-            });
+            }));
         } else {
             // Horizontal arrow from fi to ti.
             let x_from = col_x[fi];
@@ -512,7 +741,7 @@ pub(crate) fn layout_sequence_full(
                 semantic::Point::new(x_from, y),
                 semantic::Point::new(x_to, y),
             ];
-            sem_messages.push(semantic::MessageLayout {
+            sem_items.push(SequenceItemLayout::Message(semantic::MessageLayout {
                 index: row,
                 from: msg.from.clone(),
                 to: msg.to.clone(),
@@ -522,7 +751,7 @@ pub(crate) fn layout_sequence_full(
                 tail: msg.tail,
                 label: msg.label.clone(),
                 label_anchor,
-            });
+            }));
         }
     }
 
@@ -538,14 +767,24 @@ pub(crate) fn layout_sequence_full(
         p.lifeline_y0 -= min_y;
         p.lifeline_y1 -= min_y;
     }
-    for m in &mut sem_messages {
-        for pt in &mut m.route {
-            pt.x -= min_x;
-            pt.y -= min_y;
-        }
-        if let Some(la) = &mut m.label_anchor {
-            la.x -= min_x;
-            la.y -= min_y;
+    for item in &mut sem_items {
+        match item {
+            SequenceItemLayout::Message(m) => {
+                for pt in &mut m.route {
+                    pt.x -= min_x;
+                    pt.y -= min_y;
+                }
+                if let Some(la) = &mut m.label_anchor {
+                    la.x -= min_x;
+                    la.y -= min_y;
+                }
+            }
+            SequenceItemLayout::Note(note) => {
+                note.rect.x -= min_x;
+                note.rect.y -= min_y;
+                note.text_anchor.x -= min_x;
+                note.text_anchor.y -= min_y;
+            }
         }
     }
 
@@ -556,7 +795,7 @@ pub(crate) fn layout_sequence_full(
     };
     let sem = crate::semantic::SemanticLayout::Sequence(semantic::SequenceLayout {
         participants: sem_participants,
-        messages: sem_messages,
+        items: sem_items,
     });
 
     Ok(crate::LayoutOutput {

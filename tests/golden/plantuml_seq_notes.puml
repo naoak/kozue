@@ -1,0 +1,8 @@
+@startuml
+participant A
+participant B
+note over A: thinking
+A ->> B : hello
+note right of B: got it
+note over A, B: both
+@enduml

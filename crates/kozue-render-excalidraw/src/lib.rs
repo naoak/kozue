@@ -55,6 +55,10 @@
 //!   attach at any point along a lifeline (not just its header rectangle),
 //!   message arrows are **not** Excalidraw-bound to a shape — their absolute
 //!   `points` geometry is authoritative instead (see [`RenderError`] docs).
+//!   A note is drawn as a closed `line` polygon with a cut (dog-eared)
+//!   top-right corner plus a short crease line and standalone centered text —
+//!   Excalidraw has no native UML note shape, so the sticky-note look is
+//!   composed from line primitives rather than dropped silently.
 //!
 //! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
 //!   [`CompartmentBox`] becomes a rectangle, a title text (stereotype +
@@ -72,12 +76,17 @@ use kozue_ir::{
     ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind,
 };
 use kozue_layout::semantic::{
-    ClassLayout, GraphLayout, Point, SemanticLayout, SequenceLayout, StateEndpointId, StateLayout,
+    ClassLayout, GraphLayout, Point, SemanticLayout, SequenceItemLayout, SequenceLayout,
+    StateEndpointId, StateLayout,
 };
 use kozue_layout::ExportInput;
 use serde::Serialize;
 
 const MARGIN: f64 = 20.0;
+/// Size of the folded (dog-eared) top-right corner on a sequence note box.
+/// Matches the layout's `NOTE_EAR` so the sticky-note look is consistent
+/// across the SVG/PNG/terminal (Scene) and Excalidraw renderers.
+const NOTE_EAR: f64 = 8.0;
 const STROKE_COLOR: &str = "#1e1e1e";
 const FONT_SIZE: f64 = 20.0;
 const FONT_FAMILY: u8 = 1;
@@ -1199,7 +1208,64 @@ fn render_sequence(s: &SequenceLayout) -> Result<Vec<AnyElement>, RenderError> {
     // (not just the header rectangle), so binding to a shape is not
     // meaningful here: both `startBinding`/`endBinding` stay `null` and the
     // arrow's own `points` remain authoritative (see module docs).
-    for (i, m) in s.messages.iter().enumerate() {
+    for (i, item) in s.items.iter().enumerate() {
+        let m = match item {
+            SequenceItemLayout::Message(m) => m,
+            SequenceItemLayout::Note(note) => {
+                // Excalidraw has no native UML note shape, so a note is drawn as
+                // a closed `line` polygon with a cut (dog-eared) top-right corner
+                // plus a short crease line — the sticky-note look — and standalone
+                // centered text (a `line` cannot be a text-binding container).
+                let r = &note.rect;
+                let (w, h) = (r.width, r.height);
+                let ear = NOTE_EAR.min(w).min(h);
+                // Outline, closed (last point repeats the first).
+                let outline_id = format!("note{i}");
+                elements.push(AnyElement::Line(make_line(
+                    &outline_id,
+                    r.x + MARGIN,
+                    r.y + MARGIN,
+                    w,
+                    h,
+                    vec![
+                        [0.0, 0.0],
+                        [w - ear, 0.0],
+                        [w, ear],
+                        [w, h],
+                        [0.0, h],
+                        [0.0, 0.0],
+                    ],
+                    false,
+                )));
+                // Fold crease at the top-right corner.
+                elements.push(AnyElement::Line(make_line(
+                    &format!("{outline_id}-fold"),
+                    r.x + MARGIN + w - ear,
+                    r.y + MARGIN,
+                    ear,
+                    ear,
+                    vec![[0.0, 0.0], [0.0, ear], [ear, ear]],
+                    false,
+                )));
+
+                let (tw, th) = text_size(&note.text);
+                let tx = r.x + MARGIN + r.width / 2.0 - tw / 2.0;
+                let ty = r.y + MARGIN + r.height / 2.0 - th / 2.0;
+                elements.push(AnyElement::Text(make_text(
+                    &format!("{outline_id}-text"),
+                    None,
+                    &note.text,
+                    tx,
+                    ty,
+                    tw,
+                    th,
+                )));
+                continue;
+            }
+            // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
+            // rejected on the strict export path by `validate_export_semantics`.
+            _ => continue,
+        };
         find_participant(m.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
             node_id: m.from.to_string(),
         })?;
@@ -2095,7 +2161,10 @@ mod tests {
         let SemanticLayout::Sequence(mut sl) = layout else {
             panic!("expected sequence layout");
         };
-        sl.messages[0].to = "does-not-exist".into();
+        let SequenceItemLayout::Message(m) = &mut sl.items[0] else {
+            panic!("expected first item to be a message");
+        };
+        m.to = "does-not-exist".into();
         let err = render(&SemanticLayout::Sequence(sl)).unwrap_err();
         assert_eq!(
             err,

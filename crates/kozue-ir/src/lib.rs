@@ -30,12 +30,13 @@ pub enum IrSchemaVersion {
     V7,
     V8,
     V9,
-    #[default]
     V10,
+    #[default]
+    V11,
 }
 
 /// Schema version produced by newly constructed IR documents.
-pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V10;
+pub const CURRENT_IR_SCHEMA_VERSION: IrSchemaVersion = IrSchemaVersion::V11;
 
 fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -61,6 +62,7 @@ impl Serialize for IrSchemaVersion {
             IrSchemaVersion::V8 => serializer.serialize_u8(8),
             IrSchemaVersion::V9 => serializer.serialize_u8(9),
             IrSchemaVersion::V10 => serializer.serialize_u8(10),
+            IrSchemaVersion::V11 => serializer.serialize_u8(11),
         }
     }
 }
@@ -82,6 +84,7 @@ impl<'de> Deserialize<'de> for IrSchemaVersion {
             8 => Ok(IrSchemaVersion::V8),
             9 => Ok(IrSchemaVersion::V9),
             10 => Ok(IrSchemaVersion::V10),
+            11 => Ok(IrSchemaVersion::V11),
             other => Err(de::Error::custom(format!(
                 "unsupported IR schema version {other}"
             ))),
@@ -272,6 +275,7 @@ fn direction_supported_in(version: IrSchemaVersion, direction: Direction) -> boo
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
                     | IrSchemaVersion::V10
+                    | IrSchemaVersion::V11
             )
         }
     }
@@ -290,6 +294,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
                     | IrSchemaVersion::V10
+                    | IrSchemaVersion::V11
             )
         }
         NodeKind::Circle | NodeKind::Diamond => {
@@ -301,6 +306,7 @@ fn node_kind_supported_in(version: IrSchemaVersion, kind: &NodeKind) -> bool {
                     | IrSchemaVersion::V8
                     | IrSchemaVersion::V9
                     | IrSchemaVersion::V10
+                    | IrSchemaVersion::V11
             )
         }
     }
@@ -316,7 +322,10 @@ fn participant_kind_supported_in(version: IrSchemaVersion, kind: &ParticipantKin
         | ParticipantKind::Database
         | ParticipantKind::Collections
         | ParticipantKind::Queue => {
-            matches!(version, IrSchemaVersion::V9 | IrSchemaVersion::V10)
+            matches!(
+                version,
+                IrSchemaVersion::V9 | IrSchemaVersion::V10 | IrSchemaVersion::V11
+            )
         }
     }
 }
@@ -328,7 +337,13 @@ fn participant_kind_supported_in(version: IrSchemaVersion, kind: &ParticipantKin
 fn message_arrows_supported_in(version: IrSchemaVersion, message: &Message) -> bool {
     (matches!(message.head, MessageArrow::Filled | MessageArrow::None)
         && message.tail == MessageArrow::None)
-        || version == IrSchemaVersion::V10
+        || matches!(version, IrSchemaVersion::V10 | IrSchemaVersion::V11)
+}
+
+/// Whether free-standing sequence notes are expressible in the given schema
+/// version. Notes were introduced in V11.
+fn sequence_note_supported_in(version: IrSchemaVersion) -> bool {
+    matches!(version, IrSchemaVersion::V11)
 }
 
 fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
@@ -341,6 +356,7 @@ fn line_style_supported_in(version: IrSchemaVersion, line: LineStyle) -> bool {
                 | IrSchemaVersion::V8
                 | IrSchemaVersion::V9
                 | IrSchemaVersion::V10
+                | IrSchemaVersion::V11
         ),
     }
 }
@@ -357,6 +373,7 @@ fn edge_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
                 | IrSchemaVersion::V8
                 | IrSchemaVersion::V9
                 | IrSchemaVersion::V10
+                | IrSchemaVersion::V11
         ))
         && line_style_supported_in(version, edge.line)
 }
@@ -365,7 +382,7 @@ fn edge_ports_supported_in(version: IrSchemaVersion, edge: &Edge) -> bool {
     (edge.from_port.is_none() && edge.to_port.is_none())
         || matches!(
             version,
-            IrSchemaVersion::V8 | IrSchemaVersion::V9 | IrSchemaVersion::V10
+            IrSchemaVersion::V8 | IrSchemaVersion::V9 | IrSchemaVersion::V10 | IrSchemaVersion::V11
         )
 }
 
@@ -373,7 +390,11 @@ fn containers_supported_in(version: IrSchemaVersion, containers: &[Container]) -
     containers.is_empty()
         || matches!(
             version,
-            IrSchemaVersion::V7 | IrSchemaVersion::V8 | IrSchemaVersion::V9 | IrSchemaVersion::V10
+            IrSchemaVersion::V7
+                | IrSchemaVersion::V8
+                | IrSchemaVersion::V9
+                | IrSchemaVersion::V10
+                | IrSchemaVersion::V11
         )
 }
 
@@ -412,6 +433,7 @@ fn diagram_supported_in(version: IrSchemaVersion, diagram: &Diagram) -> bool {
                     line_style_supported_in(version, message.line)
                         && message_arrows_supported_in(version, message)
                 }
+                SequenceItem::Note(_) => sequence_note_supported_in(version),
             }) && sequence
                 .participants
                 .values()
@@ -556,7 +578,21 @@ impl<'de> Deserialize<'de> for IrDocument {
             IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V10 => {
                 if !diagram_supported_in(IrSchemaVersion::V10, &wire.diagram) {
                     return Err(de::Error::custom(
-                        "IR schema version 10 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, or message arrow",
+                        "IR schema version 10 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, message arrow, or sequence note",
+                    ));
+                }
+                Ok(Self {
+                    schema_version: CURRENT_IR_SCHEMA_VERSION,
+                    metadata: wire.metadata,
+                    diagram: wire.diagram,
+                    annotations: wire.annotations,
+                    extensions: wire.extensions,
+                })
+            }
+            IrDocumentWire::Annotated(wire) if wire.schema_version == IrSchemaVersion::V11 => {
+                if !diagram_supported_in(IrSchemaVersion::V11, &wire.diagram) {
+                    return Err(de::Error::custom(
+                        "IR schema version 11 does not support this diagram direction, node kind, edge presentation, container, edge port, participant kind, message arrow, or sequence note",
                     ));
                 }
                 Ok(Self {
@@ -568,7 +604,7 @@ impl<'de> Deserialize<'de> for IrDocument {
                 })
             }
             IrDocumentWire::V1(_) => Err(de::Error::custom(
-                "IR schema versions 2, 3, 4, 5, 6, 7, 8, 9, and 10 require an `annotations` field",
+                "IR schema versions 2, 3, 4, 5, 6, 7, 8, 9, 10, and 11 require an `annotations` field",
             )),
             IrDocumentWire::Annotated(_) => Err(de::Error::custom(
                 "IR schema version 1 must not contain an `annotations` field",
@@ -793,6 +829,45 @@ impl Participant {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SequenceItem {
     Message(Message),
+    Note(Note),
+}
+
+/// Placement of a sequence [`Note`] relative to its target participant(s).
+///
+/// Deliberately distinct from the annotation-system [`NotePlacement`]: sequence
+/// notes only ever sit left of / right of / over participants, so a dedicated
+/// 3-variant enum avoids the invalid states (`Auto`/`Above`/`Below`) that
+/// `NotePlacement` allows.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotePosition {
+    /// Box to the left of a single participant's lifeline.
+    LeftOf,
+    /// Box to the right of a single participant's lifeline.
+    RightOf,
+    /// Box centered over one participant, or spanning several.
+    Over,
+}
+
+/// A free-standing note in a sequence diagram body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Note {
+    pub text: String,
+    pub position: NotePosition,
+    /// Target participant IDs. `LeftOf`/`RightOf` carry exactly one; `Over`
+    /// carries one or more (declaration order preserved).
+    pub targets: Vec<ElementId>,
+}
+
+impl Note {
+    pub fn new(text: impl Into<String>, position: NotePosition, targets: Vec<ElementId>) -> Self {
+        Note {
+            text: text.into(),
+            position,
+            targets,
+        }
+    }
 }
 
 /// The line style of a sequence message arrow. Shared by edges, class
@@ -1480,8 +1555,10 @@ mod tests {
     const EMPTY_GRAPH_DOCUMENT_V8: &str = r#"{"schema_version":8,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_GRAPH_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_GRAPH_DOCUMENT_V11: &str = r#"{"schema_version":11,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Graph":{"direction":"Down","nodes":{},"edges":[],"containers":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V9: &str = r#"{"schema_version":9,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
     const EMPTY_SEQUENCE_DOCUMENT_V10: &str = r#"{"schema_version":10,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
+    const EMPTY_SEQUENCE_DOCUMENT_V11: &str = r#"{"schema_version":11,"metadata":{"name":null,"title":null,"description":null,"accessibility":{"title":null,"description":null}},"diagram":{"Sequence":{"participants":{},"items":[]}},"annotations":[],"extensions":{}}"#;
 
     #[test]
     fn element_id_is_transparent_and_supports_string_lookup() {
@@ -1543,10 +1620,18 @@ mod tests {
             serde_json::from_value::<IrSchemaVersion>(json!(10)).unwrap(),
             IrSchemaVersion::V10
         );
-        let error = serde_json::from_value::<IrSchemaVersion>(json!(11)).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(IrSchemaVersion::V11).unwrap(),
+            json!(11)
+        );
+        assert_eq!(
+            serde_json::from_value::<IrSchemaVersion>(json!(11)).unwrap(),
+            IrSchemaVersion::V11
+        );
+        let error = serde_json::from_value::<IrSchemaVersion>(json!(12)).unwrap_err();
         assert!(error
             .to_string()
-            .contains("unsupported IR schema version 11"));
+            .contains("unsupported IR schema version 12"));
     }
 
     #[test]
@@ -1569,7 +1654,7 @@ mod tests {
         assert_eq!(document.schema_version(), CURRENT_IR_SCHEMA_VERSION);
 
         let serialized = serde_json::to_string(&document).unwrap();
-        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V10);
+        assert_eq!(serialized, EMPTY_GRAPH_DOCUMENT_V11);
         assert_eq!(
             serde_json::from_str::<IrDocument>(&serialized).unwrap(),
             document
@@ -1577,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_through_v9_documents_are_upgraded_to_v10() {
+    fn v1_through_v10_documents_are_upgraded_to_v11() {
         for fixture in [
             EMPTY_GRAPH_DOCUMENT_V1,
             EMPTY_GRAPH_DOCUMENT_V2,
@@ -1588,13 +1673,14 @@ mod tests {
             EMPTY_GRAPH_DOCUMENT_V7,
             EMPTY_GRAPH_DOCUMENT_V8,
             EMPTY_GRAPH_DOCUMENT_V9,
+            EMPTY_GRAPH_DOCUMENT_V10,
         ] {
             let document = serde_json::from_str::<IrDocument>(fixture).unwrap();
-            assert_eq!(document.schema_version(), IrSchemaVersion::V10);
+            assert_eq!(document.schema_version(), IrSchemaVersion::V11);
             assert!(document.annotations.is_empty());
             assert_eq!(
                 serde_json::to_string(&document).unwrap(),
-                EMPTY_GRAPH_DOCUMENT_V10
+                EMPTY_GRAPH_DOCUMENT_V11
             );
         }
 
@@ -2037,7 +2123,7 @@ mod tests {
     fn document_rejects_unknown_versions_and_missing_required_fields() {
         let fixture: serde_json::Value = serde_json::from_str(EMPTY_GRAPH_DOCUMENT_V10).unwrap();
 
-        for version in [0, 1, 11] {
+        for version in [0, 1, 12] {
             let mut value = fixture.clone();
             value["schema_version"] = json!(version);
             assert!(serde_json::from_value::<IrDocument>(value).is_err());
@@ -2405,6 +2491,64 @@ mod tests {
                     "V10 rejected head {head:?} tail {tail:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn sequence_notes_require_schema_v11() {
+        let cases = [
+            (NotePosition::Over, vec![ElementId::new("a")]),
+            (NotePosition::LeftOf, vec![ElementId::new("a")]),
+            (NotePosition::RightOf, vec![ElementId::new("a")]),
+            (
+                NotePosition::Over,
+                vec![ElementId::new("a"), ElementId::new("b")],
+            ),
+        ];
+
+        let legacy_fixtures = [
+            EMPTY_GRAPH_DOCUMENT_V2,
+            EMPTY_GRAPH_DOCUMENT_V3,
+            EMPTY_GRAPH_DOCUMENT_V4,
+            EMPTY_GRAPH_DOCUMENT_V5,
+            EMPTY_GRAPH_DOCUMENT_V6,
+            EMPTY_GRAPH_DOCUMENT_V7,
+            EMPTY_GRAPH_DOCUMENT_V8,
+            EMPTY_SEQUENCE_DOCUMENT_V9,
+            EMPTY_SEQUENCE_DOCUMENT_V10,
+        ];
+
+        for (position, targets) in cases {
+            let mut seq = SequenceDiagram::new();
+            seq.participants
+                .insert("a".into(), Participant::new("a", "A"));
+            seq.participants
+                .insert("b".into(), Participant::new("b", "B"));
+            seq.items
+                .push(SequenceItem::Note(Note::new("hi", position, targets)));
+            let diagram = Diagram::Sequence(seq);
+
+            // V2 through V10 must reject a note.
+            for fixture in legacy_fixtures {
+                let mut value: serde_json::Value = serde_json::from_str(fixture).unwrap();
+                value["diagram"] = serde_json::to_value(&diagram).unwrap();
+                assert!(
+                    serde_json::from_value::<IrDocument>(value).is_err(),
+                    "legacy schema accepted sequence note {position:?}"
+                );
+            }
+
+            // V11 accepts it and round-trips.
+            let mut value: serde_json::Value =
+                serde_json::from_str(EMPTY_SEQUENCE_DOCUMENT_V11).unwrap();
+            value["diagram"] = serde_json::to_value(&diagram).unwrap();
+            assert_eq!(
+                serde_json::from_value::<IrDocument>(value)
+                    .unwrap()
+                    .into_diagram(),
+                diagram,
+                "V11 rejected sequence note {position:?}"
+            );
         }
     }
 

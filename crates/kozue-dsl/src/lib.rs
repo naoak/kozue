@@ -52,8 +52,8 @@ use ariadne::{Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 use kozue_ir::{
     ArrowType, Container, Diagram, Direction, Edge, ElementId, Endpoint, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Participant, ParticipantKind,
-    Port, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note, NotePosition, Participant,
+    ParticipantKind, Port, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A parsed statement inside a diagram body.
@@ -81,6 +81,16 @@ enum Stmt {
         /// Span of the string literal (including quotes), if present.
         label_lit_span: Option<std::ops::Range<usize>>,
         kind: ParticipantKind,
+    },
+    /// `note over a[, b...] : "text"` / `note left of a : "text"` /
+    /// `note right of a : "text"` — a sequence-only free-standing note. Valid
+    /// only inside a sequence body; any other diagram raises a semantic error.
+    Note {
+        position: NotePosition,
+        targets: Vec<(String, std::ops::Range<usize>)>,
+        text: String,
+        text_lit_span: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
     },
     DirectionError(std::ops::Range<usize>),
     StateDecl {
@@ -485,6 +495,41 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
             ))
             .or(make_participant_parser("queue", ParticipantKind::Queue));
 
+        // note: `note over a[, b...] : "text"` / `note left of a : "text"` /
+        //       `note right of a : "text"` (sequence-only; validated in build).
+        // `note`/`over`/`left`/`right`/`of` are not reserved: if the lookahead
+        // fails the parser falls through to the other alternatives.
+        let note_position = text::keyword("over")
+            .padded_by(kzd_ws())
+            .to(NotePosition::Over)
+            .or(text::keyword("left")
+                .padded_by(kzd_ws())
+                .then_ignore(text::keyword("of").padded_by(kzd_ws()))
+                .to(NotePosition::LeftOf))
+            .or(text::keyword("right")
+                .padded_by(kzd_ws())
+                .then_ignore(text::keyword("of").padded_by(kzd_ws()))
+                .to(NotePosition::RightOf));
+        let note = text::keyword("note")
+            .padded_by(kzd_ws())
+            .ignore_then(note_position)
+            .then(
+                ident_spanned()
+                    .separated_by(just(',').padded_by(kzd_ws()))
+                    .at_least(1),
+            )
+            .then_ignore(just(':').padded_by(kzd_ws()))
+            .then(string_lit_spanned())
+            .map_with_span(
+                |((position, targets), (text, text_lit_span)), span| Stmt::Note {
+                    position,
+                    targets,
+                    text,
+                    text_lit_span,
+                    span,
+                },
+            );
+
         // state declaration: `state id` or `state id: "label"`
         let state_decl = text::keyword("state")
             .padded_by(kzd_ws())
@@ -836,6 +881,7 @@ fn parser() -> impl Parser<char, Ast, Error = Simple<char>> {
 
         direction
             .or(participant)
+            .or(note)
             .or(state_decl)
             .or(state_trans_pseudo_left)
             .or(state_trans_pseudo_right)
@@ -1171,6 +1217,13 @@ fn collect_containers(
                     secondary: None,
                 });
             }
+            Stmt::Note { span, .. } => {
+                errors.push(CompileError {
+                    message: "`note` statements are only valid in sequence diagrams".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
             Stmt::StateDecl { id_span, .. } => {
                 errors.push(CompileError {
                     message: "`state` declarations are not valid in graph diagrams; use plain `<id>` node declarations".to_string(),
@@ -1471,6 +1524,13 @@ fn build_state_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileError>
                     });
                 }
             }
+            Stmt::Note { span, .. } => {
+                errors.push(CompileError {
+                    message: "`note` statements are only valid in sequence diagrams".to_string(),
+                    span: span.clone(),
+                    secondary: None,
+                });
+            }
             Stmt::StateTransition(_) => {}
         }
     }
@@ -1704,6 +1764,63 @@ fn build_sequence_diagram(ast: Ast, src: &str) -> Result<Diagram, Vec<CompileErr
         let (e, line_style) = match stmt {
             Stmt::Edge(e) => (e, LineStyle::Solid),
             Stmt::DashedEdge(e) => (e, LineStyle::Dashed),
+            Stmt::Note {
+                position,
+                targets,
+                text,
+                text_lit_span,
+                ..
+            } => {
+                // Validate targets exist; check count vs. position.
+                let mut valid = true;
+                let mut ids: Vec<ElementId> = Vec::new();
+                for (name, span) in targets {
+                    if !seq.participants.contains_key(name.as_str()) {
+                        let mut message = format!("unknown participant `{}`", name);
+                        if let Some(suggestion) = closest_name(name, seq.participants.keys()) {
+                            message.push_str(&format!(", did you mean `{}`?", suggestion));
+                        }
+                        errors.push(CompileError {
+                            message,
+                            span: span.clone(),
+                            secondary: None,
+                        });
+                        valid = false;
+                    } else {
+                        ids.push(name.clone().into());
+                    }
+                }
+                match position {
+                    NotePosition::LeftOf | NotePosition::RightOf if targets.len() != 1 => {
+                        errors.push(CompileError {
+                            message:
+                                "`note left of`/`note right of` accepts exactly one participant; use `note over a, b` to span several"
+                                    .to_string(),
+                            span: targets
+                                .first()
+                                .map(|(_, s)| s.start)
+                                .unwrap_or(0)
+                                ..targets.last().map(|(_, s)| s.end).unwrap_or(0),
+                            secondary: None,
+                        });
+                        valid = false;
+                    }
+                    _ => {}
+                }
+                if let Some(err_span) = find_invalid_escape_in_span(src, text_lit_span) {
+                    errors.push(CompileError {
+                        message: "invalid escape sequence in string literal (only `\\\"` and `\\\\` are supported)".to_string(),
+                        span: err_span,
+                        secondary: None,
+                    });
+                    valid = false;
+                }
+                if valid {
+                    seq.items
+                        .push(SequenceItem::Note(Note::new(text.clone(), *position, ids)));
+                }
+                continue;
+            }
             _ => continue,
         };
 
@@ -2205,6 +2322,7 @@ pub fn format_kzd(src: &str) -> Result<String, Vec<CompileError>> {
                     | Stmt::UndirectedEdge(_)
                     | Stmt::BidirectionalEdge(_)
                     | Stmt::StateTransition(_)
+                    | Stmt::Note { .. }
             ) {
                 Some(i)
             } else {
@@ -2400,6 +2518,7 @@ fn stmt_span(stmt: &Stmt) -> (usize, usize) {
             (start, end)
         }
         Stmt::Subgraph { span, .. } => (span.start, span.end),
+        Stmt::Note { span, .. } => (span.start, span.end),
     }
 }
 
@@ -2712,6 +2831,26 @@ fn format_edge_stmt(stmt: &Stmt) -> String {
             } else {
                 format!("{} -> {}", from_str, to_str)
             }
+        }
+        Stmt::Note {
+            position,
+            targets,
+            text,
+            ..
+        } => {
+            let names: Vec<&str> = targets.iter().map(|(name, _)| name.as_str()).collect();
+            let kw = match position {
+                NotePosition::Over => "over",
+                NotePosition::LeftOf => "left of",
+                NotePosition::RightOf => "right of",
+                _ => "over",
+            };
+            format!(
+                "note {} {} : {}",
+                kw,
+                names.join(", "),
+                format_string_lit(text)
+            )
         }
         _ => String::new(),
     }
@@ -4464,5 +4603,72 @@ mod tests {
         let d1 = parse(&f1).expect("f1 should parse");
         let d2 = parse(&f2).expect("f2 should parse");
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn sequence_notes_parse_and_format() {
+        let src = "sequence n {\n  participant a: \"Alice\"\n  participant b: \"Bob\"\n  note over a : \"thinking\"\n  a -> b : \"hello\"\n  note right of b : \"got it\"\n  note over a, b : \"both\"\n  note left of a : \"done\"\n}\n";
+        let diagram = parse(src).expect("should parse");
+        let Diagram::Sequence(seq) = &diagram else {
+            panic!("expected sequence");
+        };
+        // Item order (source order): note, message, note, note, note.
+        assert!(matches!(seq.items[0], SequenceItem::Note(_)));
+        assert!(matches!(seq.items[1], SequenceItem::Message(_)));
+        match &seq.items[0] {
+            SequenceItem::Note(n) => {
+                assert_eq!(n.position, NotePosition::Over);
+                assert_eq!(n.targets, vec![ElementId::new("a")]);
+                assert_eq!(n.text, "thinking");
+            }
+            _ => unreachable!(),
+        }
+        match &seq.items[3] {
+            SequenceItem::Note(n) => {
+                assert_eq!(n.position, NotePosition::Over);
+                assert_eq!(n.targets, vec![ElementId::new("a"), ElementId::new("b")]);
+            }
+            _ => unreachable!(),
+        }
+        // Idempotent formatting.
+        let f1 = format_kzd(src).expect("should format");
+        let f2 = format_kzd(&f1).expect("re-format should succeed");
+        assert_eq!(f1, f2);
+        assert!(f1.contains("note over a : \"thinking\""));
+        assert!(f1.contains("note right of b : \"got it\""));
+        assert!(f1.contains("note over a, b : \"both\""));
+        assert!(f1.contains("note left of a : \"done\""));
+    }
+
+    #[test]
+    fn note_rejected_outside_sequence() {
+        let src = "graph g {\n  a\n  note over a : \"x\"\n}\n";
+        let err = parse(src).expect_err("note in graph must error");
+        assert!(err
+            .iter()
+            .any(|e| e.message.contains("only valid in sequence")));
+
+        let src = "state s {\n  a\n  note over a : \"x\"\n}\n";
+        let err = parse(src).expect_err("note in state must error");
+        assert!(err
+            .iter()
+            .any(|e| e.message.contains("only valid in sequence")));
+    }
+
+    #[test]
+    fn note_left_right_of_reject_multiple_targets() {
+        let src =
+            "sequence n {\n  participant a: \"A\"\n  participant b: \"B\"\n  note left of a, b : \"x\"\n}\n";
+        let err = parse(src).expect_err("left of with two targets must error");
+        assert!(err.iter().any(|e| e.message.contains("exactly one")));
+    }
+
+    #[test]
+    fn note_unknown_participant_errors() {
+        let src = "sequence n {\n  participant a: \"A\"\n  note over z : \"x\"\n}\n";
+        let err = parse(src).expect_err("unknown note target must error");
+        assert!(err
+            .iter()
+            .any(|e| e.message.contains("unknown participant")));
     }
 }

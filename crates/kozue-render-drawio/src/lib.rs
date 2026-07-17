@@ -41,7 +41,8 @@
 //!   and target lifelines via `exitY` / `entryY`, so the vertical (time) order
 //!   survives while the horizontal connection follows when a participant is
 //!   moved (see the M8c design notes). Self-messages become self-loop
-//!   connectors with explicit fold waypoints.
+//!   connectors with explicit fold waypoints. Notes become `shape=note`
+//!   vertices positioned at the note's laid-out rectangle.
 //! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
 //!   [`CompartmentBox`] becomes a rounded-rectangle vertex whose HTML `value`
 //!   lays out the title/stereotype followed by one `<hr>`-separated section
@@ -57,8 +58,8 @@ use kozue_ir::{
     ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind, Port,
 };
 use kozue_layout::semantic::{
-    ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceLayout, StateEndpointId,
-    StateLayout,
+    ClassLayout, CompartmentBox, GraphLayout, SemanticLayout, SequenceItemLayout, SequenceLayout,
+    StateEndpointId, StateLayout,
 };
 use kozue_layout::ExportInput;
 
@@ -678,9 +679,32 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
     let find_participant =
         |id: &str| -> Option<usize> { s.participants.iter().position(|p| p.id.as_str() == id) };
 
-    // Messages — one connector per message (`e{i}`), pinned to fractional
-    // heights on the source/target lifelines.
-    for (i, m) in s.messages.iter().enumerate() {
+    // Body items — messages as connectors (`e{i}`), notes as `shape=note`
+    // vertices (`note{i}`). The index `i` is the item index; for a note-free
+    // diagram this equals the old per-message index, so message ids are
+    // unchanged (goldens stay byte-identical).
+    for (i, item) in s.items.iter().enumerate() {
+        let m = match item {
+            SequenceItemLayout::Message(m) => m,
+            SequenceItemLayout::Note(note) => {
+                let r = &note.rect;
+                out.push_str(&format!(
+                    "        <mxCell id=\"note{i}\" value=\"{}\" \
+                     style=\"shape=note;whiteSpace=wrap;html=1;size=8;\" vertex=\"1\" parent=\"1\">\n\
+                     \x20         <mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/>\n\
+                     \x20       </mxCell>\n",
+                    xml_escape(&note.text),
+                    f(r.x + MARGIN),
+                    f(r.y + MARGIN),
+                    f(r.width),
+                    f(r.height),
+                ));
+                continue;
+            }
+            // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
+            // rejected on the strict export path by `validate_export_semantics`.
+            _ => continue,
+        };
         let src_idx =
             find_participant(m.from.as_str()).ok_or_else(|| RenderError::DanglingEdge {
                 node_id: m.from.to_string(),
@@ -1783,7 +1807,9 @@ mod tests {
             .unwrap()
             .parse()
             .expect("exitY parses as f64");
-        let m = &s.messages[0];
+        let SequenceItemLayout::Message(m) = &s.items[0] else {
+            panic!("expected first item to be a message");
+        };
         let src = s.participants.iter().find(|p| p.id == m.from).unwrap();
         let height = src.lifeline_y1 - src.header_rect.y;
         let reconstructed = frac * height + src.header_rect.y;

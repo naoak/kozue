@@ -2,7 +2,7 @@ use std::fmt;
 
 use kozue_ir::{Diagram, Endpoint, Rect, Scene, SceneItem, SequenceItem};
 
-use crate::semantic::{Point, StateEndpointId};
+use crate::semantic::{Point, SequenceItemLayout, StateEndpointId};
 use crate::SemanticLayout;
 
 /// Validated borrowed input for exchange exporters.
@@ -99,6 +99,12 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
         | kozue_ir::ParticipantKind::Queue => Ok(()),
         _ => mismatch("unsupported future participant kind"),
     };
+    let note_position = |value: kozue_ir::NotePosition| match value {
+        kozue_ir::NotePosition::LeftOf
+        | kozue_ir::NotePosition::RightOf
+        | kozue_ir::NotePosition::Over => Ok(()),
+        _ => mismatch("unsupported future note position"),
+    };
     let port = |value: Option<kozue_ir::Port>| match value {
         None
         | Some(
@@ -127,10 +133,20 @@ pub fn validate_export_semantics(semantic: &SemanticLayout) -> Result<(), Export
             for p in &sequence.participants {
                 participant_kind(&p.kind)?;
             }
-            for message in &sequence.messages {
-                message_arrow(message.head)?;
-                message_arrow(message.tail)?;
-                line(message.line)?;
+            for item in &sequence.items {
+                match item {
+                    SequenceItemLayout::Message(message) => {
+                        message_arrow(message.head)?;
+                        message_arrow(message.tail)?;
+                        line(message.line)?;
+                    }
+                    SequenceItemLayout::Note(note) => {
+                        note_position(note.position)?;
+                        if note.targets.is_empty() {
+                            return mismatch("note has no targets");
+                        }
+                    }
+                }
             }
         }
         SemanticLayout::Class(class) | SemanticLayout::Er(class) => {
@@ -238,22 +254,33 @@ fn validate_contract(
                     return mismatch("sequence participant identity/order mismatch");
                 }
             }
-            if diagram.items.len() != layout.messages.len() {
-                return mismatch("sequence item/message count mismatch");
+            if diagram.items.len() != layout.items.len() {
+                return mismatch("sequence item count mismatch");
             }
-            for (index, (item, placed)) in diagram.items.iter().zip(&layout.messages).enumerate() {
-                let SequenceItem::Message(message) = item else {
-                    return mismatch("unsupported future sequence item");
-                };
-                if placed.index != index
-                    || message.from != placed.from
-                    || message.to != placed.to
-                    || message.label != placed.label
-                    || message.line != placed.line
-                    || message.head != placed.head
-                    || message.tail != placed.tail
-                {
-                    return mismatch("sequence message index/semantics mismatch");
+            for (index, (item, placed)) in diagram.items.iter().zip(&layout.items).enumerate() {
+                match (item, placed) {
+                    (SequenceItem::Message(message), SequenceItemLayout::Message(pl)) => {
+                        if pl.index != index
+                            || message.from != pl.from
+                            || message.to != pl.to
+                            || message.label != pl.label
+                            || message.line != pl.line
+                            || message.head != pl.head
+                            || message.tail != pl.tail
+                        {
+                            return mismatch("sequence message index/semantics mismatch");
+                        }
+                    }
+                    (SequenceItem::Note(note), SequenceItemLayout::Note(pl)) => {
+                        if pl.index != index
+                            || note.text != pl.text
+                            || note.position != pl.position
+                            || note.targets != pl.targets
+                        {
+                            return mismatch("sequence note index/semantics mismatch");
+                        }
+                    }
+                    _ => return mismatch("sequence item/layout variant mismatch"),
                 }
             }
         }
@@ -541,9 +568,17 @@ fn validate_semantic_geometry(layout: &SemanticLayout) -> Result<(), ExportContr
                     return mismatch("sequence geometry must be finite and nonnegative");
                 }
             }
-            for message in &sequence.messages {
-                points(&message.route)?;
-                label_anchor(&message.label, &message.label_anchor)?;
+            for item in &sequence.items {
+                match item {
+                    SequenceItemLayout::Message(message) => {
+                        points(&message.route)?;
+                        label_anchor(&message.label, &message.label_anchor)?;
+                    }
+                    SequenceItemLayout::Note(note) => {
+                        validate_rect(&note.rect)?;
+                        validate_point(&note.text_anchor)?;
+                    }
+                }
             }
         }
         SemanticLayout::State(state) => {
@@ -604,6 +639,7 @@ mod tests {
         Transition,
     };
 
+    use crate::semantic::SequenceItemLayout;
     use crate::{layout_full, SemanticLayout};
 
     fn fixtures() -> Vec<(Diagram, Diagram)> {
@@ -734,7 +770,10 @@ mod tests {
             let SemanticLayout::Sequence(layout) = &mut output.semantic else {
                 unreachable!()
             };
-            layout.messages[0].route.truncate(point_count);
+            let SequenceItemLayout::Message(message) = &mut layout.items[0] else {
+                unreachable!()
+            };
+            message.route.truncate(point_count);
             assert!(output.export_input(&sequence).is_err());
         }
 
@@ -818,7 +857,10 @@ mod tests {
             let mut missing = layout_full(&diagram).unwrap();
             match &mut missing.semantic {
                 SemanticLayout::Graph(layout) => layout.edges[0].label_anchor = None,
-                SemanticLayout::Sequence(layout) => layout.messages[0].label_anchor = None,
+                SemanticLayout::Sequence(layout) => match &mut layout.items[0] {
+                    SequenceItemLayout::Message(m) => m.label_anchor = None,
+                    _ => unreachable!(),
+                },
                 SemanticLayout::State(layout) => layout.transitions[0].label_anchor = None,
                 _ => unreachable!(),
             }
@@ -835,9 +877,12 @@ mod tests {
                 SemanticLayout::Graph(layout) => {
                     layout.edges[0].label_anchor = Some(crate::semantic::Point::new(1.0, 1.0))
                 }
-                SemanticLayout::Sequence(layout) => {
-                    layout.messages[0].label_anchor = Some(crate::semantic::Point::new(1.0, 1.0))
-                }
+                SemanticLayout::Sequence(layout) => match &mut layout.items[0] {
+                    SequenceItemLayout::Message(m) => {
+                        m.label_anchor = Some(crate::semantic::Point::new(1.0, 1.0))
+                    }
+                    _ => unreachable!(),
+                },
                 SemanticLayout::State(layout) => {
                     layout.transitions[0].label_anchor = Some(crate::semantic::Point::new(1.0, 1.0))
                 }
@@ -1024,14 +1069,20 @@ mod tests {
         let SemanticLayout::Sequence(layout) = &mut head.semantic else {
             unreachable!()
         };
-        layout.messages[0].head = kozue_ir::MessageArrow::Open;
+        let SequenceItemLayout::Message(m) = &mut layout.items[0] else {
+            unreachable!()
+        };
+        m.head = kozue_ir::MessageArrow::Open;
         assert!(head.export_input(&sequence).is_err());
 
         let mut tail = layout_full(&sequence).unwrap();
         let SemanticLayout::Sequence(layout) = &mut tail.semantic else {
             unreachable!()
         };
-        layout.messages[0].tail = kozue_ir::MessageArrow::Filled;
+        let SequenceItemLayout::Message(m) = &mut layout.items[0] else {
+            unreachable!()
+        };
+        m.tail = kozue_ir::MessageArrow::Filled;
         assert!(tail.export_input(&sequence).is_err());
     }
 }

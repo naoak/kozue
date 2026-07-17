@@ -219,7 +219,12 @@ pub const FEATURES: &[Feature] = &[
     },
     // --- Unsupported keywords ---
     Feature {
-        name: "note / hnote / rnote",
+        name: "note over / left of / right of (single line)",
+        support: Support::Supported,
+        note: "single-line `note over/left of/right of ... : text`; multi-line note blocks, hnote, and rnote report an unsupported error",
+    },
+    Feature {
+        name: "hnote / rnote / multi-line note block",
         support: Support::Unsupported,
         note: "reports an unsupported error",
     },

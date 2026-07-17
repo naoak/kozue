@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20.00 -20.00 455.76 432.00" width="455.76" height="432.00">
+  <rect x="-20.00" y="-20.00" width="455.76" height="432.00" fill="#ffffff"/>
+  <rect x="26.69" y="0.00" width="78.48" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="65.93" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Alice</text>
+  <polyline points="65.93,39.20 65.93,392.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <rect x="312.28" y="0.00" width="70.92" height="39.20" rx="4.00" ry="4.00" fill="#ffffff" stroke="#000000" stroke-width="1.50"/>
+  <text x="347.74" y="25.20" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">Bob</text>
+  <polyline points="347.74,39.20 347.74,392.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polyline points="25.43,64.40 98.43,64.40 106.43,72.40 106.43,95.60 25.43,95.60 25.43,64.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="98.43,64.40 98.43,72.40 106.43,72.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="65.93" y="85.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">thinking</text>
+  <polyline points="65.93,128.00 337.74,128.00" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polygon points="347.74,128.00 337.74,123.00 337.74,133.00" fill="#000000" stroke="none"/>
+  <text x="206.83" y="124.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hello</text>
+  <polyline points="357.74,160.40 407.76,160.40 415.76,168.40 415.76,191.60 357.74,191.60 357.74,160.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="407.76,160.40 407.76,168.40 415.76,168.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="386.75" y="181.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">got it</text>
+  <polyline points="347.74,224.00 75.93,224.00" fill="none" stroke="#000000" stroke-width="1.50" stroke-dasharray="6 4"/>
+  <polygon points="65.93,224.00 75.93,219.00 75.93,229.00" fill="#000000" stroke="none"/>
+  <text x="206.83" y="220.00" font-family="DejaVu Sans" font-size="13.60" text-anchor="middle" fill="#000000">hi</text>
+  <polyline points="57.93,256.40 347.74,256.40 355.74,264.40 355.74,287.60 57.93,287.60 57.93,256.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="347.74,256.40 347.74,264.40 355.74,264.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="206.83" y="277.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">both know each other</text>
+  <polyline points="0.00,304.40 47.93,304.40 55.93,312.40 55.93,335.60 0.00,335.60 0.00,304.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <polyline points="47.93,304.40 47.93,312.40 55.93,312.40" fill="none" stroke="#000000" stroke-width="1.50"/>
+  <text x="27.96" y="325.60" font-family="DejaVu Sans" font-size="16.00" text-anchor="middle" fill="#000000">done</text>
+</svg>

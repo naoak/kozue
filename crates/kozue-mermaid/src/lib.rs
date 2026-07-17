@@ -49,8 +49,8 @@ use indexmap::IndexMap;
 use kozue_ir::{
     ArrowType, ClassDiagram, ClassNode, ClassRelation, Container, Diagram, Direction, Edge,
     EndMarker, Endpoint, ErAttribute, ErDiagram, ErEntity, ErRelation, GraphDiagram, IrDocument,
-    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Participant, ParticipantKind,
-    SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
+    LineStyle, LineWeight, Message, MessageArrow, Node, NodeKind, Note, NotePosition, Participant,
+    ParticipantKind, SequenceDiagram, SequenceItem, State, StateDiagram, Transition,
 };
 
 /// A user-facing parse/semantic error with a byte-offset span.
@@ -526,18 +526,6 @@ fn parse_sequence(
 ) -> Result<Diagram, Vec<Diagnostic>> {
     let mut seq = SequenceDiagram::new();
 
-    struct RawMsg {
-        from: String,
-        to: String,
-        label: Option<String>,
-        line_style: LineStyle,
-        head: MessageArrow,
-        tail: MessageArrow,
-        #[allow(dead_code)]
-        span: Range<usize>,
-    }
-    let mut messages: Vec<RawMsg> = Vec::new();
-
     let ensure_participant =
         |seq: &mut SequenceDiagram, id: &str, label: Option<&str>, kind: ParticipantKind| {
             if !seq.participants.contains_key(id) {
@@ -565,8 +553,6 @@ fn parse_sequence(
         // Each entry is the keyword with a trailing space or end-of-string boundary
         // so "par" doesn't accidentally match "participant".
         let unsupported_kw: &[&str] = &[
-            "Note",
-            "note",
             "loop",
             "alt",
             "else",
@@ -634,6 +620,26 @@ fn parse_sequence(
             continue;
         }
 
+        // Note lines: `Note over A: text` / `Note left of A: text` /
+        // `Note right of A: text` / `Note over A,B: text`.
+        if let Some(note) = try_parse_seq_note(trimmed) {
+            match note {
+                Ok((position, targets, text)) => {
+                    let mut ids = Vec::new();
+                    for t in &targets {
+                        ensure_participant(&mut seq, t, None, ParticipantKind::Default);
+                        ids.push(kozue_ir::ElementId::new(t.clone()));
+                    }
+                    seq.items
+                        .push(SequenceItem::Note(Note::new(text, position, ids)));
+                }
+                Err(note_err) => {
+                    errors.push(Diagnostic::new(note_err, span));
+                }
+            }
+            continue;
+        }
+
         // Message arrow lines: from->>to: label  /  from-->>to: label  etc.
         if let Some(msg) = try_parse_seq_message(trimmed, offset) {
             match msg {
@@ -641,15 +647,9 @@ fn parse_sequence(
                     // Auto-declare participants.
                     ensure_participant(&mut seq, &from, None, ParticipantKind::Default);
                     ensure_participant(&mut seq, &to, None, ParticipantKind::Default);
-                    messages.push(RawMsg {
-                        from,
-                        to,
-                        label,
-                        line_style,
-                        head,
-                        tail,
-                        span,
-                    });
+                    seq.items.push(SequenceItem::Message(Message::with_arrows(
+                        from, to, label, line_style, head, tail,
+                    )));
                 }
                 Err(msg_err) => {
                     errors.push(Diagnostic::new(msg_err, span));
@@ -666,17 +666,6 @@ fn parse_sequence(
             ),
             span,
         ));
-    }
-
-    for rm in messages {
-        seq.items.push(SequenceItem::Message(Message::with_arrows(
-            rm.from,
-            rm.to,
-            rm.label,
-            rm.line_style,
-            rm.head,
-            rm.tail,
-        )));
     }
 
     if errors.is_empty() {
@@ -1680,6 +1669,73 @@ fn try_parse_seq_message(line: &str, _offset: usize) -> Option<Result<SeqMsgResu
         }
     }
     None
+}
+
+/// Parse a Mermaid sequence `Note` line.
+///
+/// Forms: `Note over A: text`, `Note over A,B: text`, `Note left of A: text`,
+/// `Note right of A: text` (leading `Note`/`note`). Returns `None` when the
+/// line is not a note statement (so the caller falls through to other parsers),
+/// or `Err` when it begins as a note but is malformed.
+#[allow(clippy::type_complexity)]
+fn try_parse_seq_note(line: &str) -> Option<Result<(NotePosition, Vec<String>, String), String>> {
+    // Case-insensitive leading keyword, followed by whitespace.
+    let rest = line
+        .strip_prefix("Note")
+        .or_else(|| line.strip_prefix("note"))?;
+    if !rest.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return None;
+    }
+    let rest = rest.trim_start();
+
+    let (position, after) = if let Some(r) = rest.strip_prefix("over") {
+        (NotePosition::Over, r)
+    } else if let Some(r) = rest.strip_prefix("left of") {
+        (NotePosition::LeftOf, r)
+    } else if let Some(r) = rest.strip_prefix("right of") {
+        (NotePosition::RightOf, r)
+    } else {
+        return Some(Err(
+            "unsupported: note placement (expected `over`, `left of`, or `right of`)".to_string(),
+        ));
+    };
+    if !after.starts_with(|c: char| c.is_ascii_whitespace()) {
+        return Some(Err(
+            "unsupported: note placement (expected `over`, `left of`, or `right of`)".to_string(),
+        ));
+    }
+    let after = after.trim_start();
+
+    // `targets: text`.
+    let Some(colon_idx) = after.find(':') else {
+        return Some(Err("note requires `: text` after the target(s)".to_string()));
+    };
+    let targets_part = after[..colon_idx].trim();
+    let text = after[colon_idx + 1..].trim().to_string();
+
+    let mut targets = Vec::new();
+    for raw in targets_part.split(',') {
+        let name = raw.trim();
+        if name.is_empty() {
+            return Some(Err("note has an empty target participant".to_string()));
+        }
+        targets.push(name.to_string());
+    }
+    if targets.is_empty() {
+        return Some(Err(
+            "note requires at least one target participant".to_string()
+        ));
+    }
+    match position {
+        NotePosition::LeftOf | NotePosition::RightOf if targets.len() != 1 => {
+            return Some(Err(
+                "`left of`/`right of` notes accept exactly one participant; use `over` to span several"
+                    .to_string(),
+            ));
+        }
+        _ => {}
+    }
+    Some(Ok((position, targets, text)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2982,13 +3038,39 @@ mod tests {
     }
 
     #[test]
-    fn note_is_unsupported() {
-        let src = "sequenceDiagram\n  participant A\n  Note over A: text\n  A->>A: ok\n";
-        let errs = parse(src).expect_err("Note should be unsupported");
+    fn notes_parse_and_preserve_source_order() {
+        let src = "sequenceDiagram\n  participant A\n  participant B\n  Note over A: thinking\n  A->>B: hello\n  Note right of B: got it\n  Note over A,B: both\n  Note left of A: done\n";
+        let d = parse(src).expect("notes should parse");
+        let Diagram::Sequence(s) = d else { panic!() };
+        // Item order must match source order: note, message, note, note, note.
+        assert!(matches!(s.items[0], SequenceItem::Note(_)));
+        assert!(matches!(s.items[1], SequenceItem::Message(_)));
+        assert!(matches!(s.items[2], SequenceItem::Note(_)));
+        assert!(matches!(s.items[3], SequenceItem::Note(_)));
+        assert!(matches!(s.items[4], SequenceItem::Note(_)));
+        match &s.items[0] {
+            SequenceItem::Note(n) => {
+                assert_eq!(n.position, NotePosition::Over);
+                assert_eq!(n.targets, vec![kozue_ir::ElementId::new("A")]);
+                assert_eq!(n.text, "thinking");
+            }
+            _ => unreachable!(),
+        }
+        match &s.items[3] {
+            SequenceItem::Note(n) => {
+                assert_eq!(n.position, NotePosition::Over);
+                assert_eq!(n.targets.len(), 2);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn note_left_of_rejects_multiple_targets() {
+        let src = "sequenceDiagram\n  participant A\n  participant B\n  Note left of A,B: bad\n";
+        let errs = parse(src).expect_err("left of with two targets must error");
         assert!(
-            errs.iter()
-                .any(|e| e.message.contains("unsupported")
-                    && e.message.to_lowercase().contains("note")),
+            errs.iter().any(|e| e.message.contains("exactly one")),
             "got: {errs:?}"
         );
     }

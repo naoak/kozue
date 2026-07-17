@@ -2644,15 +2644,24 @@ mod tests {
         for p in &sem.participants {
             assert!(p.lifeline_y1 > p.lifeline_y0);
         }
-        assert_eq!(sem.messages.len(), 2);
-        assert_eq!(sem.messages[0].index, 0);
-        assert_eq!(sem.messages[0].from.as_str(), "a");
-        assert_eq!(sem.messages[0].to.as_str(), "b");
-        assert!(sem.messages[0].label_anchor.is_some());
-        assert_eq!(sem.messages[1].index, 1);
-        assert!(sem.messages[1].label_anchor.is_none());
+        use crate::semantic::SequenceItemLayout;
+        let messages: Vec<&crate::semantic::MessageLayout> = sem
+            .items
+            .iter()
+            .map(|item| match item {
+                SequenceItemLayout::Message(m) => m,
+                SequenceItemLayout::Note(_) => panic!("unexpected note"),
+            })
+            .collect();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].index, 0);
+        assert_eq!(messages[0].from.as_str(), "a");
+        assert_eq!(messages[0].to.as_str(), "b");
+        assert!(messages[0].label_anchor.is_some());
+        assert_eq!(messages[1].index, 1);
+        assert!(messages[1].label_anchor.is_none());
         assert!(
-            sem.messages[1].route.len() >= 3,
+            messages[1].route.len() >= 3,
             "self-message route is a multi-segment polyline"
         );
     }

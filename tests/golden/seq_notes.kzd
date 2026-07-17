@@ -1,0 +1,10 @@
+sequence notes {
+  participant a: "Alice"
+  participant b: "Bob"
+  note over a : "thinking"
+  a -> b : "hello"
+  note right of b : "got it"
+  b --> a : "hi"
+  note over a, b : "both know each other"
+  note left of a : "done"
+}

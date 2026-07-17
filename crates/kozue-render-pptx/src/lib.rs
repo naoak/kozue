@@ -45,7 +45,8 @@
 //!   ellipses); transitions become connectors.
 //! - [`SemanticLayout::Sequence`] — participants become a header rectangle
 //!   plus a dashed vertical lifeline connector; messages become connectors
-//!   (dashed for `LineStyle::Dashed`).
+//!   (dashed for `LineStyle::Dashed`). Notes become `foldedCorner` preset
+//!   shapes (dog-eared rectangle) carrying the note text.
 //! - [`SemanticLayout::Class`] / [`SemanticLayout::Er`] — each
 //!   [`CompartmentBox`] becomes a rectangular shape whose text body has one
 //!   paragraph per title/stereotype/attribute/method row, plus a thin
@@ -79,8 +80,8 @@ use kozue_ir::{
     ArrowType, EndMarker, LineStyle, LineWeight, MessageArrow, NodeKind, ParticipantKind,
 };
 use kozue_layout::semantic::{
-    ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceLayout,
-    StateEndpointId, StateLayout,
+    ClassLayout, CompartmentBox, GraphLayout, Point, SemanticLayout, SequenceItemLayout,
+    SequenceLayout, StateEndpointId, StateLayout,
 };
 use kozue_layout::ExportInput;
 
@@ -876,7 +877,30 @@ fn render_sequence(s: &SequenceLayout) -> Result<String, RenderError> {
     let find_participant =
         |id: &str| -> bool { s.participants.iter().any(|p| p.id.as_str() == id) };
 
-    for (i, m) in s.messages.iter().enumerate() {
+    for (i, item) in s.items.iter().enumerate() {
+        let m = match item {
+            SequenceItemLayout::Message(m) => m,
+            SequenceItemLayout::Note(note) => {
+                // A note uses PowerPoint's `foldedCorner` preset — a rectangle
+                // with a dog-eared corner, the native analogue of a UML note
+                // (matching draw.io's `shape=note`).
+                let r = &note.rect;
+                shapes.push_str(&rect_shape_with_geom(
+                    ids.next(),
+                    &format!("Note {i}"),
+                    emu_pos(r.x),
+                    emu_pos(r.y),
+                    emu_len(r.width),
+                    emu_len(r.height),
+                    &note.text,
+                    "foldedCorner",
+                ));
+                continue;
+            }
+            // `SequenceItemLayout` is `#[non_exhaustive]`; future variants are
+            // rejected on the strict export path by `validate_export_semantics`.
+            _ => continue,
+        };
         if !find_participant(m.from.as_str()) {
             return Err(RenderError::DanglingEdge {
                 node_id: m.from.to_string(),

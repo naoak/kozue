@@ -184,14 +184,44 @@ pub struct MessageLayout {
     pub label_anchor: Option<Point>,
 }
 
+/// Layout for a single note box in a sequence diagram.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteLayout {
+    /// Index into [`SequenceDiagram::items`](kozue_ir::SequenceDiagram) (0-based).
+    pub index: usize,
+    /// The note's text (from [`Note::text`](kozue_ir::Note)).
+    pub text: String,
+    /// Placement of the note relative to its targets (from
+    /// [`Note::position`](kozue_ir::Note)).
+    pub position: kozue_ir::NotePosition,
+    /// Target participant IDs (from [`Note::targets`](kozue_ir::Note)).
+    pub targets: Vec<ElementId>,
+    /// Bounding box of the note body.
+    pub rect: Rect,
+    /// Center of the note's text.
+    pub text_anchor: Point,
+}
+
+/// One laid-out sequence body item. Item-parity with
+/// [`SequenceDiagram::items`](kozue_ir::SequenceDiagram): the i-th layout item
+/// corresponds to the i-th diagram item and shares its variant.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub enum SequenceItemLayout {
+    Message(MessageLayout),
+    Note(NoteLayout),
+}
+
 /// Semantic layout for a sequence diagram.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceLayout {
     /// Participants in declaration order.
     pub participants: Vec<ParticipantLayout>,
-    /// Messages in item order. Unsupported future item types are rejected by layout.
-    pub messages: Vec<MessageLayout>,
+    /// Body items in declaration order (item-parity with the diagram).
+    /// Unsupported future item types are rejected by layout.
+    pub items: Vec<SequenceItemLayout>,
 }
 
 // ---------------------------------------------------------------------------

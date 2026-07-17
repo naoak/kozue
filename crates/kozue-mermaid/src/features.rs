@@ -235,8 +235,8 @@ pub const FEATURES: &[Feature] = &[
     },
     Feature {
         name: "Note over / Note left / Note right",
-        support: Support::Unsupported,
-        note: "reports an unsupported error",
+        support: Support::Supported,
+        note: "single-line notes over one or more participants, or left/right of one; multi-line note blocks are not supported yet",
     },
     Feature {
         name: "loop block",
