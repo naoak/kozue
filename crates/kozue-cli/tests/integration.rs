@@ -2189,7 +2189,7 @@ fn drawio_sequence_self_message_is_self_loop_with_waypoints() {
     );
 }
 
-/// Guard the Bクラス "follow" guarantee: a straight (non-self) message must NOT
+/// Guard the B-class "follow" guarantee: a straight (non-self) message must NOT
 /// carry absolute waypoints. If a future layout change starts adding interior
 /// route points to straight messages, those absolute mxPoints would be left
 /// behind when a participant is dragged — silently breaking connection-follow.

@@ -33,8 +33,8 @@ pub struct NodeLayout {
     /// The node's stable string ID (from [`GraphDiagram::nodes`](kozue_ir::GraphDiagram)).
     pub id: ElementId,
     /// The display label text drawn in the node box (the same string emitted as
-    /// the Scene Text item). This is the label, not the ID: for `a: "入力"` it is
-    /// `"入力"`.
+    /// the Scene Text item). This is the label, not the ID: for `a: "Input"` it is
+    /// `"Input"`.
     pub label: String,
     /// Shape semantics retained from the graph IR.
     pub kind: NodeKind,

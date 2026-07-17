@@ -1,10 +1,10 @@
 graph flow {
   direction down
 
-  start: "開始"
-  proc:  "処理する"
-  end:   "終了"
+  start: "Start"
+  proc:  "Process"
+  end:   "End"
 
-  start -> proc : "次へ"
+  start -> proc : "Next"
   proc -> end
 }

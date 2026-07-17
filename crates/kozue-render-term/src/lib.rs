@@ -565,7 +565,7 @@ mod tests {
     #[test]
     fn wide_char_display_width_equals_logical_cols() {
         // Grid: 8 cols, 2 rows.  Place "あ" (width 2) at col 0.
-        // Logical cells: [あ][Wide][空][空][空][空][空][空]
+        // Logical cells: [あ][Wide][Empty][Empty][Empty][Empty][Empty][Empty]
         // Output chars:  あ (skip Wide) spaces … → display width = 8 at most,
         // but trimming trailing spaces means the line ends after "あ".
         let scene = Scene {

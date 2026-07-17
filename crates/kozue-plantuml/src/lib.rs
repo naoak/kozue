@@ -22,13 +22,13 @@
 //! /' block comment '/
 //! participant Alice
 //! participant Bob as B
-//! participant "長い名前" as LN
+//! participant "Long Name" as LN
 //! actor User
 //! boundary SomeService
 //!
-//! Alice -> B : こんにちは
-//! B --> Alice : 返事
-//! Alice ->> Alice : 自己メッセージ
+//! Alice -> B : Hello
+//! B --> Alice : Reply
+//! Alice ->> Alice : Self-message
 //! @enduml
 //! ```
 //!

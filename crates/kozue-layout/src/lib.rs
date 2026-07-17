@@ -1707,8 +1707,8 @@ mod tests {
         );
     }
 
-    /// direction=down で同一層に複数ノードが並ぶ場合、cross軸=X方向に
-    /// 幅の和+GAP 以上の広がりを持つこと。
+    /// When multiple nodes are in the same layer with direction=down, the cross axis (X)
+    /// must span at least the sum of widths plus GAP.
     #[test]
     fn cross_extent_down_multi_node_layer() {
         let mut g = GraphDiagram::new(Direction::Down);
@@ -1726,8 +1726,8 @@ mod tests {
         );
     }
 
-    /// direction=right で同一層に複数ノードが並ぶ場合、cross軸=Y方向に
-    /// 高さの和+GAP 以上の広がりを持つこと (M0の軸バグ回帰防止)。
+    /// When multiple nodes are in the same layer with direction=right, the cross axis (Y)
+    /// must span at least the sum of heights plus GAP (regression guard for M0 axis bug).
     #[test]
     fn cross_extent_right_multi_node_layer() {
         let mut g = GraphDiagram::new(Direction::Right);
@@ -1745,7 +1745,7 @@ mod tests {
         );
     }
 
-    /// サイクルはレイアウト内部で一時反転され、矢印は元の向きで描かれる。
+    /// Cycles are temporarily reversed inside layout; arrows are drawn in their original direction.
     #[test]
     fn two_node_cycle_keeps_original_arrow_directions() {
         let mut g = GraphDiagram::new(Direction::Down);
@@ -1915,7 +1915,7 @@ mod tests {
         assert_eq!(filled_paths(&scene).len(), 3);
     }
 
-    /// 3層以上またぐエッジはダミーノード経由の折れ線になる。
+    /// Edges spanning three or more layers are routed as polylines through dummy nodes.
     #[test]
     fn long_edge_is_routed_as_polyline() {
         let mut g = GraphDiagram::new(Direction::Down);
@@ -1936,7 +1936,7 @@ mod tests {
         }
     }
 
-    /// 直線チェーンはまっすぐ一列になる (direction down)。
+    /// A straight chain aligns in a single column (direction down).
     #[test]
     fn straight_chain_is_collinear_down() {
         let mut g = GraphDiagram::new(Direction::Down);
@@ -1954,7 +1954,7 @@ mod tests {
         }
     }
 
-    /// 直線チェーンはまっすぐ一列になる (direction right)。
+    /// A straight chain aligns in a single row (direction right).
     #[test]
     fn straight_chain_is_collinear_right() {
         let mut g = GraphDiagram::new(Direction::Right);
@@ -1975,7 +1975,7 @@ mod tests {
         }
     }
 
-    /// 固定の複雑な図でノードbox同士が重ならないこと (両方向)。
+    /// Node boxes must not overlap in a fixed complex diagram (both directions).
     fn complex_graph(direction: Direction) -> GraphDiagram {
         let mut g = GraphDiagram::new(direction);
         for (id, label) in [
@@ -2040,7 +2040,7 @@ mod tests {
         }
     }
 
-    /// Scene.width/height はテキスト・ラベル・矢印を含む正規化済み境界。
+    /// Scene.width/height are normalized bounds encompassing text, labels, and arrows.
     #[test]
     fn bounds_are_normalized_and_cover_everything() {
         let mut g = GraphDiagram::new(Direction::Right);

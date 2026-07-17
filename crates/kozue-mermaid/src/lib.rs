@@ -9,11 +9,11 @@
 //! ## Flowchart
 //! ```text
 //! flowchart TD
-//!   A[開始] --> B[処理]
-//!   B -->|OK| C[終了]
-//!   B -->|NG| D[エラー]
+//!   A[Start] --> B[Process]
+//!   B -->|OK| C[End]
+//!   B -->|NG| D[Error]
 //!   C --> E
-//!   D --> E[完了]
+//!   D --> E[Done]
 //! ```
 //!
 //! ## Sequence diagram
@@ -21,8 +21,8 @@
 //! sequenceDiagram
 //!   participant A as Alice
 //!   participant B
-//!   A->>B: こんにちは
-//!   B-->>A: 返事
+//!   A->>B: Hello
+//!   B-->>A: Reply
 //! ```
 //!
 //! # Compatibility notes

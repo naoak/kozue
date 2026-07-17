@@ -981,7 +981,7 @@ pub(crate) fn layout_sequence_full(
         let ti = idx_of[msg.to.as_str()];
 
         if fi == ti {
-            // Self-message: コの字型 (right, down, left with arrowhead).
+            // Self-message: U-shape (right, down, left with arrowhead).
             let cx = col_x[fi];
             let depth_fi = active_stacks
                 .get(msg.from.as_str())
